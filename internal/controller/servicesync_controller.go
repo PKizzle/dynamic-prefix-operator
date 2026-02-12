@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"strings"
 	"time"
@@ -51,6 +52,17 @@ const (
 	// AnnotationServiceSubnet specifies which subnet to use for Service IPs.
 	// This is used when the DynamicPrefix uses subnets (Mode 2).
 	AnnotationServiceSubnet = "dynamic-prefix.io/service-subnet"
+
+	// AnnotationSuffix specifies a static IPv6 suffix (host part) for a Service.
+	// When set, the operator calculates full IPv6 addresses by combining the current
+	// (and historical) prefix with this suffix, instead of inferring it from the
+	// Service's currently assigned IP. This is the preferred way to declare intent
+	// for dual-stack Services: only put IPv4 in lbipam.cilium.io/ips and let the
+	// operator manage the IPv6 portion entirely.
+	// Requires dynamic-prefix.io/name to also be set.
+	// Example: "::ffff:0:2" combined with prefix 2001:db8:abcd:100::/56
+	// produces 2001:db8:abcd:100::ffff:0:2.
+	AnnotationSuffix = "dynamic-prefix.io/suffix"
 )
 
 // ServiceSyncReconciler reconciles LoadBalancer Services for HA mode prefix transitions.
@@ -104,20 +116,45 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	log.Info("Syncing Service for HA mode", "service", req.NamespacedName, "dynamicPrefix", dpName)
 
-	// Get current assigned IP from Service status
-	currentServiceIP := r.getCurrentServiceIP(&svc)
-	if currentServiceIP == "" {
-		// Service doesn't have an IP yet, let Cilium assign one
-		log.V(1).Info("Service has no IP assigned yet, skipping")
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	var allIPs []string
+	var currentIP string
+
+	if suffix, ok := annotations[AnnotationSuffix]; ok && suffix != "" {
+		// Suffix-based mode: calculate full IPv6 from prefix + suffix directly.
+		// This is the preferred path — no need to wait for Cilium to assign an IP first.
+		var err error
+		allIPs, currentIP, err = r.calculateSuffixIPs(&dp, suffix)
+		if err != nil {
+			log.Error(err, "Failed to calculate IPs from suffix", "suffix", suffix)
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		log.V(1).Info("Using suffix-based IP calculation", "suffix", suffix, "currentIP", currentIP)
+	} else {
+		// Legacy mode: infer suffix from the Service's currently assigned IP.
+		currentServiceIP := r.getCurrentServiceIP(&svc)
+		if currentServiceIP == "" {
+			log.V(1).Info("Service has no IP assigned yet, skipping")
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+
+		var err error
+		allIPs, currentIP, err = r.calculateServiceIPs(ctx, &dp, &svc, currentServiceIP)
+		if err != nil {
+			log.Error(err, "Failed to calculate Service IPs")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 	}
 
-	// Calculate all IPs (current + historical) based on the Service's current IP
-	allIPs, currentIP, err := r.calculateServiceIPs(ctx, &dp, &svc, currentServiceIP)
-	if err != nil {
-		log.Error(err, "Failed to calculate Service IPs")
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-	}
+	// Collect all prefixes the operator manages (current + historical).
+	// Any IPv6 in the annotation that falls within these prefixes is operator-managed
+	// and will be replaced. Everything else (IPv4, static IPv6) is preserved.
+	managedPrefixes := r.collectManagedPrefixes(&dp)
+
+	existingIPs := annotations[AnnotationCiliumIPs]
+	preservedIPs := extractUnmanagedIPs(existingIPs, managedPrefixes)
+
+	// Build final IP list: preserved (IPv4 + static IPv6) first, then calculated IPv6
+	finalIPs := append(preservedIPs, allIPs...)
 
 	// Update Service annotations
 	updated := false
@@ -126,14 +163,14 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		newAnnotations[k] = v
 	}
 
-	// Set lbipam.cilium.io/ips with all IPs
-	allIPsStr := strings.Join(allIPs, ",")
-	if annotations[AnnotationCiliumIPs] != allIPsStr {
-		newAnnotations[AnnotationCiliumIPs] = allIPsStr
+	// Set lbipam.cilium.io/ips with preserved IPs + all managed IPv6 IPs
+	finalIPsStr := strings.Join(finalIPs, ",")
+	if annotations[AnnotationCiliumIPs] != finalIPsStr {
+		newAnnotations[AnnotationCiliumIPs] = finalIPsStr
 		updated = true
 	}
 
-	// Set external-dns target to current IP only
+	// Set external-dns target to current IPv6 only
 	if annotations[AnnotationExternalDNSTarget] != currentIP {
 		newAnnotations[AnnotationExternalDNSTarget] = currentIP
 		updated = true
@@ -148,10 +185,65 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "Failed to update Service annotations")
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
-		log.Info("Service annotations updated", "service", req.NamespacedName, "allIPs", allIPsStr, "dnsTarget", currentIP)
+		log.Info("Service annotations updated", "service", req.NamespacedName,
+			"allIPs", finalIPsStr, "dnsTarget", currentIP,
+			"preservedCount", len(preservedIPs), "managedCount", len(allIPs))
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// collectManagedPrefixes returns all prefixes the operator manages for a
+// DynamicPrefix (current + historical). These are used to identify which
+// IPv6 addresses in an annotation are operator-managed vs static.
+// collectManagedPrefixesForService delegates to the shared collectManagedPrefixes.
+func (r *ServiceSyncReconciler) collectManagedPrefixes(dp *dynamicprefixiov1alpha1.DynamicPrefix) []netip.Prefix {
+	return collectManagedPrefixes(dp)
+}
+
+// extractUnmanagedIPs parses a comma-separated IP list and returns all IPs
+// that are NOT managed by the operator. An IP is considered managed if it is
+// an IPv6 address that falls within any of the given managed prefixes.
+// All IPv4 addresses and IPv6 addresses outside the managed prefixes are
+// preserved. This supports:
+// - Multiple static IPv4 addresses
+// - Multiple static (non-dynamic) IPv6 addresses
+// - Mixed dual-stack annotations
+func extractUnmanagedIPs(ipsAnnotation string, managedPrefixes []netip.Prefix) []string {
+	if ipsAnnotation == "" {
+		return nil
+	}
+	var preserved []string
+	for _, raw := range strings.Split(ipsAnnotation, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		addr, err := netip.ParseAddr(raw)
+		if err != nil {
+			// Not a valid IP — preserve as-is to avoid data loss
+			preserved = append(preserved, raw)
+			continue
+		}
+		if addr.Is4() || addr.Is4In6() {
+			// Always preserve IPv4
+			preserved = append(preserved, raw)
+			continue
+		}
+		// IPv6 — check if it falls within any managed prefix
+		managed := false
+		for _, p := range managedPrefixes {
+			if p.Contains(addr) {
+				managed = true
+				break
+			}
+		}
+		if !managed {
+			// Static IPv6 outside managed prefixes — preserve
+			preserved = append(preserved, raw)
+		}
+	}
+	return preserved
 }
 
 // getCurrentServiceIP returns the current IPv6 IP from Service status.
@@ -233,6 +325,76 @@ func (r *ServiceSyncReconciler) calculateServiceIPs(
 	}
 
 	return allIPs, currentPrefixIP, nil
+}
+
+// calculateSuffixIPs calculates IPv6 addresses by combining a static suffix with
+// the current and historical prefixes. Returns (allIPs, currentIP, error).
+// The suffix is the host part of the address (e.g. "::ffff:0:2").
+func (r *ServiceSyncReconciler) calculateSuffixIPs(
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	suffix string,
+) ([]string, string, error) {
+	suffixAddr, err := netip.ParseAddr(suffix)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid IPv6 suffix %q: %w", suffix, err)
+	}
+	suffixBytes := suffixAddr.As16()
+
+	if dp.Status.CurrentPrefix == "" {
+		return nil, "", fmt.Errorf("DynamicPrefix has no current prefix")
+	}
+
+	maxHistory := 2
+	if dp.Spec.Transition != nil && dp.Spec.Transition.MaxPrefixHistory > 0 {
+		maxHistory = dp.Spec.Transition.MaxPrefixHistory
+	}
+
+	currentPrefix, err := netip.ParsePrefix(dp.Status.CurrentPrefix)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid current prefix %q: %w", dp.Status.CurrentPrefix, err)
+	}
+
+	currentIP := combinePrefixSuffix(currentPrefix, suffixBytes)
+	allIPs := []string{currentIP.String()}
+
+	for i, histEntry := range dp.Status.History {
+		if i >= maxHistory {
+			break
+		}
+		histPrefix, err := netip.ParsePrefix(histEntry.Prefix)
+		if err != nil {
+			continue
+		}
+		histIP := combinePrefixSuffix(histPrefix, suffixBytes)
+		allIPs = append(allIPs, histIP.String())
+	}
+
+	return allIPs, currentIP.String(), nil
+}
+
+// combinePrefixSuffix combines a prefix's network part with a suffix's host part.
+// For a /48 prefix and suffix ::ffff:0:2, the first 48 bits come from the prefix
+// and the remaining 80 bits come from the suffix.
+func combinePrefixSuffix(pfx netip.Prefix, suffixBytes [16]byte) netip.Addr {
+	prefixBytes := pfx.Addr().As16()
+	prefixLen := pfx.Bits()
+
+	var result [16]byte
+	for i := 0; i < 16; i++ {
+		bitPos := i * 8
+		if bitPos+8 <= prefixLen {
+			// Entire byte comes from prefix
+			result[i] = prefixBytes[i]
+		} else if bitPos >= prefixLen {
+			// Entire byte comes from suffix
+			result[i] = suffixBytes[i]
+		} else {
+			// Split byte: high bits from prefix, low bits from suffix
+			mask := byte(0xFF << (8 - (prefixLen - bitPos)))
+			result[i] = (prefixBytes[i] & mask) | (suffixBytes[i] & ^mask)
+		}
+	}
+	return netip.AddrFrom16(result)
 }
 
 // calculateAddressRangeIPs calculates IPs for address range mode.
