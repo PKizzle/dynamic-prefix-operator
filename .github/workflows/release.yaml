@@ -31,16 +31,39 @@ jobs:
         with:
           version: v3.14.0
 
-      - name: Get version from tag
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      - name: Set up Kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "v5.3.0"
 
-      - name: Update Chart version
+      - name: Determine Prerelease Status
+        id: prerelease
+        # specific logic: if version contains a hyphen (e.g. 1.0.0-rc.1), it is a prerelease
         run: |
-          sed -i "s/^version:.*/version: ${{ steps.version.outputs.version }}/" charts/dynamic-prefix-operator/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${{ steps.version.outputs.version }}\"/" charts/dynamic-prefix-operator/Chart.yaml
-          # Update image tag to use the release version
-          sed -i "s/tag:.*/tag: \"v${{ steps.version.outputs.version }}\"/" charts/dynamic-prefix-operator/values.yaml
+          if [[ "${{ github.ref_name }}" == *"-"* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Render Chart.yaml from Template
+        run: |
+          # Define paths
+          TEMPLATE_FILE="charts/dynamic-prefix-operator/Chart.template.yaml"
+          CHART_FILE="charts/dynamic-prefix-operator/Chart.yaml"
+          VALUES_FILE="charts/dynamic-prefix-operator/values.yaml"
+          
+          VERSION="${{ github.ref_name }}"
+          IS_PRE="${{ steps.prerelease.outputs.is_prerelease }}"
+
+          # Generate Chart.yaml from template
+          sed -e "s/{{IS_PRERELEASE}}/$IS_PRE/g" \
+              -e "s/^version: .*/version: $VERSION/" \
+              -e "s/^appVersion: .*/appVersion: \"$VERSION\"/" \
+              $TEMPLATE_FILE > $CHART_FILE
+
+          # Update image tag in values.yaml to use the release version
+          sed -i "s/tag:.*/tag: \"$VERSION\"/" $VALUES_FILE
 
       - name: Convert repository to lowercase
         id: repository
@@ -50,16 +73,13 @@ jobs:
 
       - name: Generate install.yaml
         run: |
-          # Install kustomize
-          go install sigs.k8s.io/kustomize/kustomize/v5@latest
-
           # Update image in kustomize
           cd config/manager
-          $(go env GOPATH)/bin/kustomize edit set image controller=${{ env.REGISTRY }}/${{ steps.repository.outputs.lowercase }}:v${{ steps.version.outputs.version }}
+          kustomize edit set image controller=${{ env.REGISTRY }}/${{ steps.repository.outputs.lowercase }}:${{ github.ref_name }}
           cd ../..
 
           # Build the full manifest
-          $(go env GOPATH)/bin/kustomize build config/default > install.yaml
+          kustomize build config/default > install.yaml
 
       - name: Package Helm chart
         run: |
@@ -80,7 +100,7 @@ jobs:
 
       - name: Push Helm chart to OCI registry
         run: |
-          helm push dynamic-prefix-operator-${{ steps.version.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ steps.repository_owner.outputs.lowercase }}/dynamic-prefix-operator/helm
+          helm push dynamic-prefix-operator-${{ github.ref_name }}.tgz oci://${{ env.REGISTRY }}/${{ steps.repository_owner.outputs.lowercase }}/dynamic-prefix-operator/helm
 
       - name: Generate release notes
         id: notes
@@ -93,13 +113,13 @@ jobs:
           ```bash
           helm install dynamic-prefix-operator \
             oci://ghcr.io/${{ steps.repository_owner.outputs.lowercase }}/dynamic-prefix-operator/helm/dynamic-prefix-operator \
-            --version ${{ steps.version.outputs.version }}
+            --version ${{ github.ref_name }}
           ```
 
           ### Using kubectl
 
           ```bash
-          kubectl apply -f https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/install.yaml
+          kubectl apply -f https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.yaml
           ```
 
           ## Docker Images
@@ -107,12 +127,12 @@ jobs:
           Multi-arch images (amd64, arm64) are available at:
 
           ```
-          ghcr.io/${{ steps.repository.outputs.lowercase }}:v${{ steps.version.outputs.version }}
+          ghcr.io/${{ steps.repository.outputs.lowercase }}:${{ github.ref_name }}
           ```
 
           ## What's Changed
 
-          See the [commit history](https://github.com/${{ steps.repository.outputs.lowercase }}/commits/v${{ steps.version.outputs.version }}) for details.
+          See the [commit history](https://github.com/${{ steps.repository.outputs.lowercase }}/commits/${{ github.ref_name }}) for details.
           EOF
 
       - name: Create GitHub Release
@@ -121,5 +141,5 @@ jobs:
           body_path: release-notes.md
           files: |
             install.yaml
-            dynamic-prefix-operator-${{ steps.version.outputs.version }}.tgz
+            dynamic-prefix-operator-${{ github.ref_name }}.tgz
           fail_on_unmatched_files: true
