@@ -21,3 +21,5 @@
 .idea/
 *.tmproj
 .vscode/
+# Template files
+Chart.template.yaml
