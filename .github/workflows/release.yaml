@@ -42,6 +42,12 @@ jobs:
           # Update image tag to use the release version
           sed -i "s/tag:.*/tag: \"v${{ steps.version.outputs.version }}\"/" charts/dynamic-prefix-operator/values.yaml
 
+      - name: Convert repository to lowercase
+        id: repository
+        uses: ASzc/change-string-case-action@v6
+        with:
+          string: ${{ github.repository }}
+
       - name: Generate install.yaml
         run: |
           # Install kustomize
@@ -49,7 +55,7 @@ jobs:
 
           # Update image in kustomize
           cd config/manager
-          $(go env GOPATH)/bin/kustomize edit set image controller=${{ env.REGISTRY }}/${{ github.repository }}:v${{ steps.version.outputs.version }}
+          $(go env GOPATH)/bin/kustomize edit set image controller=${{ env.REGISTRY }}/${{ steps.repository.outputs.lowercase }}:v${{ steps.version.outputs.version }}
           cd ../..
 
           # Build the full manifest
@@ -66,9 +72,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Convert repository owner to lowercase
+        id: repository_owner
+        uses: ASzc/change-string-case-action@v6
+        with:
+          string: ${{ github.repository_owner }}
+
       - name: Push Helm chart to OCI registry
         run: |
-          helm push dynamic-prefix-operator-${{ steps.version.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/dynamic-prefix-operator/helm
+          helm push dynamic-prefix-operator-${{ steps.version.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ steps.repository_owner.outputs.lowercase }}/dynamic-prefix-operator/helm
 
       - name: Generate release notes
         id: notes
@@ -80,7 +92,7 @@ jobs:
 
           ```bash
           helm install dynamic-prefix-operator \
-            oci://ghcr.io/${{ github.repository_owner }}/dynamic-prefix-operator/helm/dynamic-prefix-operator \
+            oci://ghcr.io/${{ steps.repository_owner.outputs.lowercase }}/dynamic-prefix-operator/helm/dynamic-prefix-operator \
             --version ${{ steps.version.outputs.version }}
           ```
 
@@ -95,12 +107,12 @@ jobs:
           Multi-arch images (amd64, arm64) are available at:
 
           ```
-          ghcr.io/${{ github.repository }}:v${{ steps.version.outputs.version }}
+          ghcr.io/${{ steps.repository.outputs.lowercase }}:v${{ steps.version.outputs.version }}
           ```
 
           ## What's Changed
 
-          See the [commit history](https://github.com/${{ github.repository }}/commits/v${{ steps.version.outputs.version }}) for details.
+          See the [commit history](https://github.com/${{ steps.repository.outputs.lowercase }}/commits/v${{ steps.version.outputs.version }}) for details.
           EOF
 
       - name: Create GitHub Release
