@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -178,6 +179,50 @@ var _ = Describe("ServiceSync Controller", func() {
 
 			// Should have last-sync annotation
 			Expect(annotations).To(HaveKey(AnnotationLastSync))
+		})
+
+		It("should preserve IPv4 addresses in dual-stack annotation", func() {
+			// Set existing dual-stack annotation with IPv4 + IPv6
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      serviceName,
+				Namespace: serviceNS,
+			}, svc)).To(Succeed())
+
+			annotations := svc.GetAnnotations()
+			annotations[AnnotationCiliumIPs] = "198.51.100.10," + currentIP
+			svc.SetAnnotations(annotations)
+			Expect(k8sClient.Update(ctx, svc)).To(Succeed())
+
+			reconciler := &ServiceSyncReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      serviceName,
+					Namespace: serviceNS,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Fetch updated Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      serviceName,
+				Namespace: serviceNS,
+			}, svc)).To(Succeed())
+
+			ipsAnnotation := svc.GetAnnotations()[AnnotationCiliumIPs]
+
+			// IPv4 must be preserved
+			Expect(ipsAnnotation).To(ContainSubstring("198.51.100.10"))
+			// Current IPv6 must be present
+			Expect(ipsAnnotation).To(ContainSubstring(currentIP))
+			// Historical IPv6 must be present
+			Expect(ipsAnnotation).To(ContainSubstring(historicalIP))
+			// IPv4 should come first
+			Expect(ipsAnnotation).To(HavePrefix("198.51.100.10,"))
 		})
 	})
 
@@ -368,6 +413,90 @@ func TestServiceSyncReconciler_applyIPOffset(t *testing.T) {
 	}
 }
 
+func TestExtractUnmanagedIPs(t *testing.T) {
+	managedPrefixes := []netip.Prefix{
+		netip.MustParsePrefix("2001:db8:1::/48"),
+		netip.MustParsePrefix("2001:db8:2::/48"),
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		prefixes []netip.Prefix
+		expected []string
+	}{
+		{
+			name:     "empty string",
+			input:    "",
+			prefixes: managedPrefixes,
+			expected: nil,
+		},
+		{
+			name:     "managed IPv6 only — all removed",
+			input:    "2001:db8:1::1,2001:db8:2::2",
+			prefixes: managedPrefixes,
+			expected: nil,
+		},
+		{
+			name:     "IPv4 only — all preserved",
+			input:    "192.168.1.1,10.0.0.1",
+			prefixes: managedPrefixes,
+			expected: []string{"192.168.1.1", "10.0.0.1"},
+		},
+		{
+			name:     "dual-stack: IPv4 preserved, managed IPv6 removed",
+			input:    "198.51.100.10,2001:db8:1::ffff:0:2",
+			prefixes: managedPrefixes,
+			expected: []string{"198.51.100.10"},
+		},
+		{
+			name:     "static IPv6 outside managed prefix — preserved",
+			input:    "fd00::1,2001:db8:1::1",
+			prefixes: managedPrefixes,
+			expected: []string{"fd00::1"},
+		},
+		{
+			name:     "mixed: IPv4 + static IPv6 + managed IPv6",
+			input:    "198.51.100.10,fd00::1,2001:db8:1::ffff:0:2,2001:db8:2::ffff:0:2",
+			prefixes: managedPrefixes,
+			expected: []string{"198.51.100.10", "fd00::1"},
+		},
+		{
+			name:     "multiple IPv4 + multiple static IPv6",
+			input:    "192.168.1.1,10.0.0.1,fd00::1,fd00::2,2001:db8:1::1",
+			prefixes: managedPrefixes,
+			expected: []string{"192.168.1.1", "10.0.0.1", "fd00::1", "fd00::2"},
+		},
+		{
+			name:     "no managed prefixes — all IPs preserved",
+			input:    "192.168.1.1,2001:db8:1::1,fd00::1",
+			prefixes: nil,
+			expected: []string{"192.168.1.1", "2001:db8:1::1", "fd00::1"},
+		},
+		{
+			name:     "spaces around IPs",
+			input:    " 198.51.100.10 , 2001:db8:1::1 ",
+			prefixes: managedPrefixes,
+			expected: []string{"198.51.100.10"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractUnmanagedIPs(tt.input, tt.prefixes)
+			if len(result) != len(tt.expected) {
+				t.Errorf("extractUnmanagedIPs(%q) returned %d items, want %d: %v", tt.input, len(result), len(tt.expected), result)
+				return
+			}
+			for i, v := range result {
+				if v != tt.expected[i] {
+					t.Errorf("extractUnmanagedIPs(%q)[%d] = %q, want %q", tt.input, i, v, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
 func TestServiceSyncAnnotationConstants(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -394,6 +523,11 @@ func TestServiceSyncAnnotationConstants(t *testing.T) {
 			constant: AnnotationServiceSubnet,
 			expected: "dynamic-prefix.io/service-subnet",
 		},
+		{
+			name:     "AnnotationSuffix",
+			constant: AnnotationSuffix,
+			expected: "dynamic-prefix.io/suffix",
+		},
 	}
 
 	for _, tt := range tests {
@@ -402,5 +536,454 @@ func TestServiceSyncAnnotationConstants(t *testing.T) {
 				t.Errorf("%s = %q, want %q", tt.name, tt.constant, tt.expected)
 			}
 		})
+	}
+}
+
+func TestCombinePrefixSuffix(t *testing.T) {
+	tests := []struct {
+		name     string
+		prefix   string
+		suffix   string
+		expected string
+	}{
+		{
+			name:     "/48 prefix with host suffix",
+			prefix:   "2001:db8:1::/48",
+			suffix:   "::ffff:0:2",
+			expected: "2001:db8:1::ffff:0:2",
+		},
+		{
+			name:     "/56 prefix with host suffix",
+			prefix:   "2001:db8:abcd:100::/56",
+			suffix:   "::ffff:0:2",
+			expected: "2001:db8:abcd:100::ffff:0:2",
+		},
+		{
+			name:     "/56 prefix with different suffix",
+			prefix:   "2001:db8:abcd:100::/56",
+			suffix:   "::ffff:0:10",
+			expected: "2001:db8:abcd:100::ffff:0:10",
+		},
+		{
+			name:     "/64 prefix with suffix",
+			prefix:   "2001:db8:1:2::/64",
+			suffix:   "::1",
+			expected: "2001:db8:1:2::1",
+		},
+		{
+			name:     "/48 prefix preserves high bits only from prefix",
+			prefix:   "2001:db8:abcd::/48",
+			suffix:   "::1234:5678:9abc:def0",
+			expected: "2001:db8:abcd:0:1234:5678:9abc:def0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pfx := netip.MustParsePrefix(tt.prefix)
+			suffixAddr := netip.MustParseAddr(tt.suffix)
+			suffixBytes := suffixAddr.As16()
+
+			result := combinePrefixSuffix(pfx, suffixBytes)
+			expected := netip.MustParseAddr(tt.expected)
+
+			if result != expected {
+				t.Errorf("combinePrefixSuffix(%s, %s) = %s, want %s",
+					tt.prefix, tt.suffix, result, expected)
+			}
+		})
+	}
+}
+
+func TestCalculateSuffixIPs(t *testing.T) {
+	r := &ServiceSyncReconciler{}
+
+	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
+			Transition: &dynamicprefixiov1alpha1.TransitionSpec{
+				Mode:             dynamicprefixiov1alpha1.TransitionModeHA,
+				MaxPrefixHistory: 2,
+			},
+		},
+		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
+			CurrentPrefix: "2001:db8:abcd:100::/56",
+			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
+				{Prefix: "2001:db8:abcd:200::/56"},
+			},
+		},
+	}
+
+	allIPs, currentIP, err := r.calculateSuffixIPs(dp, "::ffff:0:2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if currentIP != "2001:db8:abcd:100:0:ffff:0:2" {
+		t.Errorf("currentIP = %q, want %q", currentIP, "2001:db8:abcd:100:0:ffff:0:2")
+	}
+	if len(allIPs) != 2 {
+		t.Fatalf("allIPs has %d entries, want 2", len(allIPs))
+	}
+	if allIPs[0] != "2001:db8:abcd:100:0:ffff:0:2" {
+		t.Errorf("allIPs[0] = %q, want %q", allIPs[0], "2001:db8:abcd:100:0:ffff:0:2")
+	}
+	if allIPs[1] != "2001:db8:abcd:200:0:ffff:0:2" {
+		t.Errorf("allIPs[1] = %q, want %q", allIPs[1], "2001:db8:abcd:200:0:ffff:0:2")
+	}
+}
+
+func TestCalculateSuffixIPs_NoPrefix(t *testing.T) {
+	r := &ServiceSyncReconciler{}
+
+	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{},
+	}
+
+	_, _, err := r.calculateSuffixIPs(dp, "::ffff:0:2")
+	if err == nil {
+		t.Error("expected error for empty current prefix, got nil")
+	}
+}
+
+func TestCalculateSuffixIPs_InvalidSuffix(t *testing.T) {
+	r := &ServiceSyncReconciler{}
+
+	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
+			CurrentPrefix: "2001:db8::/48",
+		},
+	}
+
+	_, _, err := r.calculateSuffixIPs(dp, "not-an-ip")
+	if err == nil {
+		t.Error("expected error for invalid suffix, got nil")
+	}
+}
+
+func TestCalculateSuffixIPs_MultipleHistory(t *testing.T) {
+	r := &ServiceSyncReconciler{}
+
+	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
+			Transition: &dynamicprefixiov1alpha1.TransitionSpec{
+				Mode:             dynamicprefixiov1alpha1.TransitionModeHA,
+				MaxPrefixHistory: 3,
+			},
+		},
+		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
+			CurrentPrefix: "2001:db8:abcd:100::/56",
+			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
+				{Prefix: "2001:db8:abcd:200::/56"},
+				{Prefix: "2001:db8:abcd:300::/56"},
+				{Prefix: "2001:db8:abcd:400::/56"},
+			},
+		},
+	}
+
+	allIPs, currentIP, err := r.calculateSuffixIPs(dp, "::1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedCurrent := netip.MustParseAddr("2001:db8:abcd:100::1").String()
+	if currentIP != expectedCurrent {
+		t.Errorf("currentIP = %q, want %q", currentIP, expectedCurrent)
+	}
+	if len(allIPs) != 4 {
+		t.Fatalf("allIPs has %d entries, want 4 (1 current + 3 history)", len(allIPs))
+	}
+
+	expectedAll := []string{
+		netip.MustParseAddr("2001:db8:abcd:100::1").String(),
+		netip.MustParseAddr("2001:db8:abcd:200::1").String(),
+		netip.MustParseAddr("2001:db8:abcd:300::1").String(),
+		netip.MustParseAddr("2001:db8:abcd:400::1").String(),
+	}
+	for i, exp := range expectedAll {
+		if allIPs[i] != exp {
+			t.Errorf("allIPs[%d] = %q, want %q", i, allIPs[i], exp)
+		}
+	}
+}
+
+func TestCalculateSuffixIPs_MaxHistoryLimit(t *testing.T) {
+	r := &ServiceSyncReconciler{}
+
+	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
+			Transition: &dynamicprefixiov1alpha1.TransitionSpec{
+				Mode:             dynamicprefixiov1alpha1.TransitionModeHA,
+				MaxPrefixHistory: 1, // Only keep 1 historical prefix
+			},
+		},
+		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
+			CurrentPrefix: "2001:db8:1::/48",
+			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
+				{Prefix: "2001:db8:2::/48"},
+				{Prefix: "2001:db8:3::/48"}, // Should be excluded
+			},
+		},
+	}
+
+	allIPs, _, err := r.calculateSuffixIPs(dp, "::42")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(allIPs) != 2 {
+		t.Fatalf("allIPs has %d entries, want 2 (1 current + 1 history, limit=1)", len(allIPs))
+	}
+
+	expectedSecond := netip.MustParseAddr("2001:db8:2::42").String()
+	if allIPs[1] != expectedSecond {
+		t.Errorf("allIPs[1] = %q, want %q", allIPs[1], expectedSecond)
+	}
+}
+
+func TestCalculateSuffixIPs_DifferentPrefixLengths(t *testing.T) {
+	r := &ServiceSyncReconciler{}
+
+	tests := []struct {
+		name           string
+		prefix         string
+		suffix         string
+		expectedResult string
+	}{
+		{
+			name:           "/48 prefix",
+			prefix:         "2001:db8:abcd::/48",
+			suffix:         "::f000:0:0:1",
+			expectedResult: netip.MustParseAddr("2001:db8:abcd:0:f000:0:0:1").String(),
+		},
+		{
+			name:           "/56 prefix",
+			prefix:         "2001:db8:abcd:100::/56",
+			suffix:         "::f000:0:0:1",
+			expectedResult: netip.MustParseAddr("2001:db8:abcd:100:f000:0:0:1").String(),
+		},
+		{
+			name:           "/64 prefix",
+			prefix:         "2001:db8:1:2::/64",
+			suffix:         "::dead:beef",
+			expectedResult: netip.MustParseAddr("2001:db8:1:2::dead:beef").String(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+				Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
+					CurrentPrefix: tt.prefix,
+				},
+			}
+
+			allIPs, currentIP, err := r.calculateSuffixIPs(dp, tt.suffix)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if currentIP != tt.expectedResult {
+				t.Errorf("currentIP = %q, want %q", currentIP, tt.expectedResult)
+			}
+			if len(allIPs) != 1 {
+				t.Errorf("allIPs has %d entries, want 1 (no history)", len(allIPs))
+			}
+		})
+	}
+}
+
+// TestSuffixAnnotation_EndToEnd tests the full reconcile flow using the suffix
+// annotation with various lbipam.cilium.io/ips scenarios.
+func TestSuffixAnnotation_EndToEnd(t *testing.T) {
+	tests := []struct {
+		name              string
+		annotations       map[string]string // Service annotations
+		existingCiliumIPs string            // Pre-existing lbipam.cilium.io/ips value
+		dpCurrentPrefix   string
+		dpHistory         []string
+		maxHistory        int
+		// Expected results
+		expectUpdate     bool
+		expectCiliumIPs  func(t *testing.T, ips string)
+		expectDNSTarget  func(t *testing.T, target string)
+	}{
+		{
+			name: "suffix with IPv4-only cilium annotation",
+			annotations: map[string]string{
+				AnnotationName:   "my-dp",
+				AnnotationSuffix: "::ffff:0:2",
+			},
+			existingCiliumIPs: "198.51.100.10",
+			dpCurrentPrefix:   "2001:db8:abcd:100::/56",
+			dpHistory:         []string{"2001:db8:abcd:200::/56"},
+			maxHistory:        2,
+			expectUpdate:      true,
+			expectCiliumIPs: func(t *testing.T, ips string) {
+				t.Helper()
+				// IPv4 must be first (preserved)
+				if !strings.HasPrefix(ips, "198.51.100.10,") {
+					t.Errorf("expected IPv4 first, got: %s", ips)
+				}
+				// Must contain current prefix IP
+				currentExpected := netip.MustParseAddr("2001:db8:abcd:100:0:ffff:0:2").String()
+				if !strings.Contains(ips, currentExpected) {
+					t.Errorf("missing current prefix IP %s in: %s", currentExpected, ips)
+				}
+				// Must contain historical prefix IP
+				histExpected := netip.MustParseAddr("2001:db8:abcd:200:0:ffff:0:2").String()
+				if !strings.Contains(ips, histExpected) {
+					t.Errorf("missing historical prefix IP %s in: %s", histExpected, ips)
+				}
+			},
+			expectDNSTarget: func(t *testing.T, target string) {
+				t.Helper()
+				expected := netip.MustParseAddr("2001:db8:abcd:100:0:ffff:0:2").String()
+				if target != expected {
+					t.Errorf("DNS target = %q, want %q", target, expected)
+				}
+			},
+		},
+		{
+			name: "suffix with multiple IPv4 addresses",
+			annotations: map[string]string{
+				AnnotationName:   "my-dp",
+				AnnotationSuffix: "::1",
+			},
+			existingCiliumIPs: "10.0.0.1,192.168.1.100",
+			dpCurrentPrefix:   "2001:db8:1::/48",
+			dpHistory:         nil,
+			maxHistory:        2,
+			expectUpdate:      true,
+			expectCiliumIPs: func(t *testing.T, ips string) {
+				t.Helper()
+				if !strings.HasPrefix(ips, "10.0.0.1,192.168.1.100,") {
+					t.Errorf("expected both IPv4 first, got: %s", ips)
+				}
+				expected := netip.MustParseAddr("2001:db8:1::1").String()
+				if !strings.Contains(ips, expected) {
+					t.Errorf("missing current IP %s in: %s", expected, ips)
+				}
+			},
+			expectDNSTarget: func(t *testing.T, target string) {
+				t.Helper()
+				expected := netip.MustParseAddr("2001:db8:1::1").String()
+				if target != expected {
+					t.Errorf("DNS target = %q, want %q", target, expected)
+				}
+			},
+		},
+		{
+			name: "suffix replaces old managed IPv6 but keeps static IPv6",
+			annotations: map[string]string{
+				AnnotationName:   "my-dp",
+				AnnotationSuffix: "::ffff:0:2",
+			},
+			// Has IPv4, a static IPv6 (fd00::), and an old managed IPv6
+			existingCiliumIPs: "192.168.1.1,fd00::1,2001:db8:abcd:100:0:ffff:0:99",
+			dpCurrentPrefix:   "2001:db8:abcd:100::/56",
+			dpHistory:         nil,
+			maxHistory:        2,
+			expectUpdate:      true,
+			expectCiliumIPs: func(t *testing.T, ips string) {
+				t.Helper()
+				// IPv4 preserved
+				if !strings.Contains(ips, "192.168.1.1") {
+					t.Errorf("missing IPv4 in: %s", ips)
+				}
+				// Static IPv6 preserved
+				if !strings.Contains(ips, "fd00::1") {
+					t.Errorf("missing static IPv6 fd00::1 in: %s", ips)
+				}
+				// Old managed IPv6 should be gone (replaced by suffix-calculated one)
+				if strings.Contains(ips, "ffff:0:99") {
+					t.Errorf("old managed IPv6 should have been replaced in: %s", ips)
+				}
+				// New suffix-calculated IPv6 present
+				expected := netip.MustParseAddr("2001:db8:abcd:100:0:ffff:0:2").String()
+				if !strings.Contains(ips, expected) {
+					t.Errorf("missing suffix-calculated IP %s in: %s", expected, ips)
+				}
+			},
+			expectDNSTarget: nil,
+		},
+		{
+			name: "suffix with empty cilium annotation (first run)",
+			annotations: map[string]string{
+				AnnotationName:   "my-dp",
+				AnnotationSuffix: "::42",
+			},
+			existingCiliumIPs: "",
+			dpCurrentPrefix:   "2001:db8:abcd::/48",
+			dpHistory:         nil,
+			maxHistory:        2,
+			expectUpdate:      true,
+			expectCiliumIPs: func(t *testing.T, ips string) {
+				t.Helper()
+				expected := netip.MustParseAddr("2001:db8:abcd::42").String()
+				if ips != expected {
+					t.Errorf("cilium IPs = %q, want %q", ips, expected)
+				}
+			},
+			expectDNSTarget: func(t *testing.T, target string) {
+				t.Helper()
+				expected := netip.MustParseAddr("2001:db8:abcd::42").String()
+				if target != expected {
+					t.Errorf("DNS target = %q, want %q", target, expected)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Build the DynamicPrefix
+			dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
+					Transition: &dynamicprefixiov1alpha1.TransitionSpec{
+						Mode:             dynamicprefixiov1alpha1.TransitionModeHA,
+						MaxPrefixHistory: tt.maxHistory,
+					},
+				},
+				Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
+					CurrentPrefix: tt.dpCurrentPrefix,
+				},
+			}
+			for _, h := range tt.dpHistory {
+				dp.Status.History = append(dp.Status.History, dynamicprefixiov1alpha1.PrefixHistoryEntry{
+					Prefix: h,
+				})
+			}
+
+			// Calculate suffix IPs
+			suffix := tt.annotations[AnnotationSuffix]
+			r := &ServiceSyncReconciler{}
+			allIPs, currentIP, err := r.calculateSuffixIPs(dp, suffix)
+			if err != nil {
+				t.Fatalf("calculateSuffixIPs failed: %v", err)
+			}
+
+			// Simulate the managed prefix filtering + IP assembly
+			managedPrefixes := collectManagedPrefixes(dp)
+			preservedIPs := extractUnmanagedIPs(tt.existingCiliumIPs, managedPrefixes)
+			finalIPs := append(preservedIPs, allIPs...)
+			finalIPsStr := strings.Join(finalIPs, ",")
+
+			if tt.expectCiliumIPs != nil {
+				tt.expectCiliumIPs(t, finalIPsStr)
+			}
+			if tt.expectDNSTarget != nil {
+				tt.expectDNSTarget(t, currentIP)
+			}
+		})
+	}
+}
+
+// TestSuffixAnnotation_RequiresName verifies that without dynamic-prefix.io/name,
+// the suffix annotation has no effect (Reconcile short-circuits).
+func TestSuffixAnnotation_RequiresName(t *testing.T) {
+	if AnnotationName != "dynamic-prefix.io/name" {
+		t.Fatalf("AnnotationName = %q, expected %q", AnnotationName, "dynamic-prefix.io/name")
+	}
+	if AnnotationSuffix != "dynamic-prefix.io/suffix" {
+		t.Fatalf("AnnotationSuffix = %q, expected %q", AnnotationSuffix, "dynamic-prefix.io/suffix")
 	}
 }
