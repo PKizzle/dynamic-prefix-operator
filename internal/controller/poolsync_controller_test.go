@@ -510,3 +510,182 @@ func TestCollectManagedPrefixes(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// Battle tests: invalid, malformed, and edge-case input for pool helpers
+// =============================================================================
+
+func TestIsManagedBlock_MalformedInput(t *testing.T) {
+	managedPrefixes := []netip.Prefix{
+		netip.MustParsePrefix("2001:db8::/32"),
+	}
+
+	tests := []struct {
+		name     string
+		block    map[string]interface{}
+		expected bool
+	}{
+		{
+			name:     "garbage CIDR string",
+			block:    map[string]interface{}{"cidr": "not-a-cidr"},
+			expected: false,
+		},
+		{
+			name:     "bare address in CIDR field (no /nn)",
+			block:    map[string]interface{}{"cidr": "2001:db8::1"},
+			expected: false, // ParsePrefix fails
+		},
+		{
+			name:     "garbage start address",
+			block:    map[string]interface{}{"start": "garbage", "stop": "2001:db8::ff"},
+			expected: false,
+		},
+		{
+			name:     "numeric value in CIDR field (wrong type)",
+			block:    map[string]interface{}{"cidr": 12345},
+			expected: false,
+		},
+		{
+			name:     "nil value in CIDR field",
+			block:    map[string]interface{}{"cidr": nil},
+			expected: false,
+		},
+		{
+			name:     "empty CIDR string",
+			block:    map[string]interface{}{"cidr": ""},
+			expected: false,
+		},
+		{
+			name:     "empty start string",
+			block:    map[string]interface{}{"start": "", "stop": "2001:db8::ff"},
+			expected: false,
+		},
+		{
+			name:     "only stop field (no start or cidr)",
+			block:    map[string]interface{}{"stop": "2001:db8::ff"},
+			expected: false,
+		},
+		{
+			name:     "IPv4 CIDR string in managed IPv6 context",
+			block:    map[string]interface{}{"cidr": "10.0.0.0/8"},
+			expected: false,
+		},
+		{
+			name:     "nil managed prefixes — nothing is managed",
+			block:    map[string]interface{}{"cidr": "2001:db8::/48"},
+			expected: false, // tested with nil below
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefixes := managedPrefixes
+			if tt.name == "nil managed prefixes — nothing is managed" {
+				prefixes = nil
+			}
+			result := isManagedBlock(tt.block, prefixes)
+			if result != tt.expected {
+				t.Errorf("isManagedBlock(%v) = %v, want %v", tt.block, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsIPv4Block_MalformedInput(t *testing.T) {
+	tests := []struct {
+		name     string
+		block    map[string]interface{}
+		expected bool
+	}{
+		{
+			name:     "garbage CIDR",
+			block:    map[string]interface{}{"cidr": "not-a-cidr"},
+			expected: false,
+		},
+		{
+			name:     "numeric CIDR (wrong type)",
+			block:    map[string]interface{}{"cidr": 42},
+			expected: false,
+		},
+		{
+			name:     "nil block values",
+			block:    map[string]interface{}{"cidr": nil, "start": nil, "stop": nil},
+			expected: false,
+		},
+		{
+			name:     "empty strings everywhere",
+			block:    map[string]interface{}{"cidr": "", "start": "", "stop": ""},
+			expected: false,
+		},
+		{
+			name:     "IPv4 with port in start field",
+			block:    map[string]interface{}{"start": "192.168.1.1:80"},
+			expected: false, // ParseAddr fails
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isIPv4Block(tt.block)
+			if result != tt.expected {
+				t.Errorf("isIPv4Block(%v) = %v, want %v", tt.block, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsPrefixManaged_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		prefix   string
+		managed  []netip.Prefix
+		expected bool
+	}{
+		{
+			name:     "nil managed list",
+			prefix:   "2001:db8::/48",
+			managed:  nil,
+			expected: false,
+		},
+		{
+			name:     "empty managed list",
+			prefix:   "2001:db8::/48",
+			managed:  []netip.Prefix{},
+			expected: false,
+		},
+		{
+			name:    "exact same prefix",
+			prefix:  "2001:db8::/48",
+			managed: []netip.Prefix{netip.MustParsePrefix("2001:db8::/48")},
+			expected: true,
+		},
+		{
+			name:    "child prefix inside managed parent",
+			prefix:  "2001:db8:1::/64",
+			managed: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")},
+			expected: true,
+		},
+		{
+			name:    "parent prefix containing managed child",
+			prefix:  "2001:db8::/32",
+			managed: []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/48")},
+			expected: true, // overlap: managed.Addr() is in prefix
+		},
+		{
+			name:    "completely disjoint",
+			prefix:  "fd00::/64",
+			managed: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := netip.MustParsePrefix(tt.prefix)
+			result := isPrefixManaged(p, tt.managed)
+			if result != tt.expected {
+				t.Errorf("isPrefixManaged(%s) = %v, want %v", tt.prefix, result, tt.expected)
+			}
+		})
+	}
+}
