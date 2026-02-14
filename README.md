@@ -196,8 +196,37 @@ spec:
 4. Old connections continue working (both IPs active on Service)
 5. New clients connect to new IP via DNS
 
+**Static suffix annotation (recommended for dual-stack):**
+
+Instead of relying on the Service's dynamically assigned IP to infer the host part, you can declare a static suffix. The operator combines it with each prefix to produce deterministic IPs:
+
+```yaml
+# HA Mode with static suffix (preferred for dual-stack):
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+  annotations:
+    dynamic-prefix.io/name: home-ipv6
+    dynamic-prefix.io/suffix: "::ffff:0:2"        # Static host part
+    lbipam.cilium.io/ips: "198.51.100.10"         # IPv4 only — operator adds IPv6
+spec:
+  type: LoadBalancer
+```
+
+After reconciliation, the annotations become:
+
 ```yaml
 # HA Mode result on Service:
+annotations:
+  lbipam.cilium.io/ips: "198.51.100.10,2001:db8:new::ffff:0:2,2001:db8:old::ffff:0:2"
+  external-dns.alpha.kubernetes.io/target: "2001:db8:new::ffff:0:2"  # DNS → new only
+```
+
+The operator preserves all IPv4 addresses and any static IPv6 addresses (i.e., addresses outside the managed dynamic prefixes) in the annotation.
+
+```yaml
+# HA Mode result without suffix (dynamically assigned — inferred from Cilium-assigned IP):
 annotations:
   lbipam.cilium.io/ips: "2001:db8:new::1,2001:db8:old::1"  # Both IPs active
   external-dns.alpha.kubernetes.io/target: "2001:db8:new::1"  # DNS → new only
@@ -208,7 +237,8 @@ annotations:
 | Annotation | Description |
 |------------|-------------|
 | `dynamic-prefix.io/name` | Name of the DynamicPrefix CR (required) |
-| `dynamic-prefix.io/service-address-range` | Which address range for IP calculation |
+| `dynamic-prefix.io/suffix` | Static IPv6 suffix (e.g., `::ffff:0:2`). Preferred for dual-stack setups — operator calculates full IPv6 from prefix + suffix |
+| `dynamic-prefix.io/service-address-range` | Which address range for IP calculation (legacy mode) |
 
 ## Supported Annotations
 
@@ -218,6 +248,15 @@ Add these annotations to Cilium resources to have them managed by the operator:
 |------------|-------------|
 | `dynamic-prefix.io/name` | Name of the DynamicPrefix CR to reference |
 | `dynamic-prefix.io/address-range` | Name of the address range to use |
+
+Add these annotations to LoadBalancer Services for HA mode:
+
+| Annotation | Description |
+|------------|-------------|
+| `dynamic-prefix.io/name` | Name of the DynamicPrefix CR (required) |
+| `dynamic-prefix.io/suffix` | Static IPv6 suffix — operator manages IPv6, preserves IPv4 |
+| `dynamic-prefix.io/service-address-range` | Address range for dynamically assigned IP offset calculation |
+| `dynamic-prefix.io/service-subnet` | Subnet for dynamically assigned IP offset calculation |
 
 ## Supported Resources
 
@@ -298,6 +337,7 @@ When your ISP changes your prefix:
 - DNS target annotation ensures new clients get the new IP
 - Old connections continue working until they naturally close
 - Zero-downtime for properly configured setups
+- **IPv4 addresses and static IPv6 are preserved** in dual-stack annotations
 
 **Recommendations**:
 - Use short DNS TTLs (60-300s) so clients get new IPs quickly
@@ -314,6 +354,8 @@ When your ISP changes your prefix:
 - [x] Cilium CIDRGroup integration
 - [x] Graceful prefix transitions (simple mode)
 - [x] HA mode with multi-IP Services and DNS targeting
+- [x] Suffix annotation for declarative dual-stack IP management
+- [x] Dual-stack IP preservation (IPv4 + static IPv6 untouched)
 - [ ] Subnet mode with BGP (carve /64s from larger prefix)
 - [ ] DHCPv6-PD client (act as PD client)
 - [ ] Calico IPPool backend
