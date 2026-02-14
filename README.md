@@ -208,8 +208,9 @@ metadata:
   name: my-service
   annotations:
     dynamic-prefix.io/name: home-ipv6
-    dynamic-prefix.io/suffix: "::ffff:0:2"        # Static host part
-    lbipam.cilium.io/ips: "198.51.100.10"         # IPv4 only — operator adds IPv6
+    dynamic-prefix.io/suffix: "::ffff:0:1"          # Static host part
+    lbipam.cilium.io/ips: "198.51.100.10"           # IPv4 only — operator adds IPv6
+    external-dns.alpha.kubernetes.io/target: "example.com"  # Hostname for IPv4 NAT
 spec:
   type: LoadBalancer
 ```
@@ -220,17 +221,21 @@ After reconciliation, the annotations become:
 # HA Mode result on Service:
 annotations:
   lbipam.cilium.io/ips: "198.51.100.10,2001:db8:new::ffff:0:2,2001:db8:old::ffff:0:2"
-  external-dns.alpha.kubernetes.io/target: "2001:db8:new::ffff:0:2"  # DNS → new only
+  external-dns.alpha.kubernetes.io/target: "example.com,2001:db8:new::ffff:0:2"
 ```
 
-The operator preserves all IPv4 addresses and any static IPv6 addresses (i.e., addresses outside the managed dynamic prefixes) in the annotation.
+The operator preserves all non-managed entries in both annotations:
+- **`lbipam.cilium.io/ips`**: IPv4 addresses and static IPv6 are preserved; managed IPv6 (current + historical) is appended
+- **`external-dns.alpha.kubernetes.io/target`**: Hostnames, IPv4 addresses, and static IPv6 are preserved; only the current IPv6 is appended (DNS should point to the new prefix)
 
 ```yaml
 # HA Mode result without suffix (dynamically assigned — inferred from Cilium-assigned IP):
 annotations:
-  lbipam.cilium.io/ips: "2001:db8:new::1,2001:db8:old::1"  # Both IPs active
-  external-dns.alpha.kubernetes.io/target: "2001:db8:new::1"  # DNS → new only
+  lbipam.cilium.io/ips: "2001:db8:new::1,2001:db8:old::1"     # Both IPs active
+  external-dns.alpha.kubernetes.io/target: "2001:db8:new::1"   # DNS → new only
 ```
+
+> **Dual-stack NAT tip**: If you use NAT for IPv4 (shared public IP for all services), set a hostname like `example.com` as the initial `external-dns.alpha.kubernetes.io/target`. The operator will preserve it and append the per-service IPv6 address, producing both a CNAME/A record (via the hostname) and an AAAA record.
 
 ### Annotations for HA Mode Services
 
@@ -324,7 +329,7 @@ When your ISP changes your prefix:
 1. **Detection**: The RA receiver detects the new prefix within seconds
 2. **Status Update**: DynamicPrefix status is updated with new prefix and calculated ranges
 3. **Pool Sync**: All annotated Cilium pools are updated with both old and new blocks
-4. **Service Sync** (HA mode): Services get both IPs, DNS points to new IP only
+4. **Service Sync** (HA mode): Services get both IPs, DNS target updated with current IPv6 (preserving hostnames/IPv4)
 5. **DNS Update**: external-dns updates records based on Service IPs or target override
 
 ### Simple Mode (Default)
@@ -337,7 +342,7 @@ When your ISP changes your prefix:
 - DNS target annotation ensures new clients get the new IP
 - Old connections continue working until they naturally close
 - Zero-downtime for properly configured setups
-- **IPv4 addresses and static IPv6 are preserved** in dual-stack annotations
+- **Non-managed entries preserved in both annotations** — hostnames, IPv4, and static IPv6 are never disturbed
 
 **Recommendations**:
 - Use short DNS TTLs (60-300s) so clients get new IPs quickly

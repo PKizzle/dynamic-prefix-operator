@@ -224,6 +224,49 @@ var _ = Describe("ServiceSync Controller", func() {
 			// IPv4 should come first
 			Expect(ipsAnnotation).To(HavePrefix("198.51.100.10,"))
 		})
+
+		It("should preserve hostname in external-dns target annotation", func() {
+			// Set existing DNS target with hostname (for NAT IPv4) + managed IPv6
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      serviceName,
+				Namespace: serviceNS,
+			}, svc)).To(Succeed())
+
+			annotations := svc.GetAnnotations()
+			annotations[AnnotationCiliumIPs] = "198.51.100.10," + currentIP
+			annotations[AnnotationExternalDNSTarget] = "example.com," + currentIP
+			svc.SetAnnotations(annotations)
+			Expect(k8sClient.Update(ctx, svc)).To(Succeed())
+
+			reconciler := &ServiceSyncReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      serviceName,
+					Namespace: serviceNS,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Fetch updated Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      serviceName,
+				Namespace: serviceNS,
+			}, svc)).To(Succeed())
+
+			dnsTarget := svc.GetAnnotations()[AnnotationExternalDNSTarget]
+
+			// Hostname must be preserved
+			Expect(dnsTarget).To(ContainSubstring("example.com"))
+			// Hostname should come first
+			Expect(dnsTarget).To(HavePrefix("example.com,"))
+			// Current IPv6 must be present
+			Expect(dnsTarget).To(ContainSubstring(currentIP))
+		})
 	})
 
 	Context("When reconciling a Service in simple mode", func() {
@@ -792,12 +835,13 @@ func TestCalculateSuffixIPs_DifferentPrefixLengths(t *testing.T) {
 }
 
 // TestSuffixAnnotation_EndToEnd tests the full reconcile flow using the suffix
-// annotation with various lbipam.cilium.io/ips scenarios.
+// annotation with various lbipam.cilium.io/ips and external-dns target scenarios.
 func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 	tests := []struct {
 		name              string
 		annotations       map[string]string // Service annotations
 		existingCiliumIPs string            // Pre-existing lbipam.cilium.io/ips value
+		existingDNSTarget string            // Pre-existing external-dns target value
 		dpCurrentPrefix   string
 		dpHistory         []string
 		maxHistory        int
@@ -931,6 +975,123 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "dual-stack: hostname DNS target preserved with IPv6",
+			annotations: map[string]string{
+				AnnotationName:   "my-dp",
+				AnnotationSuffix: "::ffff:0:2",
+			},
+			existingCiliumIPs: "198.51.100.10",
+			existingDNSTarget: "example.com",
+			dpCurrentPrefix:   "2001:db8:abcd:100::/56",
+			dpHistory:         []string{"2001:db8:abcd:200::/56"},
+			maxHistory:        2,
+			expectUpdate:      true,
+			expectCiliumIPs:   nil,
+			expectDNSTarget: func(t *testing.T, target string) {
+				t.Helper()
+				// Hostname must be preserved at front
+				if !strings.HasPrefix(target, "example.com,") {
+					t.Errorf("expected hostname first, got: %s", target)
+				}
+				// Current IPv6 must be present
+				currentExpected := netip.MustParseAddr("2001:db8:abcd:100:0:ffff:0:2").String()
+				if !strings.Contains(target, currentExpected) {
+					t.Errorf("missing current IPv6 %s in: %s", currentExpected, target)
+				}
+				// Historical IPv6 must NOT be in DNS target (only current)
+				histExpected := netip.MustParseAddr("2001:db8:abcd:200:0:ffff:0:2").String()
+				if strings.Contains(target, histExpected) {
+					t.Errorf("DNS target should not contain historical IP %s: %s", histExpected, target)
+				}
+			},
+		},
+		{
+			name: "dual-stack: hostname + old managed IPv6 in target gets rotated",
+			annotations: map[string]string{
+				AnnotationName:   "my-dp",
+				AnnotationSuffix: "::ffff:0:2",
+			},
+			existingCiliumIPs: "198.51.100.10",
+			// Target has hostname + stale IPv6 from old prefix
+			existingDNSTarget: "example.com,2001:db8:abcd:200:0:ffff:0:2",
+			dpCurrentPrefix:   "2001:db8:abcd:100::/56",
+			dpHistory:         []string{"2001:db8:abcd:200::/56"},
+			maxHistory:        2,
+			expectUpdate:      true,
+			expectCiliumIPs:   nil,
+			expectDNSTarget: func(t *testing.T, target string) {
+				t.Helper()
+				// Hostname preserved
+				if !strings.HasPrefix(target, "example.com,") {
+					t.Errorf("expected hostname first, got: %s", target)
+				}
+				// Old managed IPv6 must be removed
+				oldIP := netip.MustParseAddr("2001:db8:abcd:200:0:ffff:0:2").String()
+				parts := strings.Split(target, ",")
+				count := 0
+				for _, p := range parts {
+					if p == oldIP {
+						count++
+					}
+				}
+				if count > 0 {
+					t.Errorf("old managed IPv6 should be removed from DNS target: %s", target)
+				}
+				// New current IPv6 must be present
+				newIP := netip.MustParseAddr("2001:db8:abcd:100:0:ffff:0:2").String()
+				if !strings.Contains(target, newIP) {
+					t.Errorf("missing current IPv6 %s in: %s", newIP, target)
+				}
+			},
+		},
+		{
+			name: "dual-stack: IPv4 address in DNS target preserved",
+			annotations: map[string]string{
+				AnnotationName:   "my-dp",
+				AnnotationSuffix: "::1",
+			},
+			existingCiliumIPs: "10.0.0.1",
+			existingDNSTarget: "203.0.113.1",
+			dpCurrentPrefix:   "2001:db8:1::/48",
+			dpHistory:         nil,
+			maxHistory:        2,
+			expectUpdate:      true,
+			expectCiliumIPs:   nil,
+			expectDNSTarget: func(t *testing.T, target string) {
+				t.Helper()
+				// IPv4 preserved at front
+				if !strings.HasPrefix(target, "203.0.113.1,") {
+					t.Errorf("expected IPv4 first, got: %s", target)
+				}
+				// Current IPv6 present
+				expected := netip.MustParseAddr("2001:db8:1::1").String()
+				if !strings.Contains(target, expected) {
+					t.Errorf("missing current IPv6 %s in: %s", expected, target)
+				}
+			},
+		},
+		{
+			name: "empty DNS target (first run)",
+			annotations: map[string]string{
+				AnnotationName:   "my-dp",
+				AnnotationSuffix: "::ffff:0:2",
+			},
+			existingCiliumIPs: "",
+			existingDNSTarget: "",
+			dpCurrentPrefix:   "2001:db8:abcd:100::/56",
+			dpHistory:         nil,
+			maxHistory:        2,
+			expectUpdate:      true,
+			expectCiliumIPs:   nil,
+			expectDNSTarget: func(t *testing.T, target string) {
+				t.Helper()
+				expected := netip.MustParseAddr("2001:db8:abcd:100:0:ffff:0:2").String()
+				if target != expected {
+					t.Errorf("DNS target = %q, want %q", target, expected)
+				}
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -967,11 +1128,16 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 			finalIPs := append(preservedIPs, allIPs...)
 			finalIPsStr := strings.Join(finalIPs, ",")
 
+			// Simulate DNS target preservation (same logic as Reconcile)
+			preservedTargets := extractUnmanagedIPs(tt.existingDNSTarget, managedPrefixes)
+			finalTargets := append(preservedTargets, currentIP)
+			finalTargetStr := strings.Join(finalTargets, ",")
+
 			if tt.expectCiliumIPs != nil {
 				tt.expectCiliumIPs(t, finalIPsStr)
 			}
 			if tt.expectDNSTarget != nil {
-				tt.expectDNSTarget(t, currentIP)
+				tt.expectDNSTarget(t, finalTargetStr)
 			}
 		})
 	}

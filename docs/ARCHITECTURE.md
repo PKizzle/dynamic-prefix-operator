@@ -184,8 +184,8 @@ This follows the [1Password Operator](https://github.com/1Password/onepassword-o
 - Watches LoadBalancer Services with `dynamic-prefix.io/name` annotation
 - Only active when DynamicPrefix has `transition.mode: ha`
 - Sets `lbipam.cilium.io/ips` with all active IPs (current + historical)
-- Sets `external-dns.alpha.kubernetes.io/target` with current IP only
-- Preserves non-managed IPs (IPv4, static IPv6 outside dynamic prefixes) in dual-stack setups
+- Sets `external-dns.alpha.kubernetes.io/target` with current IPv6 only (preserving non-managed entries)
+- Preserves non-managed entries (hostnames, IPv4, static IPv6) in both annotations for dual-stack setups
 
 **IP Calculation Modes:**
 
@@ -195,15 +195,16 @@ The controller supports two ways to determine which IPv6 addresses to assign:
 
 2. **Dynamically assigned:** Without a suffix annotation, the controller reads the Service's currently assigned IPv6 from `status.loadBalancer.ingress` (dynamically assigned by Cilium LB-IPAM), calculates an offset within the address range, and applies that offset to historical prefixes.
 
-**Dual-Stack IP Preservation:**
+**Dual-Stack Annotation Preservation:**
 
-When updating `lbipam.cilium.io/ips`, the controller:
+Both `lbipam.cilium.io/ips` and `external-dns.alpha.kubernetes.io/target` use the same preservation logic:
 1. Collects all managed prefixes (current + historical) via `collectManagedPrefixes()`
-2. Calls `extractUnmanagedIPs()` to identify IPv4 addresses and static IPv6 addresses that are *not* within any managed prefix
-3. Preserves those unmanaged IPs at the front of the annotation
-4. Appends the calculated IPv6 addresses (current prefix first, then historical)
+2. Calls `extractUnmanagedIPs()` to identify entries that are *not* managed IPv6 — this includes hostnames, IPv4 addresses, and static IPv6 addresses outside any managed prefix
+3. Preserves those unmanaged entries at the front of the annotation
+4. For `lbipam.cilium.io/ips`: appends all calculated IPv6 addresses (current + historical)
+5. For `external-dns.alpha.kubernetes.io/target`: appends only the current IPv6 (DNS should point to the new prefix)
 
-This ensures dual-stack Services keep their IPv4 addresses untouched while the operator manages only the dynamic IPv6 portion.
+This supports dual-stack NAT setups where IPv4 uses a hostname (e.g., `example.com`) pointing to the router's public IP via NAT, while IPv6 uses direct per-service addresses that rotate with prefix changes.
 
 **How HA Mode Works:**
 
@@ -216,14 +217,16 @@ metadata:
 ```
 
 ```yaml
-# Dual-stack with suffix annotation:
+# Dual-stack with suffix annotation and hostname for IPv4 NAT:
 metadata:
   annotations:
     dynamic-prefix.io/name: home-ipv6
     dynamic-prefix.io/suffix: "::ffff:0:2"
-    lbipam.cilium.io/ips: "198.51.100.10,2001:db8:abcd:100::ffff:0:2,2001:db8:abcd:200::ffff:0:2"
-    external-dns.alpha.kubernetes.io/target: "2001:db8:abcd:100::ffff:0:2"
+    lbipam.cilium.io/ips: "198.51.100.10,2001:db8:B::1,2001:db8:A::1"
+    external-dns.alpha.kubernetes.io/target: "example.com,2001:db8:B::1"
 ```
+
+The hostname `example.com` is preserved across prefix changes — only the IPv6 portion is rotated.
 
 **Benefits:**
 - Zero-downtime during prefix transitions
@@ -280,10 +283,10 @@ metadata:
 5. Calculates IPv6 addresses:
    a. Static suffix: combines suffix with current + historical prefixes
    b. Dynamically assigned: infers offset from Cilium-assigned IP
-6. Preserves unmanaged IPs (IPv4, static IPv6) via extractUnmanagedIPs()
+6. Preserves unmanaged entries (hostnames, IPv4, static IPv6) via extractUnmanagedIPs()
 7. Sets lbipam.cilium.io/ips = "ipv4,new-ipv6,old-ipv6"
-8. Sets external-dns.alpha.kubernetes.io/target = "new-ipv6"
-9. Service now has all IPs, DNS points to new IPv6 only
+8. Sets external-dns.alpha.kubernetes.io/target = "hostname,new-ipv6"
+9. Service now has all IPs, DNS points to hostname + new IPv6 only
 10. Old connections work, new clients get new IP via DNS
 ```
 

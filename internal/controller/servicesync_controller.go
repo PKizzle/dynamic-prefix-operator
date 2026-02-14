@@ -170,9 +170,17 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		updated = true
 	}
 
-	// Set external-dns target to current IPv6 only
-	if annotations[AnnotationExternalDNSTarget] != currentIP {
-		newAnnotations[AnnotationExternalDNSTarget] = currentIP
+	// Set external-dns target: preserve non-managed entries (hostnames, IPv4,
+	// static IPv6) and set only the current IPv6 as the managed target.
+	// This supports dual-stack NAT setups where IPv4 is a hostname (e.g.,
+	// "example.com") pointing to the router's public IPv4 via NAT, while IPv6
+	// uses direct per-service addresses that change with prefix rotation.
+	existingTarget := annotations[AnnotationExternalDNSTarget]
+	preservedTargets := extractUnmanagedIPs(existingTarget, managedPrefixes)
+	finalTargets := append(preservedTargets, currentIP)
+	finalTargetStr := strings.Join(finalTargets, ",")
+	if annotations[AnnotationExternalDNSTarget] != finalTargetStr {
+		newAnnotations[AnnotationExternalDNSTarget] = finalTargetStr
 		updated = true
 	}
 
@@ -186,7 +194,7 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		log.Info("Service annotations updated", "service", req.NamespacedName,
-			"allIPs", finalIPsStr, "dnsTarget", currentIP,
+			"allIPs", finalIPsStr, "dnsTarget", finalTargetStr,
 			"preservedCount", len(preservedIPs), "managedCount", len(allIPs))
 	}
 
