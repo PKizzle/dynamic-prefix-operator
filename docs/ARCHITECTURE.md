@@ -204,7 +204,7 @@ Both `lbipam.cilium.io/ips` and `external-dns.alpha.kubernetes.io/target` use th
 4. For `lbipam.cilium.io/ips`: appends all calculated IPv6 addresses (current + historical)
 5. For `external-dns.alpha.kubernetes.io/target`: appends only the current IPv6 (DNS should point to the new prefix)
 
-This supports dual-stack NAT setups where IPv4 uses a hostname (e.g., `example.com`) pointing to the router's public IP via NAT, while IPv6 uses direct per-service addresses that rotate with prefix changes.
+**Important**: While the operator preserves hostnames in the target annotation, external-dns will discard CNAME records when they conflict with A/AAAA records (per RFC 1034 §3.6.2). External-DNS logs: "Domain X contains conflicting record type candidates; discarding CNAME record". For dual-stack setups with NAT IPv4, manage A records separately (e.g., via ddns-updater) and configure external-dns to only manage AAAA records.
 
 **How HA Mode Works:**
 
@@ -217,16 +217,16 @@ metadata:
 ```
 
 ```yaml
-# Dual-stack with suffix annotation and hostname for IPv4 NAT:
+# Dual-stack with suffix annotation:
 metadata:
   annotations:
     dynamic-prefix.io/name: home-ipv6
     dynamic-prefix.io/suffix: "::ffff:0:2"
     lbipam.cilium.io/ips: "198.51.100.10,2001:db8:B::1,2001:db8:A::1"
-    external-dns.alpha.kubernetes.io/target: "example.com,2001:db8:B::1"
+    external-dns.alpha.kubernetes.io/target: "2001:db8:B::1"
 ```
 
-The hostname `example.com` is preserved across prefix changes — only the IPv6 portion is rotated.
+The operator rotates only the managed IPv6 addresses. IPv4 addresses and static IPv6 are preserved in both annotations. Note that hostnames are preserved but will be discarded by external-dns due to CNAME/A/AAAA conflicts.
 
 **Benefits:**
 - Zero-downtime during prefix transitions
