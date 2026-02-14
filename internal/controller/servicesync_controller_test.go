@@ -802,9 +802,9 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 		dpHistory         []string
 		maxHistory        int
 		// Expected results
-		expectUpdate     bool
-		expectCiliumIPs  func(t *testing.T, ips string)
-		expectDNSTarget  func(t *testing.T, target string)
+		expectUpdate    bool
+		expectCiliumIPs func(t *testing.T, ips string)
+		expectDNSTarget func(t *testing.T, target string)
 	}{
 		{
 			name: "suffix with IPv4-only cilium annotation",
@@ -1129,11 +1129,11 @@ func TestCalculateSuffixIPs_MalformedHistorySkipped(t *testing.T) {
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
 			CurrentPrefix: "2001:db8::/48",
 			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
-				{Prefix: "2001:db8:1::/48"},             // valid
-				{Prefix: "garbage"},                      // invalid — should be skipped
-				{Prefix: ""},                             // empty — should be skipped
-				{Prefix: "2001:db8::1"},                  // bare addr without /nn — invalid
-				{Prefix: "2001:db8:2::/48"},              // valid
+				{Prefix: "2001:db8:1::/48"}, // valid
+				{Prefix: "garbage"},         // invalid — should be skipped
+				{Prefix: ""},                // empty — should be skipped
+				{Prefix: "2001:db8::1"},     // bare addr without /nn — invalid
+				{Prefix: "2001:db8:2::/48"}, // valid
 			},
 		},
 	}
