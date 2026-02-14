@@ -19,6 +19,9 @@ CONTAINER_TOOL ?= docker
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
+# Define space for path escaping
+space := $(subst ,, )
+
 .PHONY: all
 all: build
 
@@ -185,7 +188,9 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 ## Location to install dependencies to
 LOCALBIN ?= $(shell pwd)/bin
-$(LOCALBIN):
+# Escape spaces in LOCALBIN
+LOCALBIN_ESC = $(subst $(space),\ ,$(LOCALBIN))
+$(LOCALBIN_ESC):
 	mkdir -p "$(LOCALBIN)"
 
 ## Tool Binaries
@@ -195,6 +200,12 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+
+# Escape spaces in tool paths
+KUSTOMIZE_ESC = $(subst $(space),\ ,$(KUSTOMIZE))
+CONTROLLER_GEN_ESC = $(subst $(space),\ ,$(CONTROLLER_GEN))
+ENVTEST_ESC = $(subst $(space),\ ,$(ENVTEST))
+GOLANGCI_LINT_ESC = $(subst $(space),\ ,$(GOLANGCI_LINT))
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.7.1
@@ -212,13 +223,13 @@ ENVTEST_K8S_VERSION ?= $(shell v='$(call gomodver,k8s.io/api)'; \
 
 GOLANGCI_LINT_VERSION ?= v2.5.0
 .PHONY: kustomize
-kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
-$(KUSTOMIZE): $(LOCALBIN)
+kustomize: $(KUSTOMIZE_ESC) ## Download kustomize locally if necessary.
+$(KUSTOMIZE_ESC): $(LOCALBIN_ESC)
 	$(call go-install-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v5,$(KUSTOMIZE_VERSION))
 
 .PHONY: controller-gen
-controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
-$(CONTROLLER_GEN): $(LOCALBIN)
+controller-gen: $(CONTROLLER_GEN_ESC) ## Download controller-gen locally if necessary.
+$(CONTROLLER_GEN_ESC): $(LOCALBIN_ESC)
 	$(call go-install-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_TOOLS_VERSION))
 
 .PHONY: setup-envtest
@@ -230,13 +241,13 @@ setup-envtest: envtest ## Download the binaries required for ENVTEST in the loca
 	}
 
 .PHONY: envtest
-envtest: $(ENVTEST) ## Download setup-envtest locally if necessary.
-$(ENVTEST): $(LOCALBIN)
+envtest: $(ENVTEST_ESC) ## Download setup-envtest locally if necessary.
+$(ENVTEST_ESC): $(LOCALBIN_ESC)
 	$(call go-install-tool,$(ENVTEST),sigs.k8s.io/controller-runtime/tools/setup-envtest,$(ENVTEST_VERSION))
 
 .PHONY: golangci-lint
-golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
-$(GOLANGCI_LINT): $(LOCALBIN)
+golangci-lint: $(GOLANGCI_LINT_ESC) ## Download golangci-lint locally if necessary.
+$(GOLANGCI_LINT_ESC): $(LOCALBIN_ESC)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
