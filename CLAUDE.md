@@ -35,7 +35,7 @@ make test-e2e         # Run e2e tests with Kind cluster
 
 5. **PoolSyncReconciler** (`internal/controller/poolsync_controller.go`): Syncs annotated Cilium pools with calculated address ranges. Supports multi-block mode for graceful transitions, keeping blocks for current prefix plus historical prefixes.
 
-6. **ServiceSyncReconciler** (`internal/controller/servicesync_controller.go`): HA mode controller that manages LoadBalancer Services. Sets `lbipam.cilium.io/ips` for multi-IP assignment and `external-dns.alpha.kubernetes.io/target` for DNS targeting. Supports two IP calculation modes: **static suffix** (explicit `dynamic-prefix.io/suffix` annotation, preferred for dual-stack) and **dynamically assigned** (inferred from Cilium-assigned IP). Preserves IPv4 and static IPv6 addresses in dual-stack annotations via `extractUnmanagedIPs()`.
+6. **ServiceSyncReconciler** (`internal/controller/servicesync_controller.go`): HA mode controller that manages LoadBalancer Services. Sets `lbipam.cilium.io/ips` for multi-IP assignment and `external-dns.alpha.kubernetes.io/target` for DNS targeting. Supports two IP calculation modes: **static suffix** (explicit `dynamic-prefix.io/suffix` annotation, preferred for dual-stack) and **dynamically assigned** (inferred from Cilium-assigned IP). Preserves non-managed entries (hostnames, IPv4, static IPv6) in both annotations via `extractUnmanagedIPs()`, supporting dual-stack NAT setups where IPv4 uses a hostname and IPv6 uses direct addresses.
 
 ### Data Flow
 
