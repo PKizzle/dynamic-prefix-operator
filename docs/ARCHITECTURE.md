@@ -185,6 +185,25 @@ This follows the [1Password Operator](https://github.com/1Password/onepassword-o
 - Only active when DynamicPrefix has `transition.mode: ha`
 - Sets `lbipam.cilium.io/ips` with all active IPs (current + historical)
 - Sets `external-dns.alpha.kubernetes.io/target` with current IP only
+- Preserves non-managed IPs (IPv4, static IPv6 outside dynamic prefixes) in dual-stack setups
+
+**IP Calculation Modes:**
+
+The controller supports two ways to determine which IPv6 addresses to assign:
+
+1. **Static suffix:** When the `dynamic-prefix.io/suffix` annotation is set (e.g., `::ffff:0:2`), the controller combines this suffix with the current and historical prefixes using `combinePrefixSuffix()`. This is deterministic and does not require waiting for Cilium to assign an IP first.
+
+2. **Dynamically assigned:** Without a suffix annotation, the controller reads the Service's currently assigned IPv6 from `status.loadBalancer.ingress` (dynamically assigned by Cilium LB-IPAM), calculates an offset within the address range, and applies that offset to historical prefixes.
+
+**Dual-Stack IP Preservation:**
+
+When updating `lbipam.cilium.io/ips`, the controller:
+1. Collects all managed prefixes (current + historical) via `collectManagedPrefixes()`
+2. Calls `extractUnmanagedIPs()` to identify IPv4 addresses and static IPv6 addresses that are *not* within any managed prefix
+3. Preserves those unmanaged IPs at the front of the annotation
+4. Appends the calculated IPv6 addresses (current prefix first, then historical)
+
+This ensures dual-stack Services keep their IPv4 addresses untouched while the operator manages only the dynamic IPv6 portion.
 
 **How HA Mode Works:**
 
@@ -196,11 +215,22 @@ metadata:
     external-dns.alpha.kubernetes.io/target: "2001:db8:B::1"  # New IP only
 ```
 
+```yaml
+# Dual-stack with suffix annotation:
+metadata:
+  annotations:
+    dynamic-prefix.io/name: home-ipv6
+    dynamic-prefix.io/suffix: "::ffff:0:2"
+    lbipam.cilium.io/ips: "198.51.100.10,2001:db8:abcd:100::ffff:0:2,2001:db8:abcd:200::ffff:0:2"
+    external-dns.alpha.kubernetes.io/target: "2001:db8:abcd:100::ffff:0:2"
+```
+
 **Benefits:**
 - Zero-downtime during prefix transitions
 - Old connections continue working (both IPs active)
 - New DNS queries return new IP only
 - Gradual migration as clients reconnect
+- IPv4 addresses in dual-stack setups are never disturbed
 
 ## Data Flow
 
@@ -245,12 +275,16 @@ metadata:
 1. RA monitor receives new prefix
 2. DynamicPrefix controller updates status (adds to history)
 3. Pool sync controller updates pools with multiple blocks
+   (preserves IPv4 blocks and static IPv6 blocks via isManagedBlock())
 4. Service sync controller finds annotated LoadBalancer Services
-5. Calculates corresponding IPs in new and old prefixes
-6. Sets lbipam.cilium.io/ips = "new-ip,old-ip"
-7. Sets external-dns.alpha.kubernetes.io/target = "new-ip"
-8. Service now has both IPs, DNS points to new only
-9. Old connections work, new clients get new IP via DNS
+5. Calculates IPv6 addresses:
+   a. Static suffix: combines suffix with current + historical prefixes
+   b. Dynamically assigned: infers offset from Cilium-assigned IP
+6. Preserves unmanaged IPs (IPv4, static IPv6) via extractUnmanagedIPs()
+7. Sets lbipam.cilium.io/ips = "ipv4,new-ipv6,old-ipv6"
+8. Sets external-dns.alpha.kubernetes.io/target = "new-ipv6"
+9. Service now has all IPs, DNS points to new IPv6 only
+10. Old connections work, new clients get new IP via DNS
 ```
 
 ## Custom Resource Definition
@@ -271,7 +305,28 @@ metadata:
 - `currentPrefix`: Currently active prefix
 - `prefixSource`: How prefix was received
 - `addressRanges`: Calculated full addresses
+- `history`: List of previously active prefixes
 - `conditions`: Standard Kubernetes conditions
+
+### Service Annotations (HA Mode)
+
+| Annotation | Description | Required |
+|---|---|---|
+| `dynamic-prefix.io/name` | References the DynamicPrefix CR | Yes |
+| `dynamic-prefix.io/suffix` | Static IPv6 suffix (e.g., `::ffff:0:2`). Preferred over legacy IP inference. | No |
+| `dynamic-prefix.io/service-address-range` | Address range for legacy offset calculation | No |
+| `dynamic-prefix.io/service-subnet` | Subnet for legacy offset calculation | No |
+
+### Shared Helper Functions
+
+| Function | Location | Description |
+|---|---|---|
+| `collectManagedPrefixes()` | `poolsync_controller.go` | Collects current + historical prefixes from DynamicPrefix status |
+| `isIPv4Block()` | `poolsync_controller.go` | Returns true if a pool block contains IPv4 addresses |
+| `isManagedBlock()` | `poolsync_controller.go` | Returns true if a pool block falls within a managed prefix |
+| `isPrefixManaged()` | `poolsync_controller.go` | Tests if a CIDR prefix overlaps with any managed prefix |
+| `extractUnmanagedIPs()` | `servicesync_controller.go` | Filters a comma-separated IP list, preserving IPv4 and static IPv6 |
+| `combinePrefixSuffix()` | `servicesync_controller.go` | Bitwise merge of prefix network bits with suffix host bits |
 
 ## Failure Modes and Recovery
 
