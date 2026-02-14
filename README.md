@@ -235,7 +235,7 @@ annotations:
   external-dns.alpha.kubernetes.io/target: "2001:db8:new::1"   # DNS → new only
 ```
 
-> **Dual-stack NAT tip**: If you use NAT for IPv4 (shared public IP for all services), set a hostname like `example.com` as the initial `external-dns.alpha.kubernetes.io/target`. The operator will preserve it and append the per-service IPv6 address, producing both a CNAME/A record (via the hostname) and an AAAA record.
+> **DNS Spec Limitation**: The operator preserves hostnames in the target annotation, but external-dns will discard them when both a hostname (CNAME) and IP addresses (A/AAAA) are present. Per RFC 1034, CNAME records cannot coexist with other record types on the same DNS name. External-DNS logs this as a conflict and keeps only the A/AAAA records. For dual-stack NAT setups (IPv4 via hostname, IPv6 via direct addresses), use a separate tool like ddns-updater to manage the A record, and configure external-dns with `--managed-record-types=AAAA` to manage only IPv6.
 
 ### Annotations for HA Mode Services
 
