@@ -99,7 +99,7 @@ helm install dynamic-prefix-operator ./charts/dynamic-prefix-operator \
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `replicaCount` | Number of replicas | `1` |
-| `image.repository` | Image repository | `ghcr.io/jr42/dynamic-prefix-operator` |
+| `image.repository` | Image repository | `ghcr.io/pkizzle/dynamic-prefix-operator` |
 | `image.tag` | Image tag | Chart appVersion |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 

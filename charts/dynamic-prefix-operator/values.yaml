@@ -1,11 +1,11 @@
 # Default values for dynamic-prefix-operator.
 
-# -- Number of replicas (only 1 supported due to leader election)
+# -- Number of replicas (due to leader election only one is active at a time)
 replicaCount: 1
 
 image:
   # -- Container image repository
-  repository: ghcr.io/jr42/dynamic-prefix-operator
+  repository: ghcr.io/pkizzle/dynamic-prefix-operator
   # -- Image pull policy
   pullPolicy: IfNotPresent
   # -- Overrides the image tag (default is the chart appVersion)

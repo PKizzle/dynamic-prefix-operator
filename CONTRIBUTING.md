@@ -102,7 +102,7 @@ To add support for a new CNI or IP pool type:
    // internal/backend/mybackend/pool.go
    package mybackend
 
-   import "github.com/jr42/dynamic-prefix-operator/internal/backend"
+   import "github.com/pkizzle/dynamic-prefix-operator/internal/backend"
 
    type PoolBackend struct {
        client client.Client
@@ -140,7 +140,7 @@ When reporting issues, please include:
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/jr42/dynamic-prefix-operator/discussions)
+- Open a [GitHub Discussion](https://github.com/pkizzle/dynamic-prefix-operator/discussions)
 - Check existing issues and PRs
 
 ## License

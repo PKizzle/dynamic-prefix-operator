@@ -27,8 +27,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	dynamicprefixiov1alpha1 "github.com/jr42/dynamic-prefix-operator/api/v1alpha1"
-	"github.com/jr42/dynamic-prefix-operator/internal/prefix"
+	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
+	"github.com/pkizzle/dynamic-prefix-operator/internal/prefix"
 )
 
 var _ = Describe("DynamicPrefix Controller", func() {

@@ -35,9 +35,9 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	dynamicprefixiov1alpha1 "github.com/jr42/dynamic-prefix-operator/api/v1alpha1"
-	"github.com/jr42/dynamic-prefix-operator/internal/controller"
-	"github.com/jr42/dynamic-prefix-operator/internal/prefix"
+	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
+	"github.com/pkizzle/dynamic-prefix-operator/internal/controller"
+	"github.com/pkizzle/dynamic-prefix-operator/internal/prefix"
 	// +kubebuilder:scaffold:imports
 )
 

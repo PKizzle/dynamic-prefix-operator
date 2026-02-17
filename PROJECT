@@ -7,7 +7,7 @@ domain: dynamic-prefix.io
 layout:
 - go.kubebuilder.io/v4
 projectName: dynamic-prefix-operator
-repo: github.com/jr42/dynamic-prefix-operator
+repo: github.com/pkizzle/dynamic-prefix-operator
 resources:
 - api:
     crdVersion: v1
@@ -15,6 +15,6 @@ resources:
   controller: true
   domain: dynamic-prefix.io
   kind: DynamicPrefix
-  path: github.com/jr42/dynamic-prefix-operator/api/v1alpha1
+  path: github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

@@ -19,7 +19,7 @@ package prefix
 import (
 	"fmt"
 
-	dynamicprefixiov1alpha1 "github.com/jr42/dynamic-prefix-operator/api/v1alpha1"
+	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
 )
 
 // ReceiverFactory creates Receiver instances based on AcquisitionSpec.

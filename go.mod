@@ -1,4 +1,4 @@
-module github.com/jr42/dynamic-prefix-operator
+module github.com/pkizzle/dynamic-prefix-operator
 
 go 1.24.6
 

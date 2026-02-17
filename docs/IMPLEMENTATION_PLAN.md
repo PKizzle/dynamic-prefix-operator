@@ -148,7 +148,7 @@ spec:
 
 1. **Initialize kubebuilder project**
    ```bash
-   kubebuilder init --domain dynamic-prefix.io --repo github.com/jr42/dynamic-prefix-operator
+   kubebuilder init --domain dynamic-prefix.io --repo github.com/pkizzle/dynamic-prefix-operator
    ```
 
 2. **Create DynamicPrefix CRD**

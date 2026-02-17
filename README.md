@@ -51,10 +51,10 @@ But all of this assumes **stable IP addressing**. Cloud providers give you stati
 
 ```bash
 # Using Helm
-helm install dynamic-prefix-operator oci://ghcr.io/jr42/dynamic-prefix-operator/helm/dynamic-prefix-operator
+helm install dynamic-prefix-operator oci://ghcr.io/pkizzle/dynamic-prefix-operator/helm/dynamic-prefix-operator
 
 # Or using kubectl
-kubectl apply -f https://github.com/jr42/dynamic-prefix-operator/releases/latest/download/install.yaml
+kubectl apply -f https://github.com/pkizzle/dynamic-prefix-operator/releases/latest/download/install.yaml
 ```
 
 ### 2. Create a DynamicPrefix with Address Ranges
