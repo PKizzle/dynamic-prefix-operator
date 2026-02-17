@@ -50,18 +50,16 @@ const (
 	AnnotationLastSync = "dynamic-prefix.io/last-sync"
 )
 
+// Default GVKs used when CiliumVersions is not injected (e.g. in tests).
 var (
-	// CiliumLBIPPoolGVK is the GroupVersionKind for CiliumLoadBalancerIPPool.
-	CiliumLBIPPoolGVK = schema.GroupVersionKind{
+	DefaultCiliumLBIPPoolGVK = schema.GroupVersionKind{
 		Group:   "cilium.io",
-		Version: "v2alpha1",
+		Version: "v2",
 		Kind:    "CiliumLoadBalancerIPPool",
 	}
-
-	// CiliumCIDRGroupGVK is the GroupVersionKind for CiliumCIDRGroup.
-	CiliumCIDRGroupGVK = schema.GroupVersionKind{
+	DefaultCiliumCIDRGroupGVK = schema.GroupVersionKind{
 		Group:   "cilium.io",
-		Version: "v2alpha1",
+		Version: "v2",
 		Kind:    "CiliumCIDRGroup",
 	}
 )
@@ -82,6 +80,24 @@ type poolConfiguration struct {
 type PoolSyncReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// CiliumVersions holds the resolved Cilium API versions. If nil, defaults are used.
+	CiliumVersions *CiliumVersions
+}
+
+// lbIPPoolGVK returns the GVK for CiliumLoadBalancerIPPool.
+func (r *PoolSyncReconciler) lbIPPoolGVK() schema.GroupVersionKind {
+	if r.CiliumVersions != nil {
+		return r.CiliumVersions.LoadBalancerIPPool
+	}
+	return DefaultCiliumLBIPPoolGVK
+}
+
+// cidrGroupGVK returns the GVK for CiliumCIDRGroup.
+func (r *PoolSyncReconciler) cidrGroupGVK() schema.GroupVersionKind {
+	if r.CiliumVersions != nil {
+		return r.CiliumVersions.CIDRGroup
+	}
+	return DefaultCiliumCIDRGroupGVK
 }
 
 // +kubebuilder:rbac:groups=cilium.io,resources=ciliumloadbalancerippools,verbs=get;list;watch;update;patch
@@ -94,12 +110,12 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Determine resource type from request
 	// Try to fetch as CiliumLoadBalancerIPPool first
 	pool := &unstructured.Unstructured{}
-	pool.SetGroupVersionKind(CiliumLBIPPoolGVK)
+	pool.SetGroupVersionKind(r.lbIPPoolGVK())
 
 	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
 		// Try CiliumCIDRGroup
 		pool = &unstructured.Unstructured{}
-		pool.SetGroupVersionKind(CiliumCIDRGroupGVK)
+		pool.SetGroupVersionKind(r.cidrGroupGVK())
 		if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
@@ -645,11 +661,11 @@ func (r *PoolSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Watch CiliumLoadBalancerIPPool
 	lbIPPool := &unstructured.Unstructured{}
-	lbIPPool.SetGroupVersionKind(CiliumLBIPPoolGVK)
+	lbIPPool.SetGroupVersionKind(r.lbIPPoolGVK())
 
 	// Watch CiliumCIDRGroup
 	cidrGroup := &unstructured.Unstructured{}
-	cidrGroup.SetGroupVersionKind(CiliumCIDRGroupGVK)
+	cidrGroup.SetGroupVersionKind(r.cidrGroupGVK())
 
 	// Build controller
 	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
@@ -682,11 +698,7 @@ func (r *PoolSyncReconciler) findReferencingPools(ctx context.Context, obj clien
 
 	// List CiliumLoadBalancerIPPools
 	lbPoolList := &unstructured.UnstructuredList{}
-	lbPoolList.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "cilium.io",
-		Version: "v2alpha1",
-		Kind:    "CiliumLoadBalancerIPPoolList",
-	})
+	lbPoolList.SetGroupVersionKind(ListGVK(r.lbIPPoolGVK()))
 
 	if err := r.List(ctx, lbPoolList); err == nil {
 		for _, pool := range lbPoolList.Items {
@@ -707,11 +719,7 @@ func (r *PoolSyncReconciler) findReferencingPools(ctx context.Context, obj clien
 
 	// List CiliumCIDRGroups
 	cidrGroupList := &unstructured.UnstructuredList{}
-	cidrGroupList.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "cilium.io",
-		Version: "v2alpha1",
-		Kind:    "CiliumCIDRGroupList",
-	})
+	cidrGroupList.SetGroupVersionKind(ListGVK(r.cidrGroupGVK()))
 
 	if err := r.List(ctx, cidrGroupList); err == nil {
 		for _, group := range cidrGroupList.Items {
