@@ -25,6 +25,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -105,6 +106,10 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Fetch the referenced DynamicPrefix
 	var dp dynamicprefixiov1alpha1.DynamicPrefix
 	if err := r.Get(ctx, types.NamespacedName{Name: dpName}, &dp); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.V(1).Info("Referenced DynamicPrefix not found, will retry", "name", dpName)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		log.Error(err, "Failed to get DynamicPrefix", "name", dpName)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
