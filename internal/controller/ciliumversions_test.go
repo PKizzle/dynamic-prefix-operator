@@ -18,7 +18,11 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -218,4 +222,160 @@ func assertGVK(t *testing.T, gvk schema.GroupVersionKind, version, kind string) 
 	if gvk.Kind != kind {
 		t.Errorf("GVK.Kind = %q, want %q", gvk.Kind, kind)
 	}
+}
+
+// ciliumResources returns a standard set of Cilium API resources for testing.
+func ciliumResources() []*metav1.APIResourceList {
+	return []*metav1.APIResourceList{
+		{
+			GroupVersion: "cilium.io/v2",
+			APIResources: []metav1.APIResource{
+				{Name: "ciliumloadbalancerippools", Kind: "CiliumLoadBalancerIPPool"},
+				{Name: "ciliumcidrgroups", Kind: "CiliumCIDRGroup"},
+				{Name: "ciliumbgpadvertisements", Kind: "CiliumBGPAdvertisement"},
+			},
+		},
+	}
+}
+
+func TestCiliumControllerStarter_DetectsCiliumImmediately(t *testing.T) {
+	dc := &fake.FakeDiscovery{Fake: &coretesting.Fake{}}
+	dc.Resources = ciliumResources()
+
+	var called atomic.Bool
+	starter := &CiliumControllerStarter{
+		Discovery:    dc,
+		PollInterval: 10 * time.Millisecond,
+		SetupControllers: func(versions *CiliumVersions) error {
+			called.Store(true)
+			if versions.LoadBalancerIPPool.Version != "v2" {
+				t.Errorf("expected v2, got %s", versions.LoadBalancerIPPool.Version)
+			}
+			return nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := starter.Start(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called.Load() {
+		t.Error("SetupControllers was not called")
+	}
+}
+
+func TestCiliumControllerStarter_WaitsForCilium(t *testing.T) {
+	dc := &fake.FakeDiscovery{Fake: &coretesting.Fake{}}
+	// Start with no Cilium resources
+	dc.Resources = []*metav1.APIResourceList{
+		{GroupVersion: "apps/v1", APIResources: []metav1.APIResource{{Name: "deployments", Kind: "Deployment"}}},
+	}
+
+	var called atomic.Bool
+	var pollCount atomic.Int32
+	starter := &CiliumControllerStarter{
+		Discovery:    dc,
+		PollInterval: 10 * time.Millisecond,
+		SetupControllers: func(versions *CiliumVersions) error {
+			called.Store(true)
+			return nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Add Cilium resources after a short delay
+	go func() {
+		// Wait for a few polls
+		for pollCount.Load() < 3 {
+			time.Sleep(5 * time.Millisecond)
+			pollCount.Add(1)
+		}
+		dc.Resources = ciliumResources()
+	}()
+
+	err := starter.Start(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called.Load() {
+		t.Error("SetupControllers was not called after Cilium became available")
+	}
+}
+
+func TestCiliumControllerStarter_StopsOnContextCancel(t *testing.T) {
+	dc := &fake.FakeDiscovery{Fake: &coretesting.Fake{}}
+	// No Cilium resources — will never be found
+	dc.Resources = []*metav1.APIResourceList{}
+
+	var called atomic.Bool
+	starter := &CiliumControllerStarter{
+		Discovery:    dc,
+		PollInterval: 10 * time.Millisecond,
+		SetupControllers: func(versions *CiliumVersions) error {
+			called.Store(true)
+			return nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := starter.Start(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called.Load() {
+		t.Error("SetupControllers should not have been called")
+	}
+}
+
+func TestCiliumControllerStarter_PropagatesSetupError(t *testing.T) {
+	dc := &fake.FakeDiscovery{Fake: &coretesting.Fake{}}
+	dc.Resources = ciliumResources()
+
+	setupErr := fmt.Errorf("controller setup failed")
+	starter := &CiliumControllerStarter{
+		Discovery:    dc,
+		PollInterval: 10 * time.Millisecond,
+		SetupControllers: func(versions *CiliumVersions) error {
+			return setupErr
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := starter.Start(ctx)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !contains(err.Error(), "controller setup failed") {
+		t.Errorf("error %q should contain 'controller setup failed'", err.Error())
+	}
+}
+
+func TestCiliumControllerStarter_DefaultPollInterval(t *testing.T) {
+	starter := &CiliumControllerStarter{}
+	// NeedLeaderElection should return true
+	if !starter.NeedLeaderElection() {
+		t.Error("NeedLeaderElection() should return true")
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

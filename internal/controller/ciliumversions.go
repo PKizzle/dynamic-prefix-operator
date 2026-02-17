@@ -18,7 +18,9 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
@@ -157,4 +159,66 @@ func hasResource(rs resourceSet, plural, version string) bool {
 		return versions[version]
 	}
 	return false
+}
+
+// CiliumControllerStarter is a manager.Runnable that polls for Cilium API
+// availability and registers Cilium-dependent controllers when detected.
+// This allows the operator to start immediately without Cilium and
+// automatically begin managing Cilium resources once Cilium is installed.
+type CiliumControllerStarter struct {
+	// Discovery is used to probe the API server for Cilium API groups.
+	Discovery discovery.DiscoveryInterface
+	// PollInterval controls how often to check for Cilium APIs.
+	// Defaults to 30 seconds if zero.
+	PollInterval time.Duration
+	// SetupControllers is called once when Cilium APIs are detected.
+	// It receives the discovered CiliumVersions and the manager to
+	// register controllers with.
+	SetupControllers func(versions *CiliumVersions) error
+}
+
+// Start implements manager.Runnable. It polls for Cilium APIs and registers
+// controllers when they become available. Returns nil when controllers are
+// registered or the context is cancelled.
+func (s *CiliumControllerStarter) Start(ctx context.Context) error {
+	log := ctrl.Log.WithName("setup")
+
+	interval := s.PollInterval
+	if interval == 0 {
+		interval = 30 * time.Second
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	log.Info("Waiting for Cilium APIs to become available", "pollInterval", interval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("Stopping Cilium API discovery (context cancelled)")
+			return nil
+		case <-ticker.C:
+			versions, err := DiscoverCiliumVersions(s.Discovery)
+			if err != nil {
+				log.V(1).Info("Cilium API not yet available, will retry", "reason", err.Error())
+				continue
+			}
+
+			log.Info("Cilium APIs detected, registering Cilium-dependent controllers")
+
+			if err := s.SetupControllers(versions); err != nil {
+				return fmt.Errorf("failed to register Cilium controllers: %w", err)
+			}
+
+			log.Info("Cilium-dependent controllers registered successfully")
+			return nil
+		}
+	}
+}
+
+// NeedLeaderElection implements manager.LeaderElectionRunnable. Returns true
+// because the controllers this starter registers require leader election.
+func (s *CiliumControllerStarter) NeedLeaderElection() bool {
+	return true
 }
