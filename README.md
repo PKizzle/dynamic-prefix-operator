@@ -244,6 +244,7 @@ annotations:
 | `dynamic-prefix.io/name` | Name of the DynamicPrefix CR (required) |
 | `dynamic-prefix.io/suffix` | Static IPv6 suffix (e.g., `::ffff:0:2`). Preferred for dual-stack setups — operator calculates full IPv6 from prefix + suffix |
 | `dynamic-prefix.io/service-address-range` | Which address range for IP calculation (legacy mode) |
+| `dynamic-prefix.io/skip-external-dns-update` | Set to `"true"` to prevent the operator from managing the `external-dns.alpha.kubernetes.io/target` annotation on this Service. `lbipam.cilium.io/ips` is still managed normally |
 
 ## Supported Annotations
 
@@ -262,6 +263,7 @@ Add these annotations to LoadBalancer Services for HA mode:
 | `dynamic-prefix.io/suffix` | Static IPv6 suffix — operator manages IPv6, preserves IPv4 |
 | `dynamic-prefix.io/service-address-range` | Address range for dynamically assigned IP offset calculation |
 | `dynamic-prefix.io/service-subnet` | Subnet for dynamically assigned IP offset calculation |
+| `dynamic-prefix.io/skip-external-dns-update` | Set to `"true"` to skip external-dns target management for this Service |
 
 ## Supported Resources
 

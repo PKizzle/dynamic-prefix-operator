@@ -65,6 +65,12 @@ const (
 	// Example: "::ffff:0:2" combined with prefix 2001:db8:abcd:100::/56
 	// produces 2001:db8:abcd:100::ffff:0:2.
 	AnnotationSuffix = "dynamic-prefix.io/suffix"
+
+	// AnnotationSkipExternalDNSUpdate when set to "true" on a Service, prevents the
+	// operator from managing the external-dns.alpha.kubernetes.io/target annotation.
+	// The operator will still manage lbipam.cilium.io/ips normally.
+	// Only has effect in HA mode (the external-dns target annotation is only managed in HA mode).
+	AnnotationSkipExternalDNSUpdate = "dynamic-prefix.io/skip-external-dns-update"
 )
 
 // ServiceSyncReconciler reconciles LoadBalancer Services for HA mode prefix transitions.
@@ -176,18 +182,27 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		updated = true
 	}
 
-	// Set external-dns target: preserve non-managed entries (hostnames, IPv4,
-	// static IPv6) and set only the current IPv6 as the managed target.
-	// This supports dual-stack NAT setups where IPv4 is a hostname (e.g.,
-	// "example.com") pointing to the router's public IPv4 via NAT, while IPv6
-	// uses direct per-service addresses that change with prefix rotation.
-	existingTarget := annotations[AnnotationExternalDNSTarget]
-	preservedTargets := extractUnmanagedIPs(existingTarget, managedPrefixes)
-	finalTargets := append(preservedTargets, currentIP)
-	finalTargetStr := strings.Join(finalTargets, ",")
-	if annotations[AnnotationExternalDNSTarget] != finalTargetStr {
-		newAnnotations[AnnotationExternalDNSTarget] = finalTargetStr
-		updated = true
+	// Set external-dns target unless the Service has opted out via
+	// dynamic-prefix.io/skip-external-dns-update: "true".
+	skipExternalDNS := annotations[AnnotationSkipExternalDNSUpdate] == "true"
+
+	var finalTargetStr string
+	if !skipExternalDNS {
+		// Preserve non-managed entries (hostnames, IPv4, static IPv6) and set
+		// only the current IPv6 as the managed target.
+		// This supports dual-stack NAT setups where IPv4 is a hostname (e.g.,
+		// "example.com") pointing to the router's public IPv4 via NAT, while IPv6
+		// uses direct per-service addresses that change with prefix rotation.
+		existingTarget := annotations[AnnotationExternalDNSTarget]
+		preservedTargets := extractUnmanagedIPs(existingTarget, managedPrefixes)
+		finalTargets := append(preservedTargets, currentIP)
+		finalTargetStr = strings.Join(finalTargets, ",")
+		if annotations[AnnotationExternalDNSTarget] != finalTargetStr {
+			newAnnotations[AnnotationExternalDNSTarget] = finalTargetStr
+			updated = true
+		}
+	} else {
+		log.V(1).Info("Skipping external-dns target update (opted out via annotation)", "service", req.NamespacedName)
 	}
 
 	// Update last-sync annotation
@@ -200,7 +215,7 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		log.Info("Service annotations updated", "service", req.NamespacedName,
-			"allIPs", finalIPsStr, "dnsTarget", finalTargetStr,
+			"allIPs", finalIPsStr, "dnsTarget", finalTargetStr, "skipExternalDNS", skipExternalDNS,
 			"preservedCount", len(preservedIPs), "managedCount", len(allIPs))
 	}
 
