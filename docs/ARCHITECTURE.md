@@ -184,7 +184,7 @@ This follows the [1Password Operator](https://github.com/1Password/onepassword-o
 - Watches LoadBalancer Services with `dynamic-prefix.io/name` annotation
 - Only active when DynamicPrefix has `transition.mode: ha`
 - Sets `lbipam.cilium.io/ips` with all active IPs (current + historical)
-- Sets `external-dns.alpha.kubernetes.io/target` with current IPv6 only (preserving non-managed entries)
+- Sets `external-dns.alpha.kubernetes.io/target` with current IPv6 only (preserving non-managed entries), unless the Service has `dynamic-prefix.io/skip-external-dns-update: "true"`
 - Preserves non-managed entries (hostnames, IPv4, static IPv6) in both annotations for dual-stack setups
 
 **IP Calculation Modes:**

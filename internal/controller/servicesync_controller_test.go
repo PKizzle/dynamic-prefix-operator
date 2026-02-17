@@ -268,6 +268,49 @@ var _ = Describe("ServiceSync Controller", func() {
 			// Current IPv6 must be present
 			Expect(dnsTarget).To(ContainSubstring(currentIP))
 		})
+
+		It("should skip external-dns target update when skip-external-dns-update is set", func() {
+			// Set skip annotation and an existing external-dns target
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      serviceName,
+				Namespace: serviceNS,
+			}, svc)).To(Succeed())
+
+			annotations := svc.GetAnnotations()
+			annotations[AnnotationSkipExternalDNSUpdate] = "true"
+			annotations[AnnotationExternalDNSTarget] = "my-custom-target.example.com"
+			svc.SetAnnotations(annotations)
+			Expect(k8sClient.Update(ctx, svc)).To(Succeed())
+
+			reconciler := &ServiceSyncReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      serviceName,
+					Namespace: serviceNS,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Fetch updated Service
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      serviceName,
+				Namespace: serviceNS,
+			}, svc)).To(Succeed())
+
+			// external-dns target should remain untouched
+			dnsTarget := svc.GetAnnotations()[AnnotationExternalDNSTarget]
+			Expect(dnsTarget).To(Equal("my-custom-target.example.com"))
+
+			// lbipam.cilium.io/ips should still be managed
+			ipsAnnotation := svc.GetAnnotations()[AnnotationCiliumIPs]
+			Expect(ipsAnnotation).To(ContainSubstring(currentIP))
+			Expect(ipsAnnotation).To(ContainSubstring(historicalIP))
+		})
 	})
 
 	Context("When reconciling a Service in simple mode", func() {
