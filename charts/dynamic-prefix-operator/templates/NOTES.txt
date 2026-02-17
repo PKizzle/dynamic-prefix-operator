@@ -62,4 +62,4 @@ A ServiceMonitor has been created for Prometheus Operator.
 == Documentation ==
 
 For more information, visit:
-https://github.com/jr42/dynamic-prefix-operator
+https://github.com/pkizzle/dynamic-prefix-operator

@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jr42/dynamic-prefix-operator/internal/prefix"
+	"github.com/pkizzle/dynamic-prefix-operator/internal/prefix"
 )
 
 // TestISPSimulation_PrefixDelegation tests the full ISP prefix delegation flow

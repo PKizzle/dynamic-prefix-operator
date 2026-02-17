@@ -15,13 +15,13 @@ keywords:
   - cilium
   - networking
 
-home: https://github.com/jr42/dynamic-prefix-operator
+home: https://github.com/pkizzle/dynamic-prefix-operator
 sources:
-  - https://github.com/jr42/dynamic-prefix-operator
+  - https://github.com/pkizzle/dynamic-prefix-operator
 
 maintainers:
-  - name: jr42
-    url: https://github.com/jr42
+  - name: pkizzle
+    url: https://github.com/pkizzle
 
 annotations:
   artifacthub.io/license: Apache-2.0

@@ -28,7 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/jr42/dynamic-prefix-operator/test/utils"
+	"github.com/pkizzle/dynamic-prefix-operator/test/utils"
 )
 
 var (
