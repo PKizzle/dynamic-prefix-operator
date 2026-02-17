@@ -20,6 +20,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -194,8 +195,7 @@ func main() {
 
 	ciliumVersions, err := controller.DiscoverCiliumVersions(clientset.Discovery())
 	if err != nil {
-		setupLog.Error(err, "unable to discover Cilium API versions")
-		os.Exit(1)
+		setupLog.Info("Cilium API not available at startup, will poll in background", "reason", err.Error())
 	}
 
 	// Set up DynamicPrefix controller with receiver factory
@@ -209,16 +209,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Set up PoolSync controller for Cilium resource synchronization
-	if err := (&controller.PoolSyncReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		CiliumVersions: ciliumVersions,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PoolSync")
-		os.Exit(1)
-	}
-
 	// Set up ServiceSync controller for HA mode Service management
 	if err := (&controller.ServiceSyncReconciler{
 		Client: mgr.GetClient(),
@@ -228,14 +218,43 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Set up BGPSync controller for BGP advertisement management
-	if err := (&controller.BGPSyncReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		CiliumVersions: ciliumVersions,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "BGPSync")
-		os.Exit(1)
+	// setupCiliumControllers registers PoolSync and BGPSync with the manager.
+	setupCiliumControllers := func(versions *controller.CiliumVersions) error {
+		if err := (&controller.PoolSyncReconciler{
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			CiliumVersions: versions,
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("unable to create PoolSync controller: %w", err)
+		}
+
+		if err := (&controller.BGPSyncReconciler{
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			CiliumVersions: versions,
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("unable to create BGPSync controller: %w", err)
+		}
+
+		return nil
+	}
+
+	// Set up Cilium-dependent controllers immediately or defer to background poller
+	if ciliumVersions != nil {
+		if err := setupCiliumControllers(ciliumVersions); err != nil {
+			setupLog.Error(err, "unable to set up Cilium controllers")
+			os.Exit(1)
+		}
+	} else {
+		// Register a background Runnable that polls for Cilium APIs and
+		// registers the controllers once they become available.
+		if err := mgr.Add(&controller.CiliumControllerStarter{
+			Discovery:        clientset.Discovery(),
+			SetupControllers: setupCiliumControllers,
+		}); err != nil {
+			setupLog.Error(err, "unable to add Cilium controller starter")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 
