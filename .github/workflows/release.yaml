@@ -141,7 +141,7 @@ jobs:
         run: |
           tag="${{ github.ref_name }}"
           if gh release view "$tag" > /dev/null 2>&1; then
-            gh release upload "$tag" dist/*.tar.gz dist/*.whl --clobber
+            gh release upload "$tag" install.yaml dynamic-prefix-operator-${{ github.ref_name }}.tgz --clobber
           else
             gh release create "$tag" \
               --target "${{ github.sha }}" \
