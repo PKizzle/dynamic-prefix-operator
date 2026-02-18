@@ -136,10 +136,15 @@ jobs:
           EOF
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: release-notes.md
-          files: |
-            install.yaml
-            dynamic-prefix-operator-${{ github.ref_name }}.tgz
-          fail_on_unmatched_files: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v${{ github.ref_name }}"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" dist/*.tar.gz dist/*.whl --clobber
+          else
+            gh release create "$tag" \
+              --target "${{ github.sha }}" \
+              --generate-notes \
+              install.yaml dynamic-prefix-operator-${{ github.ref_name }}.tgz
+          fi
