@@ -71,7 +71,6 @@ jobs:
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}
             type=semver,pattern=v{{major}}
-            type=sha,prefix=
 
       - name: Build and push Docker image
         id: build
@@ -84,6 +83,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
           platforms: ${{ matrix.platform }}
+          provenance: false
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -144,7 +144,6 @@ jobs:
             type=semver,pattern=v{{version}}
             type=semver,pattern=v{{major}}.{{minor}}
             type=semver,pattern=v{{major}}
-            type=sha,prefix=
 
       - name: Create and push manifest
         working-directory: /tmp/digests
