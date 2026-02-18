@@ -1,6 +1,6 @@
 module github.com/pkizzle/dynamic-prefix-operator
 
-go 1.24.6
+go 1.26.0
 
 require (
 	github.com/insomniacslk/dhcp v0.0.0-20251020182700-175e84fbb167
