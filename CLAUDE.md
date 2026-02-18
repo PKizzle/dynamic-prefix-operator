@@ -77,7 +77,7 @@ go test -v ./... -run TestAddressRange
 
 ## Key Technologies
 
-- **Go 1.24.6** with controller-runtime v0.22.4 (Kubebuilder 4.10.1)
+- **Go 1.26.0** with controller-runtime v0.22.4 (Kubebuilder 4.10.1)
 - **mdlayher/ndp**: Router Advertisement (NDP) monitoring
 - **Helm 3** and **Kustomize** for deployment
 
