@@ -139,7 +139,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="v${{ github.ref_name }}"
+          tag="${{ github.ref_name }}"
           if gh release view "$tag" > /dev/null 2>&1; then
             gh release upload "$tag" dist/*.tar.gz dist/*.whl --clobber
           else
