@@ -18,7 +18,9 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"reflect"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -26,10 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dynamicprefixiov1alpha1 "github.com/jr42/dynamic-prefix-operator/api/v1alpha1"
@@ -182,23 +186,32 @@ func (r *BGPSyncReconciler) reconcileAdvertisement(
 		}
 		log.Info("Created CiliumBGPAdvertisement", "name", advName, "subnet", subnet.Name)
 	} else {
-		// Update existing advertisement
-		adv.Object["spec"] = advSpec
+		// Check if the spec or labels actually changed before updating
+		existingSpec, _ := json.Marshal(adv.Object["spec"])
+		newSpecJSON, _ := json.Marshal(advSpec)
 
-		// Ensure labels are set
 		labels := adv.GetLabels()
 		if labels == nil {
 			labels = make(map[string]string)
 		}
-		labels[LabelManagedBy] = LabelManagedByValue
-		labels[LabelDynamicPrefixName] = dp.Name
-		labels[LabelSubnetName] = subnet.Name
-		adv.SetLabels(labels)
+		labelsChanged := labels[LabelManagedBy] != LabelManagedByValue ||
+			labels[LabelDynamicPrefixName] != dp.Name ||
+			labels[LabelSubnetName] != subnet.Name
 
-		if err := r.Update(ctx, adv); err != nil {
-			return fmt.Errorf("failed to update CiliumBGPAdvertisement: %w", err)
+		if !reflect.DeepEqual(existingSpec, newSpecJSON) || labelsChanged {
+			adv.Object["spec"] = advSpec
+			labels[LabelManagedBy] = LabelManagedByValue
+			labels[LabelDynamicPrefixName] = dp.Name
+			labels[LabelSubnetName] = subnet.Name
+			adv.SetLabels(labels)
+
+			if err := r.Update(ctx, adv); err != nil {
+				return fmt.Errorf("failed to update CiliumBGPAdvertisement: %w", err)
+			}
+			log.V(1).Info("Updated CiliumBGPAdvertisement", "name", advName, "subnet", subnet.Name)
+		} else {
+			log.V(2).Info("CiliumBGPAdvertisement unchanged, skipping update", "name", advName)
 		}
-		log.V(1).Info("Updated CiliumBGPAdvertisement", "name", advName, "subnet", subnet.Name)
 	}
 
 	return nil
@@ -366,11 +379,10 @@ func (r *BGPSyncReconciler) buildBGPCondition(
 ) metav1.Condition {
 	if len(subnetsWithBGP) == 0 {
 		return metav1.Condition{
-			Type:               dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             "NoBGPSubnets",
-			Message:            "No subnets have BGP advertisement enabled",
-			LastTransitionTime: metav1.Now(),
+			Type:    dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "NoBGPSubnets",
+			Message: "No subnets have BGP advertisement enabled",
 		}
 	}
 
@@ -388,20 +400,18 @@ func (r *BGPSyncReconciler) buildBGPCondition(
 
 	if allReady {
 		return metav1.Condition{
-			Type:               dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
-			Status:             metav1.ConditionTrue,
-			Reason:             "AdvertisementsReady",
-			Message:            fmt.Sprintf("%d BGP advertisement(s) configured", len(subnetsWithBGP)),
-			LastTransitionTime: metav1.Now(),
+			Type:    dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  "AdvertisementsReady",
+			Message: fmt.Sprintf("%d BGP advertisement(s) configured", len(subnetsWithBGP)),
 		}
 	}
 
 	return metav1.Condition{
-		Type:               dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             "AdvertisementsPending",
-		Message:            "Some BGP advertisements are not yet ready",
-		LastTransitionTime: metav1.Now(),
+		Type:    dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  "AdvertisementsPending",
+		Message: "Some BGP advertisements are not yet ready",
 	}
 }
 
@@ -415,14 +425,24 @@ func (r *BGPSyncReconciler) findCondition(conditions []metav1.Condition, conditi
 	return nil
 }
 
-// setCondition updates or adds a condition.
+// setCondition updates or adds a condition, preserving LastTransitionTime
+// when the status has not changed (per Kubernetes convention).
 func (r *BGPSyncReconciler) setCondition(conditions *[]metav1.Condition, condition metav1.Condition) {
+	now := metav1.Now()
 	for i := range *conditions {
 		if (*conditions)[i].Type == condition.Type {
+			if (*conditions)[i].Status == condition.Status {
+				// Status unchanged — preserve the existing transition time
+				condition.LastTransitionTime = (*conditions)[i].LastTransitionTime
+			} else {
+				condition.LastTransitionTime = now
+			}
 			(*conditions)[i] = condition
 			return
 		}
 	}
+	// New condition
+	condition.LastTransitionTime = now
 	*conditions = append(*conditions, condition)
 }
 
@@ -434,14 +454,15 @@ func (r *BGPSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("bgpsync").
-		For(&dynamicprefixiov1alpha1.DynamicPrefix{}).
+		For(&dynamicprefixiov1alpha1.DynamicPrefix{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(bgpAdv).
 		Watches(&unstructured.Unstructured{
 			Object: map[string]interface{}{
 				"apiVersion": "cilium.io/v2alpha1",
 				"kind":       "CiliumLoadBalancerIPPool",
 			},
-		}, handler.EnqueueRequestsFromMapFunc(r.findDynamicPrefixForPool)).
+		}, handler.EnqueueRequestsFromMapFunc(r.findDynamicPrefixForPool),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
 

@@ -18,8 +18,10 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/netip"
+	"reflect"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -433,6 +435,8 @@ func (r *PoolSyncReconciler) calculateSubnetConfig(
 // It supports both CIDR-based blocks (Mode 2) and start/end address ranges (Mode 1).
 // Multiple blocks are created for current prefix plus historical prefixes.
 func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration) error {
+	log := logf.FromContext(ctx)
+
 	// CiliumLoadBalancerIPPool spec.blocks is a list of IP blocks
 	// Format can be either:
 	// - spec.blocks[].cidr for CIDR-based allocation
@@ -456,11 +460,20 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 		blocks = append(blocks, block)
 	}
 
+	// Check if blocks actually changed before updating to avoid feedback loops
+	existingBlocks, _, _ := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+	existingJSON, _ := json.Marshal(existingBlocks)
+	newJSON, _ := json.Marshal(blocks)
+	if reflect.DeepEqual(existingJSON, newJSON) {
+		log.V(2).Info("Pool blocks unchanged, skipping update", "pool", pool.GetName())
+		return nil
+	}
+
 	if err := unstructured.SetNestedField(pool.Object, blocks, "spec", "blocks"); err != nil {
 		return fmt.Errorf("failed to set spec.blocks: %w", err)
 	}
 
-	// Update last-sync annotation
+	// Update last-sync annotation only when blocks actually change
 	r.setLastSyncAnnotation(pool)
 
 	return r.Update(ctx, pool)
@@ -469,6 +482,8 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 // updateCIDRGroup updates a CiliumCIDRGroup with the new CIDRs.
 // Multiple CIDRs are added for current prefix plus historical prefixes.
 func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration) error {
+	log := logf.FromContext(ctx)
+
 	// CiliumCIDRGroup spec.externalCIDRs is a list of CIDR strings
 	externalCIDRs := make([]interface{}, 0, len(configs))
 
@@ -476,11 +491,20 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 		externalCIDRs = append(externalCIDRs, config.cidr)
 	}
 
+	// Check if CIDRs actually changed before updating to avoid feedback loops
+	existingCIDRs, _, _ := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
+	existingJSON, _ := json.Marshal(existingCIDRs)
+	newJSON, _ := json.Marshal(externalCIDRs)
+	if reflect.DeepEqual(existingJSON, newJSON) {
+		log.V(2).Info("CIDRGroup unchanged, skipping update", "cidrGroup", pool.GetName())
+		return nil
+	}
+
 	if err := unstructured.SetNestedField(pool.Object, externalCIDRs, "spec", "externalCIDRs"); err != nil {
 		return fmt.Errorf("failed to set spec.externalCIDRs: %w", err)
 	}
 
-	// Update last-sync annotation
+	// Update last-sync annotation only when CIDRs actually change
 	r.setLastSyncAnnotation(pool)
 
 	return r.Update(ctx, pool)
@@ -528,9 +552,12 @@ func (r *PoolSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	controllerBuilder = controllerBuilder.
 		Watches(cidrGroup, &handler.EnqueueRequestForObject{}, builder.WithPredicates(hasAnnotation))
 
-	// Watch DynamicPrefix and enqueue referencing pools
+	// Watch DynamicPrefix and enqueue referencing pools.
+	// Use GenerationChangedPredicate to ignore status-only updates,
+	// which would otherwise create a feedback loop with BGPSyncReconciler.
 	controllerBuilder = controllerBuilder.
-		Watches(&dynamicprefixiov1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findReferencingPools))
+		Watches(&dynamicprefixiov1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findReferencingPools),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}))
 
 	return controllerBuilder.Complete(r)
 }
