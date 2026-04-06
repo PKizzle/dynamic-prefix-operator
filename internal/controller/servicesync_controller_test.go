@@ -221,6 +221,27 @@ var _ = Describe("ServiceSync Controller", func() {
 			Expect(dnsTarget).To(HavePrefix("example.com,"))
 			Expect(dnsTarget).To(ContainSubstring(currentIP))
 		})
+
+		It("should use a static suffix annotation across prefix history", func() {
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNS}, svc)).To(Succeed())
+
+			annotations := svc.GetAnnotations()
+			delete(annotations, AnnotationServiceAddressRange)
+			annotations[AnnotationServiceSuffix] = "::beef:42"
+			svc.SetAnnotations(annotations)
+			Expect(k8sClient.Update(ctx, svc)).To(Succeed())
+
+			reconciler := &ServiceSyncReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: serviceName, Namespace: serviceNS}})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNS}, svc)).To(Succeed())
+			ipsAnnotation := svc.GetAnnotations()[AnnotationCiliumIPs]
+
+			Expect(ipsAnnotation).To(ContainSubstring("2001:db8:1::beef:42"))
+			Expect(ipsAnnotation).To(ContainSubstring("2001:db8:2::beef:42"))
+		})
 	})
 
 	Context("When reconciling a Service in simple mode", func() {
@@ -410,6 +431,40 @@ func TestServiceSyncReconciler_applyIPOffset(t *testing.T) {
 	}
 }
 
+func TestCombinePrefixSuffix(t *testing.T) {
+	tests := []struct {
+		name     string
+		prefix   string
+		suffix   string
+		expected string
+		wantErr  bool
+	}{
+		{name: "simple /48", prefix: "2001:db8:1::/48", suffix: "::beef:42", expected: "2001:db8:1::beef:42"},
+		{name: "keep network nibble on /64", prefix: "2001:db8:1:abcd::/64", suffix: "::f00d", expected: "2001:db8:1:abcd::f00d"},
+		{name: "non-byte-aligned /65", prefix: "2001:db8::/65", suffix: "::1", expected: "2001:db8::1"},
+		{name: "invalid suffix", prefix: "2001:db8::/48", suffix: "not-an-ip", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := netip.MustParsePrefix(tt.prefix)
+			result, err := combinePrefixSuffix(prefix, tt.suffix)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for suffix %q", tt.suffix)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if result.String() != tt.expected {
+				t.Errorf("combinePrefixSuffix(%s, %s) = %s, want %s", tt.prefix, tt.suffix, result.String(), tt.expected)
+			}
+		})
+	}
+}
+
 func TestExtractUnmanagedIPs(t *testing.T) {
 	managedPrefixes := []netip.Prefix{
 		netip.MustParsePrefix("2001:db8:1::/48"),
@@ -503,6 +558,11 @@ func TestServiceSyncAnnotationConstants(t *testing.T) {
 			name:     "AnnotationServiceSubnet",
 			constant: AnnotationServiceSubnet,
 			expected: "dynamic-prefix.io/service-subnet",
+		},
+		{
+			name:     "AnnotationServiceSuffix",
+			constant: AnnotationServiceSuffix,
+			expected: "dynamic-prefix.io/service-suffix",
 		},
 	}
 

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"strings"
 	"time"
@@ -51,6 +52,11 @@ const (
 	// AnnotationServiceSubnet specifies which subnet to use for Service IPs.
 	// This is used when the DynamicPrefix uses subnets (Mode 2).
 	AnnotationServiceSubnet = "dynamic-prefix.io/service-subnet"
+
+	// AnnotationServiceSuffix specifies a static IPv6 suffix to combine with the
+	// current and historical prefixes. This allows Services to keep a stable host
+	// portion across prefix changes without requiring a subnet or address range.
+	AnnotationServiceSuffix = "dynamic-prefix.io/service-suffix"
 )
 
 // ServiceSyncReconciler reconciles LoadBalancer Services for HA mode prefix transitions.
@@ -258,6 +264,7 @@ func (r *ServiceSyncReconciler) calculateServiceIPs(
 
 	addressRangeName := annotations[AnnotationServiceAddressRange]
 	subnetName := annotations[AnnotationServiceSubnet]
+	suffix := annotations[AnnotationServiceSuffix]
 	// Also check the pool-level annotations for backward compatibility
 	if addressRangeName == "" {
 		addressRangeName = annotations[AnnotationAddressRange]
@@ -269,7 +276,13 @@ func (r *ServiceSyncReconciler) calculateServiceIPs(
 	var allIPs []string
 	var currentPrefixIP string
 
-	if addressRangeName != "" {
+	if suffix != "" {
+		currentPrefixIP, allIPs, err = r.calculateSuffixIPs(dp, suffix, maxHistory)
+		if err != nil {
+			log.Error(err, "Failed to calculate suffix IPs", "suffix", suffix)
+			return []string{currentServiceIP}, currentServiceIP, nil
+		}
+	} else if addressRangeName != "" {
 		// Mode 1: Address ranges
 		currentPrefixIP, allIPs, err = r.calculateAddressRangeIPs(dp, currentAddr, addressRangeName, maxHistory)
 		if err != nil {
@@ -291,6 +304,79 @@ func (r *ServiceSyncReconciler) calculateServiceIPs(
 	}
 
 	return allIPs, currentPrefixIP, nil
+}
+
+// calculateSuffixIPs combines the current and historical prefixes with a static suffix.
+func (r *ServiceSyncReconciler) calculateSuffixIPs(
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	suffix string,
+	maxHistory int,
+) (string, []string, error) {
+	currentPrefix, err := netip.ParsePrefix(dp.Status.CurrentPrefix)
+	if err != nil {
+		return "", nil, err
+	}
+
+	currentIP, err := combinePrefixSuffix(currentPrefix, suffix)
+	if err != nil {
+		return "", nil, err
+	}
+
+	allIPs := []string{currentIP.String()}
+	for i, histEntry := range dp.Status.History {
+		if i >= maxHistory {
+			break
+		}
+
+		histPrefix, err := netip.ParsePrefix(histEntry.Prefix)
+		if err != nil {
+			continue
+		}
+
+		histIP, err := combinePrefixSuffix(histPrefix, suffix)
+		if err != nil {
+			continue
+		}
+
+		allIPs = append(allIPs, histIP.String())
+	}
+
+	return currentIP.String(), allIPs, nil
+}
+
+// combinePrefixSuffix replaces the host portion of a prefix with the provided suffix.
+func combinePrefixSuffix(basePrefix netip.Prefix, suffix string) (netip.Addr, error) {
+	suffixAddr, err := netip.ParseAddr(suffix)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	if !suffixAddr.Is6() {
+		return netip.Addr{}, fmt.Errorf("suffix %q is not a valid IPv6 address", suffix)
+	}
+
+	base := basePrefix.Masked().Addr().As16()
+	suffixBytes := suffixAddr.As16()
+	prefixBits := basePrefix.Bits()
+
+	if prefixBits >= 128 {
+		return basePrefix.Addr(), nil
+	}
+
+	fullBytes := prefixBits / 8
+	remainingBits := prefixBits % 8
+
+	result := base
+	if remainingBits != 0 {
+		mask := byte(0xFF << (8 - remainingBits))
+		result[fullBytes] = (base[fullBytes] & mask) | (suffixBytes[fullBytes] &^ mask)
+		fullBytes++
+	}
+
+	for i := fullBytes; i < len(result); i++ {
+		result[i] = suffixBytes[i]
+	}
+
+	return netip.AddrFrom16(result), nil
 }
 
 // calculateAddressRangeIPs calculates IPs for address range mode.
