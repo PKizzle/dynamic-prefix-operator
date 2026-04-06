@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -372,5 +373,83 @@ func TestGVKConstants(t *testing.T) {
 	}
 	if CiliumCIDRGroupGVK.Kind != "CiliumCIDRGroup" {
 		t.Errorf("CiliumCIDRGroupGVK.Kind = %q, want %q", CiliumCIDRGroupGVK.Kind, "CiliumCIDRGroup")
+	}
+}
+
+func TestIsManagedBlock(t *testing.T) {
+	managedPrefixes := []netip.Prefix{
+		netip.MustParsePrefix("2001:db8:1::/48"),
+		netip.MustParsePrefix("2001:db8:2::/48"),
+	}
+
+	tests := []struct {
+		name     string
+		block    map[string]interface{}
+		expected bool
+	}{
+		{name: "IPv4 CIDR never managed", block: map[string]interface{}{"cidr": "198.51.100.0/24"}, expected: false},
+		{name: "IPv6 managed CIDR", block: map[string]interface{}{"cidr": "2001:db8:1:0:f000::/80"}, expected: true},
+		{name: "IPv6 unmanaged CIDR", block: map[string]interface{}{"cidr": "fd00::/64"}, expected: false},
+		{name: "IPv6 managed range", block: map[string]interface{}{"start": "2001:db8:1::f000:0:0:0", "stop": "2001:db8:1::ffff:ffff:ffff:ffff"}, expected: true},
+		{name: "IPv6 unmanaged range", block: map[string]interface{}{"start": "fd00::1", "stop": "fd00::ff"}, expected: false},
+		{name: "IPv4 start/stop never managed", block: map[string]interface{}{"start": "10.0.0.1", "stop": "10.0.0.254"}, expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isManagedBlock(tt.block, managedPrefixes)
+			if result != tt.expected {
+				t.Errorf("isManagedBlock(%v) = %v, want %v", tt.block, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsPrefixManaged(t *testing.T) {
+	tests := []struct {
+		name     string
+		prefix   string
+		managed  []netip.Prefix
+		expected bool
+	}{
+		{name: "nil managed list", prefix: "2001:db8::/48", managed: nil, expected: false},
+		{name: "exact match", prefix: "2001:db8::/48", managed: []netip.Prefix{netip.MustParsePrefix("2001:db8::/48")}, expected: true},
+		{name: "child inside managed parent", prefix: "2001:db8:1::/64", managed: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}, expected: true},
+		{name: "parent containing managed child", prefix: "2001:db8::/32", managed: []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/48")}, expected: true},
+		{name: "disjoint", prefix: "fd00::/64", managed: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}, expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := netip.MustParsePrefix(tt.prefix)
+			result := isPrefixManaged(p, tt.managed)
+			if result != tt.expected {
+				t.Errorf("isPrefixManaged(%s) = %v, want %v", tt.prefix, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCollectManagedPrefixes(t *testing.T) {
+	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
+			CurrentPrefix: "2001:db8:1::/48",
+			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
+				{Prefix: "2001:db8:2::/48"},
+				{Prefix: "2001:db8:3::/48"},
+			},
+		},
+	}
+
+	prefixes := collectManagedPrefixes(dp)
+	if len(prefixes) != 3 {
+		t.Fatalf("collectManagedPrefixes returned %d prefixes, want 3", len(prefixes))
+	}
+
+	expected := []string{"2001:db8:1::/48", "2001:db8:2::/48", "2001:db8:3::/48"}
+	for i, p := range prefixes {
+		if p.String() != expected[i] {
+			t.Errorf("prefix[%d] = %q, want %q", i, p.String(), expected[i])
+		}
 	}
 }

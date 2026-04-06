@@ -179,6 +179,48 @@ var _ = Describe("ServiceSync Controller", func() {
 			// Should have last-sync annotation
 			Expect(annotations).To(HaveKey(AnnotationLastSync))
 		})
+
+		It("should preserve IPv4 addresses in dual-stack annotation", func() {
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNS}, svc)).To(Succeed())
+
+			annotations := svc.GetAnnotations()
+			annotations[AnnotationCiliumIPs] = "198.51.100.10," + currentIP
+			svc.SetAnnotations(annotations)
+			Expect(k8sClient.Update(ctx, svc)).To(Succeed())
+
+			reconciler := &ServiceSyncReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: serviceName, Namespace: serviceNS}})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNS}, svc)).To(Succeed())
+			ipsAnnotation := svc.GetAnnotations()[AnnotationCiliumIPs]
+
+			Expect(ipsAnnotation).To(HavePrefix("198.51.100.10,"))
+			Expect(ipsAnnotation).To(ContainSubstring(currentIP))
+			Expect(ipsAnnotation).To(ContainSubstring(historicalIP))
+		})
+
+		It("should preserve hostname in external-dns target annotation", func() {
+			svc := &corev1.Service{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNS}, svc)).To(Succeed())
+
+			annotations := svc.GetAnnotations()
+			annotations[AnnotationCiliumIPs] = "198.51.100.10," + currentIP
+			annotations[AnnotationExternalDNSTarget] = "example.com," + currentIP
+			svc.SetAnnotations(annotations)
+			Expect(k8sClient.Update(ctx, svc)).To(Succeed())
+
+			reconciler := &ServiceSyncReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: serviceName, Namespace: serviceNS}})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNS}, svc)).To(Succeed())
+			dnsTarget := svc.GetAnnotations()[AnnotationExternalDNSTarget]
+
+			Expect(dnsTarget).To(HavePrefix("example.com,"))
+			Expect(dnsTarget).To(ContainSubstring(currentIP))
+		})
 	})
 
 	Context("When reconciling a Service in simple mode", func() {
@@ -363,6 +405,74 @@ func TestServiceSyncReconciler_applyIPOffset(t *testing.T) {
 			result := r.applyIPOffset(base, tt.offset)
 			if result != expected {
 				t.Errorf("applyIPOffset() = %v, want %v", result, expected)
+			}
+		})
+	}
+}
+
+func TestExtractUnmanagedIPs(t *testing.T) {
+	managedPrefixes := []netip.Prefix{
+		netip.MustParsePrefix("2001:db8:1::/48"),
+		netip.MustParsePrefix("2001:db8:2::/48"),
+	}
+
+	tests := []struct {
+		name     string
+		input    string
+		prefixes []netip.Prefix
+		expected []string
+	}{
+		{name: "empty string", input: "", prefixes: managedPrefixes, expected: nil},
+		{name: "managed IPv6 only", input: "2001:db8:1::1,2001:db8:2::2", prefixes: managedPrefixes, expected: nil},
+		{name: "IPv4 only", input: "192.168.1.1,10.0.0.1", prefixes: managedPrefixes, expected: []string{"192.168.1.1", "10.0.0.1"}},
+		{name: "dual-stack", input: "198.51.100.10,2001:db8:1::ffff:0:2", prefixes: managedPrefixes, expected: []string{"198.51.100.10"}},
+		{name: "static IPv6 outside managed prefix", input: "fd00::1,2001:db8:1::1", prefixes: managedPrefixes, expected: []string{"fd00::1"}},
+		{name: "mixed values", input: "198.51.100.10,fd00::1,2001:db8:1::ffff:0:2,2001:db8:2::ffff:0:2", prefixes: managedPrefixes, expected: []string{"198.51.100.10", "fd00::1"}},
+		{name: "no managed prefixes", input: "192.168.1.1,2001:db8:1::1,fd00::1", prefixes: nil, expected: []string{"192.168.1.1", "2001:db8:1::1", "fd00::1"}},
+		{name: "hostname preserved", input: "example.com,2001:db8:1::1", prefixes: managedPrefixes, expected: []string{"example.com"}},
+		{name: "spaces around entries", input: " 198.51.100.10 , 2001:db8:1::1 ", prefixes: managedPrefixes, expected: []string{"198.51.100.10"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractUnmanagedIPs(tt.input, tt.prefixes)
+			if len(result) != len(tt.expected) {
+				t.Fatalf("extractUnmanagedIPs(%q) returned %d items, want %d: %v", tt.input, len(result), len(tt.expected), result)
+			}
+			for i, v := range result {
+				if v != tt.expected[i] {
+					t.Errorf("extractUnmanagedIPs(%q)[%d] = %q, want %q", tt.input, i, v, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestExtractUnmanagedIPs_MalformedInput(t *testing.T) {
+	managed := []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{name: "multiple commas", input: ",,,", expected: nil},
+		{name: "garbage entry preserved", input: "not-an-ip", expected: []string{"not-an-ip"}},
+		{name: "garbage mixed with valid IPs", input: "192.168.1.1,garbage,2001:db8::1", expected: []string{"192.168.1.1", "garbage"}},
+		{name: "CIDR notation preserved as-is", input: "10.0.0.0/24,2001:db8::1", expected: []string{"10.0.0.0/24"}},
+		{name: "IP with port preserved", input: "192.168.1.1:8080", expected: []string{"192.168.1.1:8080"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := extractUnmanagedIPs(tt.input, managed)
+			if len(result) != len(tt.expected) {
+				t.Fatalf("got %d items %v, want %d items %v", len(result), result, len(tt.expected), tt.expected)
+			}
+			for i, v := range result {
+				if v != tt.expected[i] {
+					t.Errorf("[%d] = %q, want %q", i, v, tt.expected[i])
+				}
 			}
 		})
 	}
