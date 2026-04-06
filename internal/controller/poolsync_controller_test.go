@@ -405,6 +405,28 @@ func TestIsManagedBlock(t *testing.T) {
 	}
 }
 
+func TestIsIPv4Block(t *testing.T) {
+	tests := []struct {
+		name     string
+		block    map[string]interface{}
+		expected bool
+	}{
+		{name: "ipv4 cidr", block: map[string]interface{}{"cidr": "198.51.100.0/24"}, expected: true},
+		{name: "ipv6 cidr", block: map[string]interface{}{"cidr": "2001:db8::/64"}, expected: false},
+		{name: "ipv4 range", block: map[string]interface{}{"start": "10.0.0.1", "stop": "10.0.0.254"}, expected: true},
+		{name: "ipv6 range", block: map[string]interface{}{"start": "2001:db8::1", "stop": "2001:db8::ff"}, expected: false},
+		{name: "malformed", block: map[string]interface{}{"cidr": "not-a-cidr"}, expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isIPv4Block(tt.block); got != tt.expected {
+				t.Errorf("isIPv4Block(%v) = %v, want %v", tt.block, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestIsPrefixManaged(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -451,5 +473,46 @@ func TestCollectManagedPrefixes(t *testing.T) {
 		if p.String() != expected[i] {
 			t.Errorf("prefix[%d] = %q, want %q", i, p.String(), expected[i])
 		}
+	}
+}
+
+func TestIsManagedBlock_MalformedInput(t *testing.T) {
+	managedPrefixes := []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}
+	tests := []struct {
+		name     string
+		block    map[string]interface{}
+		expected bool
+	}{
+		{name: "empty block", block: map[string]interface{}{}, expected: false},
+		{name: "malformed cidr", block: map[string]interface{}{"cidr": "garbage"}, expected: false},
+		{name: "malformed start", block: map[string]interface{}{"start": "garbage", "stop": "2001:db8::1"}, expected: false},
+		{name: "non-string cidr", block: map[string]interface{}{"cidr": 42}, expected: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isManagedBlock(tt.block, managedPrefixes); got != tt.expected {
+				t.Errorf("isManagedBlock(%v) = %v, want %v", tt.block, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsPrefixManaged_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		prefix   string
+		managed  []netip.Prefix
+		expected bool
+	}{
+		{name: "ipv4 disjoint", prefix: "198.51.100.0/24", managed: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}, expected: false},
+		{name: "single host inside managed", prefix: "2001:db8::1/128", managed: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}, expected: true},
+		{name: "managed host inside parent", prefix: "2001:db8::/32", managed: []netip.Prefix{netip.MustParsePrefix("2001:db8::1/128")}, expected: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isPrefixManaged(netip.MustParsePrefix(tt.prefix), tt.managed); got != tt.expected {
+				t.Errorf("isPrefixManaged(%s) = %v, want %v", tt.prefix, got, tt.expected)
+			}
+		})
 	}
 }

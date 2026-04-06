@@ -557,7 +557,7 @@ func isManagedBlock(block map[string]interface{}, managedPrefixes []netip.Prefix
 	if cidr, ok := block["cidr"].(string); ok {
 		p, err := netip.ParsePrefix(cidr)
 		if err == nil {
-			if p.Addr().Is4() {
+			if isIPv4Block(block) {
 				return false
 			}
 			return isPrefixManaged(p, managedPrefixes)
@@ -567,7 +567,7 @@ func isManagedBlock(block map[string]interface{}, managedPrefixes []netip.Prefix
 	if start, ok := block["start"].(string); ok {
 		a, err := netip.ParseAddr(start)
 		if err == nil {
-			if a.Is4() {
+			if isIPv4Block(block) {
 				return false
 			}
 			for _, mp := range managedPrefixes {
@@ -576,6 +576,20 @@ func isManagedBlock(block map[string]interface{}, managedPrefixes []netip.Prefix
 				}
 			}
 		}
+	}
+
+	return false
+}
+
+func isIPv4Block(block map[string]interface{}) bool {
+	if cidr, ok := block["cidr"].(string); ok {
+		p, err := netip.ParsePrefix(cidr)
+		return err == nil && p.Addr().Is4()
+	}
+
+	if start, ok := block["start"].(string); ok {
+		a, err := netip.ParseAddr(start)
+		return err == nil && a.Is4()
 	}
 
 	return false
