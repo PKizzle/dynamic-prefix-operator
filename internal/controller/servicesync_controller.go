@@ -60,9 +60,9 @@ const (
 	// Service's currently assigned IP.
 	AnnotationSuffix = "dynamic-prefix.io/suffix"
 
-	// AnnotationNoExternalDNSTargetUpdate disables managed updates of the
+	// AnnotationSkipExternalDNSUpdate disables managed updates of the
 	// external-dns target annotation in HA mode.
-	AnnotationNoExternalDNSTargetUpdate = "dynamic-prefix.io/no-external-dns-target-update"
+	AnnotationSkipExternalDNSUpdate = "dynamic-prefix.io/skip-external-dns-update"
 )
 
 // ServiceSyncReconciler reconciles LoadBalancer Services for HA mode prefix transitions.
@@ -171,7 +171,7 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	preservedTargets := extractUnmanagedIPs(existingTarget, managedPrefixes)
 	finalTargets := append(preservedTargets, currentIP)
 	finalTargetStr := strings.Join(finalTargets, ",")
-	if annotations[AnnotationNoExternalDNSTargetUpdate] != "true" && annotations[AnnotationExternalDNSTarget] != finalTargetStr {
+	if annotations[AnnotationSkipExternalDNSUpdate] != "true" && annotations[AnnotationExternalDNSTarget] != finalTargetStr {
 		newAnnotations[AnnotationExternalDNSTarget] = finalTargetStr
 		updated = true
 	}

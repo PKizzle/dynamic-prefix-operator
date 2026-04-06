@@ -249,7 +249,7 @@ var _ = Describe("ServiceSync Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: serviceName, Namespace: serviceNS}, svc)).To(Succeed())
 
 			annotations := svc.GetAnnotations()
-			annotations[AnnotationNoExternalDNSTargetUpdate] = "true"
+			annotations[AnnotationSkipExternalDNSUpdate] = "true"
 			annotations[AnnotationExternalDNSTarget] = "existing.example.com"
 			svc.SetAnnotations(annotations)
 			Expect(k8sClient.Update(ctx, svc)).To(Succeed())
@@ -833,9 +833,9 @@ func TestServiceSyncAnnotationConstants(t *testing.T) {
 			expected: "dynamic-prefix.io/suffix",
 		},
 		{
-			name:     "AnnotationNoExternalDNSTargetUpdate",
-			constant: AnnotationNoExternalDNSTargetUpdate,
-			expected: "dynamic-prefix.io/no-external-dns-target-update",
+			name:     "AnnotationSkipExternalDNSUpdate",
+			constant: AnnotationSkipExternalDNSUpdate,
+			expected: "dynamic-prefix.io/skip-external-dns-update",
 		},
 	}
 
