@@ -384,10 +384,11 @@ func (r *BGPSyncReconciler) buildBGPCondition(
 ) metav1.Condition {
 	if len(subnetsWithBGP) == 0 {
 		return metav1.Condition{
-			Type:    dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
-			Status:  metav1.ConditionFalse,
-			Reason:  "NoBGPSubnets",
-			Message: "No subnets have BGP advertisement enabled",
+			Type:               dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             "NoBGPSubnets",
+			Message:            "No subnets have BGP advertisement enabled",
+			LastTransitionTime: metav1.Now(),
 		}
 	}
 
@@ -405,18 +406,20 @@ func (r *BGPSyncReconciler) buildBGPCondition(
 
 	if allReady {
 		return metav1.Condition{
-			Type:    dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
-			Status:  metav1.ConditionTrue,
-			Reason:  "AdvertisementsReady",
-			Message: fmt.Sprintf("%d BGP advertisement(s) configured", len(subnetsWithBGP)),
+			Type:               dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             "AdvertisementsReady",
+			Message:            fmt.Sprintf("%d BGP advertisement(s) configured", len(subnetsWithBGP)),
+			LastTransitionTime: metav1.Now(),
 		}
 	}
 
 	return metav1.Condition{
-		Type:    dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
-		Status:  metav1.ConditionFalse,
-		Reason:  "AdvertisementsPending",
-		Message: "Some BGP advertisements are not yet ready",
+		Type:               dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "AdvertisementsPending",
+		Message:            "Some BGP advertisements are not yet ready",
+		LastTransitionTime: metav1.Now(),
 	}
 }
 
@@ -430,24 +433,14 @@ func (r *BGPSyncReconciler) findCondition(conditions []metav1.Condition, conditi
 	return nil
 }
 
-// setCondition updates or adds a condition, preserving LastTransitionTime
-// when the status has not changed (per Kubernetes convention).
+// setCondition updates or adds a condition.
 func (r *BGPSyncReconciler) setCondition(conditions *[]metav1.Condition, condition metav1.Condition) {
-	now := metav1.Now()
 	for i := range *conditions {
 		if (*conditions)[i].Type == condition.Type {
-			if (*conditions)[i].Status == condition.Status {
-				// Status unchanged — preserve the existing transition time
-				condition.LastTransitionTime = (*conditions)[i].LastTransitionTime
-			} else {
-				condition.LastTransitionTime = now
-			}
 			(*conditions)[i] = condition
 			return
 		}
 	}
-	// New condition
-	condition.LastTransitionTime = now
 	*conditions = append(*conditions, condition)
 }
 
