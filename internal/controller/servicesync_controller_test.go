@@ -450,7 +450,8 @@ func TestCombinePrefixSuffix(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			prefix := netip.MustParsePrefix(tt.prefix)
 			result := combinePrefixSuffix(prefix, netip.MustParseAddr(tt.suffix).As16())
-			if result.String() != tt.expected {
+			expectedAddr := netip.MustParseAddr(tt.expected)
+			if result != expectedAddr {
 				t.Errorf("combinePrefixSuffix(%s, %s) = %s, want %s", tt.prefix, tt.suffix, result.String(), tt.expected)
 			}
 		})
@@ -504,7 +505,7 @@ func TestCalculateSuffixIPs_MultipleHistory(t *testing.T) {
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{Transition: &dynamicprefixiov1alpha1.TransitionSpec{Mode: dynamicprefixiov1alpha1.TransitionModeHA, MaxPrefixHistory: 3}},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
 			CurrentPrefix: "2001:db8:abcd:100::/56",
-			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{{Prefix: "2001:db8:abcd:200::/56"}, {Prefix: "2001:db8:abcd:300::/56"}, {Prefix: "2001:db8:abcd:400::/56"}},
+			History:       []dynamicprefixiov1alpha1.PrefixHistoryEntry{{Prefix: "2001:db8:abcd:200::/56"}, {Prefix: "2001:db8:abcd:300::/56"}, {Prefix: "2001:db8:abcd:400::/56"}},
 		},
 	}
 	allIPs, _, err := r.calculateSuffixIPs(dp, "::1")
@@ -519,7 +520,7 @@ func TestCalculateSuffixIPs_MultipleHistory(t *testing.T) {
 func TestCalculateSuffixIPs_MaxHistoryLimit(t *testing.T) {
 	r := &ServiceSyncReconciler{}
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{Transition: &dynamicprefixiov1alpha1.TransitionSpec{Mode: dynamicprefixiov1alpha1.TransitionModeHA, MaxPrefixHistory: 1}},
+		Spec:   dynamicprefixiov1alpha1.DynamicPrefixSpec{Transition: &dynamicprefixiov1alpha1.TransitionSpec{Mode: dynamicprefixiov1alpha1.TransitionModeHA, MaxPrefixHistory: 1}},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{CurrentPrefix: "2001:db8:1::/48", History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{{Prefix: "2001:db8:2::/48"}, {Prefix: "2001:db8:3::/48"}}},
 	}
 	allIPs, _, err := r.calculateSuffixIPs(dp, "::42")
@@ -604,7 +605,7 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{Transition: &dynamicprefixiov1alpha1.TransitionSpec{Mode: dynamicprefixiov1alpha1.TransitionModeHA, MaxPrefixHistory: tt.maxHistory}},
+				Spec:   dynamicprefixiov1alpha1.DynamicPrefixSpec{Transition: &dynamicprefixiov1alpha1.TransitionSpec{Mode: dynamicprefixiov1alpha1.TransitionModeHA, MaxPrefixHistory: tt.maxHistory}},
 				Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{CurrentPrefix: tt.dpCurrentPrefix},
 			}
 			for _, h := range tt.dpHistory {
@@ -665,7 +666,7 @@ func TestCalculateSuffixIPs_InvalidInputs(t *testing.T) {
 func TestCalculateSuffixIPs_MalformedHistorySkipped(t *testing.T) {
 	r := &ServiceSyncReconciler{}
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{Transition: &dynamicprefixiov1alpha1.TransitionSpec{Mode: dynamicprefixiov1alpha1.TransitionModeHA, MaxPrefixHistory: 5}},
+		Spec:   dynamicprefixiov1alpha1.DynamicPrefixSpec{Transition: &dynamicprefixiov1alpha1.TransitionSpec{Mode: dynamicprefixiov1alpha1.TransitionModeHA, MaxPrefixHistory: 5}},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{CurrentPrefix: "2001:db8::/48", History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{{Prefix: "2001:db8:1::/48"}, {Prefix: "garbage"}, {Prefix: ""}, {Prefix: "2001:db8::1"}, {Prefix: "2001:db8:2::/48"}}},
 	}
 	allIPs, _, err := r.calculateSuffixIPs(dp, "::42")

@@ -358,7 +358,6 @@ func (r *ServiceSyncReconciler) calculateSuffixIPs(
 	return allIPs, currentIP.String(), nil
 }
 
-
 // combinePrefixSuffix combines a prefix's network part with a suffix's host part.
 func combinePrefixSuffix(pfx netip.Prefix, suffixBytes [16]byte) netip.Addr {
 	prefixBytes := pfx.Addr().As16()
