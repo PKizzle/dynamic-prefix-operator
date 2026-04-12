@@ -142,16 +142,18 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
+	managedPrefixes := collectManagedPrefixes(&dp)
+
 	// Update the pool based on its type
 	gvk := pool.GetObjectKind().GroupVersionKind()
 	var updateErr error
 
 	switch gvk.Kind {
 	case "CiliumLoadBalancerIPPool":
-		updateErr = r.updateLoadBalancerIPPool(ctx, pool, configs)
+		updateErr = r.updateLoadBalancerIPPool(ctx, pool, configs, managedPrefixes)
 	case "CiliumCIDRGroup":
 		// CIDRGroup doesn't support start/end ranges, use CIDR only
-		updateErr = r.updateCIDRGroup(ctx, pool, configs)
+		updateErr = r.updateCIDRGroup(ctx, pool, configs, managedPrefixes)
 	default:
 		log.Info("Unknown pool type", "kind", gvk.Kind)
 		return ctrl.Result{}, nil
@@ -434,14 +436,27 @@ func (r *PoolSyncReconciler) calculateSubnetConfig(
 // updateLoadBalancerIPPool updates a CiliumLoadBalancerIPPool with the new configurations.
 // It supports both CIDR-based blocks (Mode 2) and start/end address ranges (Mode 1).
 // Multiple blocks are created for current prefix plus historical prefixes.
-func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration) error {
+func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) error {
 	log := logf.FromContext(ctx)
+
+	existingBlocks, _, _ := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+	var preservedBlocks []interface{}
+	for _, b := range existingBlocks {
+		block, ok := b.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if !isManagedBlock(block, managedPrefixes) {
+			preservedBlocks = append(preservedBlocks, block)
+		}
+	}
 
 	// CiliumLoadBalancerIPPool spec.blocks is a list of IP blocks
 	// Format can be either:
 	// - spec.blocks[].cidr for CIDR-based allocation
 	// - spec.blocks[].start + spec.blocks[].stop for address range (Cilium uses "stop" not "end")
-	blocks := make([]interface{}, 0, len(configs))
+	blocks := make([]interface{}, 0, len(preservedBlocks)+len(configs))
+	blocks = append(blocks, preservedBlocks...)
 
 	for _, config := range configs {
 		var block map[string]interface{}
@@ -461,8 +476,8 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 	}
 
 	// Check if blocks actually changed before updating to avoid feedback loops
-	existingBlocks, _, _ := unstructured.NestedSlice(pool.Object, "spec", "blocks")
-	existingJSON, _ := json.Marshal(existingBlocks)
+	currentBlocks, _, _ := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+	existingJSON, _ := json.Marshal(currentBlocks)
 	newJSON, _ := json.Marshal(blocks)
 	if reflect.DeepEqual(existingJSON, newJSON) {
 		log.V(2).Info("Pool blocks unchanged, skipping update", "pool", pool.GetName())
@@ -481,19 +496,37 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 
 // updateCIDRGroup updates a CiliumCIDRGroup with the new CIDRs.
 // Multiple CIDRs are added for current prefix plus historical prefixes.
-func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration) error {
+func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) error {
 	log := logf.FromContext(ctx)
 
+	existingCIDRs, _, _ := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
+	var preserved []interface{}
+	for _, c := range existingCIDRs {
+		cidrStr, ok := c.(string)
+		if !ok {
+			continue
+		}
+		p, err := netip.ParsePrefix(cidrStr)
+		if err != nil {
+			preserved = append(preserved, c)
+			continue
+		}
+		if !isPrefixManaged(p, managedPrefixes) {
+			preserved = append(preserved, c)
+		}
+	}
+
 	// CiliumCIDRGroup spec.externalCIDRs is a list of CIDR strings
-	externalCIDRs := make([]interface{}, 0, len(configs))
+	externalCIDRs := make([]interface{}, 0, len(preserved)+len(configs))
+	externalCIDRs = append(externalCIDRs, preserved...)
 
 	for _, config := range configs {
 		externalCIDRs = append(externalCIDRs, config.cidr)
 	}
 
 	// Check if CIDRs actually changed before updating to avoid feedback loops
-	existingCIDRs, _, _ := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
-	existingJSON, _ := json.Marshal(existingCIDRs)
+	currentCIDRs, _, _ := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
+	existingJSON, _ := json.Marshal(currentCIDRs)
 	newJSON, _ := json.Marshal(externalCIDRs)
 	if reflect.DeepEqual(existingJSON, newJSON) {
 		log.V(2).Info("CIDRGroup unchanged, skipping update", "cidrGroup", pool.GetName())
@@ -518,6 +551,72 @@ func (r *PoolSyncReconciler) setLastSyncAnnotation(pool *unstructured.Unstructur
 	}
 	annotations[AnnotationLastSync] = time.Now().UTC().Format(time.RFC3339)
 	pool.SetAnnotations(annotations)
+}
+
+func isManagedBlock(block map[string]interface{}, managedPrefixes []netip.Prefix) bool {
+	if cidr, ok := block["cidr"].(string); ok {
+		p, err := netip.ParsePrefix(cidr)
+		if err == nil {
+			if isIPv4Block(block) {
+				return false
+			}
+			return isPrefixManaged(p, managedPrefixes)
+		}
+	}
+
+	if start, ok := block["start"].(string); ok {
+		a, err := netip.ParseAddr(start)
+		if err == nil {
+			if isIPv4Block(block) {
+				return false
+			}
+			for _, mp := range managedPrefixes {
+				if mp.Contains(a) {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func isIPv4Block(block map[string]interface{}) bool {
+	if cidr, ok := block["cidr"].(string); ok {
+		p, err := netip.ParsePrefix(cidr)
+		return err == nil && p.Addr().Is4()
+	}
+
+	if start, ok := block["start"].(string); ok {
+		a, err := netip.ParseAddr(start)
+		return err == nil && a.Is4()
+	}
+
+	return false
+}
+
+func isPrefixManaged(p netip.Prefix, managedPrefixes []netip.Prefix) bool {
+	for _, mp := range managedPrefixes {
+		if mp.Contains(p.Addr()) || p.Contains(mp.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectManagedPrefixes(dp *dynamicprefixiov1alpha1.DynamicPrefix) []netip.Prefix {
+	var prefixes []netip.Prefix
+	if dp.Status.CurrentPrefix != "" {
+		if p, err := netip.ParsePrefix(dp.Status.CurrentPrefix); err == nil {
+			prefixes = append(prefixes, p)
+		}
+	}
+	for _, h := range dp.Status.History {
+		if p, err := netip.ParsePrefix(h.Prefix); err == nil {
+			prefixes = append(prefixes, p)
+		}
+	}
+	return prefixes
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -92,6 +93,10 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Fetch the referenced DynamicPrefix
 	var dp dynamicprefixiov1alpha1.DynamicPrefix
 	if err := r.Get(ctx, types.NamespacedName{Name: dpName}, &dp); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.V(1).Info("Referenced DynamicPrefix not found, will retry", "name", dpName)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		log.Error(err, "Failed to get DynamicPrefix", "name", dpName)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
@@ -119,6 +124,13 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
+	// Preserve non-managed IPs and targets (IPv4, hostnames, static IPv6 outside managed prefixes)
+	managedPrefixes := r.collectManagedPrefixes(&dp)
+
+	existingIPs := annotations[AnnotationCiliumIPs]
+	preservedIPs := extractUnmanagedIPs(existingIPs, managedPrefixes)
+	finalIPs := append(preservedIPs, allIPs...)
+
 	// Update Service annotations
 	updated := false
 	newAnnotations := make(map[string]string)
@@ -126,16 +138,20 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		newAnnotations[k] = v
 	}
 
-	// Set lbipam.cilium.io/ips with all IPs
-	allIPsStr := strings.Join(allIPs, ",")
-	if annotations[AnnotationCiliumIPs] != allIPsStr {
-		newAnnotations[AnnotationCiliumIPs] = allIPsStr
+	// Set lbipam.cilium.io/ips with preserved entries plus all managed IPs
+	finalIPsStr := strings.Join(finalIPs, ",")
+	if annotations[AnnotationCiliumIPs] != finalIPsStr {
+		newAnnotations[AnnotationCiliumIPs] = finalIPsStr
 		updated = true
 	}
 
-	// Set external-dns target to current IP only
-	if annotations[AnnotationExternalDNSTarget] != currentIP {
-		newAnnotations[AnnotationExternalDNSTarget] = currentIP
+	// Set external-dns target to preserved entries plus current managed IP only
+	existingTarget := annotations[AnnotationExternalDNSTarget]
+	preservedTargets := extractUnmanagedIPs(existingTarget, managedPrefixes)
+	finalTargets := append(preservedTargets, currentIP)
+	finalTargetStr := strings.Join(finalTargets, ",")
+	if annotations[AnnotationExternalDNSTarget] != finalTargetStr {
+		newAnnotations[AnnotationExternalDNSTarget] = finalTargetStr
 		updated = true
 	}
 
@@ -148,10 +164,57 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			log.Error(err, "Failed to update Service annotations")
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
-		log.Info("Service annotations updated", "service", req.NamespacedName, "allIPs", allIPsStr, "dnsTarget", currentIP)
+		log.Info("Service annotations updated", "service", req.NamespacedName, "allIPs", finalIPsStr, "dnsTarget", finalTargetStr)
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// collectManagedPrefixes returns all current and historical prefixes managed by the operator.
+func (r *ServiceSyncReconciler) collectManagedPrefixes(dp *dynamicprefixiov1alpha1.DynamicPrefix) []netip.Prefix {
+	return collectManagedPrefixes(dp)
+}
+
+// extractUnmanagedIPs parses a comma-separated list and returns only the entries not managed
+// by the operator. IPv4 addresses, hostnames, and IPv6 addresses outside the managed prefixes
+// are preserved; IPv6 addresses inside managed prefixes are filtered out.
+func extractUnmanagedIPs(ipsAnnotation string, managedPrefixes []netip.Prefix) []string {
+	if ipsAnnotation == "" {
+		return nil
+	}
+
+	var preserved []string
+	for _, raw := range strings.Split(ipsAnnotation, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+
+		addr, err := netip.ParseAddr(raw)
+		if err != nil {
+			preserved = append(preserved, raw)
+			continue
+		}
+
+		if addr.Is4() || addr.Is4In6() {
+			preserved = append(preserved, raw)
+			continue
+		}
+
+		managed := false
+		for _, p := range managedPrefixes {
+			if p.Contains(addr) {
+				managed = true
+				break
+			}
+		}
+
+		if !managed {
+			preserved = append(preserved, raw)
+		}
+	}
+
+	return preserved
 }
 
 // getCurrentServiceIP returns the current IPv6 IP from Service status.
