@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"strings"
 	"time"
@@ -52,6 +53,12 @@ const (
 	// AnnotationServiceSubnet specifies which subnet to use for Service IPs.
 	// This is used when the DynamicPrefix uses subnets (Mode 2).
 	AnnotationServiceSubnet = "dynamic-prefix.io/service-subnet"
+
+	// AnnotationSuffix specifies a static IPv6 suffix (host part) for a Service.
+	// When set, the operator calculates full IPv6 addresses by combining the current
+	// (and historical) prefix with this suffix, instead of inferring it from the
+	// Service's currently assigned IP.
+	AnnotationSuffix = "dynamic-prefix.io/suffix"
 )
 
 // ServiceSyncReconciler reconciles LoadBalancer Services for HA mode prefix transitions.
@@ -109,19 +116,29 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	log.Info("Syncing Service for HA mode", "service", req.NamespacedName, "dynamicPrefix", dpName)
 
-	// Get current assigned IP from Service status
-	currentServiceIP := r.getCurrentServiceIP(&svc)
-	if currentServiceIP == "" {
-		// Service doesn't have an IP yet, let Cilium assign one
-		log.V(1).Info("Service has no IP assigned yet, skipping")
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
+	var allIPs []string
+	var currentIP string
+	var err error
 
-	// Calculate all IPs (current + historical) based on the Service's current IP
-	allIPs, currentIP, err := r.calculateServiceIPs(ctx, &dp, &svc, currentServiceIP)
-	if err != nil {
-		log.Error(err, "Failed to calculate Service IPs")
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	if suffix, ok := annotations[AnnotationSuffix]; ok && suffix != "" {
+		allIPs, currentIP, err = r.calculateSuffixIPs(&dp, suffix)
+		if err != nil {
+			log.Error(err, "Failed to calculate IPs from suffix", "suffix", suffix)
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		log.V(1).Info("Using suffix-based IP calculation", "suffix", suffix, "currentIP", currentIP)
+	} else {
+		currentServiceIP := r.getCurrentServiceIP(&svc)
+		if currentServiceIP == "" {
+			log.V(1).Info("Service has no IP assigned yet, skipping")
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+
+		allIPs, currentIP, err = r.calculateServiceIPs(ctx, &dp, &svc, currentServiceIP)
+		if err != nil {
+			log.Error(err, "Failed to calculate Service IPs")
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
 	}
 
 	// Preserve non-managed IPs and targets (IPv4, hostnames, static IPv6 outside managed prefixes)
@@ -296,6 +313,71 @@ func (r *ServiceSyncReconciler) calculateServiceIPs(
 	}
 
 	return allIPs, currentPrefixIP, nil
+}
+
+// calculateSuffixIPs calculates IPv6 addresses by combining a static suffix with
+// the current and historical prefixes. Returns (allIPs, currentIP, error).
+func (r *ServiceSyncReconciler) calculateSuffixIPs(
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	suffix string,
+) ([]string, string, error) {
+	suffixAddr, err := netip.ParseAddr(suffix)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid IPv6 suffix %q: %w", suffix, err)
+	}
+	suffixBytes := suffixAddr.As16()
+
+	currentPrefix, err := netip.ParsePrefix(dp.Status.CurrentPrefix)
+	if err != nil {
+		return nil, "", err
+	}
+
+	maxHistory := 2
+	if dp.Spec.Transition != nil && dp.Spec.Transition.MaxPrefixHistory > 0 {
+		maxHistory = dp.Spec.Transition.MaxPrefixHistory
+	}
+
+	currentIP := combinePrefixSuffix(currentPrefix, suffixBytes)
+
+	allIPs := []string{currentIP.String()}
+	for i, histEntry := range dp.Status.History {
+		if i >= maxHistory {
+			break
+		}
+
+		histPrefix, err := netip.ParsePrefix(histEntry.Prefix)
+		if err != nil {
+			continue
+		}
+
+		histIP := combinePrefixSuffix(histPrefix, suffixBytes)
+
+		allIPs = append(allIPs, histIP.String())
+	}
+
+	return allIPs, currentIP.String(), nil
+}
+
+
+// combinePrefixSuffix combines a prefix's network part with a suffix's host part.
+func combinePrefixSuffix(pfx netip.Prefix, suffixBytes [16]byte) netip.Addr {
+	prefixBytes := pfx.Addr().As16()
+	prefixLen := pfx.Bits()
+
+	var result [16]byte
+	for i := 0; i < 16; i++ {
+		bitPos := i * 8
+		if bitPos+8 <= prefixLen {
+			result[i] = prefixBytes[i]
+		} else if bitPos >= prefixLen {
+			result[i] = suffixBytes[i]
+		} else {
+			mask := byte(0xFF << (8 - (prefixLen - bitPos)))
+			result[i] = (prefixBytes[i] & mask) | (suffixBytes[i] & ^mask)
+		}
+	}
+
+	return netip.AddrFrom16(result)
 }
 
 // calculateAddressRangeIPs calculates IPs for address range mode.
