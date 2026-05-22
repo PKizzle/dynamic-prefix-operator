@@ -19,7 +19,7 @@
 │   │  │                                                                  │   │ │
 │   │  │  ┌─────────────────┐         ┌─────────────────┐                │   │ │
 │   │  │  │ RA Monitor      │         │ DHCPv6-PD Client│                │   │ │
-│   │  │  │ (Primary)       │         │ (Future)        │                │   │ │
+│   │  │  │ (Passive)       │         │ (Active)        │                │   │ │
 │   │  │  │                 │         │                 │                │   │ │
 │   │  │  │ • Parse RAs     │         │ • SOLICIT/REPLY │                │   │ │
 │   │  │  │ • Extract PIOs  │         │ • Lease renewal │                │   │ │
@@ -107,7 +107,7 @@ The operator monitors Router Advertisements using [mdlayher/ndp](https://github.
 - Passive observation doesn't conflict with existing prefix delegation
 - Simpler than running a DHCPv6-PD client
 
-#### DHCPv6-PD Client (Future)
+#### DHCPv6-PD Client
 
 For environments where the operator should act as the DHCPv6 Prefix Delegation client:
 
@@ -299,7 +299,7 @@ The operator rotates only the managed IPv6 addresses. IPv4 addresses and static 
 **Spec:**
 - `acquisition`: How to receive the prefix (RA monitoring, DHCPv6-PD)
 - `addressRanges`: Ranges within the /64 (recommended)
-- `subnets`: Subdivide prefix into /64s (future - requires BGP)
+- `subnets`: Subdivide a larger prefix into smaller subnets (advanced; usually paired with BGP)
 - `transition`: Graceful transition settings
   - `mode`: `simple` (default) or `ha` (high availability with multi-IP Services)
   - `maxPrefixHistory`: Number of historical prefixes to retain in pool blocks (default: 2)
@@ -406,16 +406,13 @@ Minimal permissions:
 
 ### Adding New Pool Types
 
-1. Implement pool handler logic in `poolsync_controller.go`
-2. Add GVK to watched resources
-3. Document annotation usage
+1. Add or extend a `poolBackend` implementation used by `PoolSyncReconciler`
+2. Add discovery for the backend GVK so the controller only watches installed CRDs
+3. Add RBAC markers and regenerate manifests
+4. Add preservation/idempotency tests
+5. Document annotation usage and backend-specific caveats
 
-Example for MetalLB:
-
-```go
-case "metallb.io":
-    pool.Spec.Addresses = []string{addressRange.Start + "-" + addressRange.End}
-```
+Current pool backends include Cilium `CiliumLoadBalancerIPPool`, Cilium `CiliumCIDRGroup`, MetalLB `IPAddressPool`, and Calico `IPPool`.
 
 ### Adding New Prefix Sources
 

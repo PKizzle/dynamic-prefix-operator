@@ -114,7 +114,9 @@ type SubnetSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 
-	// Offset is the address offset within the received prefix (in host units)
+	// Offset selects the Nth subnet of PrefixLength within the received prefix.
+	// For example, with a /56 base prefix and PrefixLength 64, offset 255 selects
+	// the last /64 in the /56.
 	// +optional
 	// +kubebuilder:default=0
 	Offset int64 `json:"offset,omitempty"`
@@ -304,7 +306,7 @@ const (
 
 // DynamicPrefix is the Schema for the dynamicprefixes API.
 // It represents a dynamically acquired IPv6 prefix that can be subdivided
-// into subnets and used to populate Cilium IP pools and other resources.
+// into subnets and used to populate supported pool backends and other resources.
 type DynamicPrefix struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

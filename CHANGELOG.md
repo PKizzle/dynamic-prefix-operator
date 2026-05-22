@@ -4,6 +4,24 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## v0.0.7 - 2026-05-22
+
+### Added
+
+- Added generic PoolSync backend dispatch with optional CRD discovery for supported pool APIs.
+- Added MetalLB `IPAddressPool` synchronization through `dynamic-prefix.io/*` annotations, including address-range, subnet, history, and unmanaged-address preservation support.
+- Added Calico `IPPool` synchronization through `dynamic-prefix.io/*` annotations, including safe exact-CIDR handling for address ranges.
+
+### Changed
+
+- Updated manager startup so PoolSync can run with Cilium, MetalLB, Calico, or any combination of available backend CRDs instead of requiring Cilium before registering pool synchronization.
+- Updated README, architecture, prefix-acquisition, implementation-plan, and sample manifests to document DHCPv6-PD, subnet mode, MetalLB, and Calico as implemented features.
+- Corrected subnet offset documentation to describe offset as the Nth target subnet inside the delegated prefix.
+
+### Tests
+
+- Added unit coverage for optional pool backend discovery and MetalLB/Calico backend update behavior.
+
 ## v0.0.6 - 2026-05-22
 
 ### Added

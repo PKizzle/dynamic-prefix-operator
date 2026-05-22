@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -228,9 +229,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	ciliumVersions, err := controller.DiscoverCiliumVersions(clientset.Discovery())
+	discoveryClient := clientset.Discovery()
+	poolBackendGVKs, err := controller.DiscoverPoolBackendGVKs(discoveryClient)
 	if err != nil {
-		setupLog.Info("Cilium API not available at startup, will poll in background", "reason", err.Error())
+		setupLog.Info("Pool backend APIs not available at startup, will poll in background", "reason", err.Error())
+	}
+
+	ciliumVersions, err := controller.DiscoverCiliumVersions(discoveryClient)
+	if err != nil {
+		setupLog.Info("Cilium BGP API not available at startup, will poll in background", "reason", err.Error())
 	}
 
 	// Set up DynamicPrefix controller with receiver factory
@@ -253,16 +260,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// setupCiliumControllers registers PoolSync and BGPSync with the manager.
-	setupCiliumControllers := func(versions *controller.CiliumVersions) error {
+	// setupPoolSyncController registers PoolSync for all discovered pool backends.
+	setupPoolSyncController := func(gvks []schema.GroupVersionKind) error {
 		if err := (&controller.PoolSyncReconciler{
-			Client:         mgr.GetClient(),
-			Scheme:         mgr.GetScheme(),
-			CiliumVersions: versions,
+			Client:      mgr.GetClient(),
+			Scheme:      mgr.GetScheme(),
+			BackendGVKs: gvks,
 		}).SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("unable to create PoolSync controller: %w", err)
 		}
+		return nil
+	}
 
+	// setupBGPSyncController registers the Cilium-specific BGPSync controller.
+	setupBGPSyncController := func(versions *controller.CiliumVersions) error {
 		if err := (&controller.BGPSyncReconciler{
 			Client:         mgr.GetClient(),
 			Scheme:         mgr.GetScheme(),
@@ -274,20 +285,34 @@ func main() {
 		return nil
 	}
 
-	// Set up Cilium-dependent controllers immediately or defer to background poller
-	if ciliumVersions != nil {
-		if err := setupCiliumControllers(ciliumVersions); err != nil {
-			setupLog.Error(err, "unable to set up Cilium controllers")
+	// Set up pool backends immediately or defer to background poller.
+	if len(poolBackendGVKs) > 0 {
+		if err := setupPoolSyncController(poolBackendGVKs); err != nil {
+			setupLog.Error(err, "unable to set up PoolSync controller")
 			os.Exit(1)
 		}
 	} else {
-		// Register a background Runnable that polls for Cilium APIs and
-		// registers the controllers once they become available.
-		if err := mgr.Add(&controller.CiliumControllerStarter{
-			Discovery:        clientset.Discovery(),
-			SetupControllers: setupCiliumControllers,
+		if err := mgr.Add(&controller.PoolBackendControllerStarter{
+			Discovery:        discoveryClient,
+			SetupControllers: setupPoolSyncController,
 		}); err != nil {
-			setupLog.Error(err, "unable to add Cilium controller starter")
+			setupLog.Error(err, "unable to add pool backend controller starter")
+			os.Exit(1)
+		}
+	}
+
+	// Set up Cilium BGP controller immediately or defer to background poller.
+	if ciliumVersions != nil {
+		if err := setupBGPSyncController(ciliumVersions); err != nil {
+			setupLog.Error(err, "unable to set up BGPSync controller")
+			os.Exit(1)
+		}
+	} else {
+		if err := mgr.Add(&controller.CiliumControllerStarter{
+			Discovery:        discoveryClient,
+			SetupControllers: setupBGPSyncController,
+		}); err != nil {
+			setupLog.Error(err, "unable to add Cilium BGP controller starter")
 			os.Exit(1)
 		}
 	}

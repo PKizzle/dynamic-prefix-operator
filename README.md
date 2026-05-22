@@ -42,7 +42,7 @@ But all of this assumes **stable IP addressing**. Cloud providers give you stati
 
 1. **Monitoring prefix changes** via Router Advertisement observation
 2. **Calculating address ranges** from the received prefix automatically
-3. **Updating Cilium resources** (LoadBalancerIPPool, CIDRGroup) when prefixes change
+3. **Updating supported pool backends** (Cilium, MetalLB, Calico) when prefixes change
 4. **Managing graceful transitions** to minimize service disruption
 
 ## Quick Start
@@ -259,12 +259,13 @@ annotations:
 
 ## Supported Annotations
 
-Add these annotations to Cilium resources to have them managed by the operator:
+Add these annotations to supported pool resources to have them managed by the operator:
 
 | Annotation | Description |
 |------------|-------------|
 | `dynamic-prefix.io/name` | Name of the DynamicPrefix CR to reference |
 | `dynamic-prefix.io/address-range` | Name of the address range to use |
+| `dynamic-prefix.io/subnet` | Name of the subnet to use |
 
 Add these annotations to LoadBalancer Services for HA mode:
 
@@ -280,6 +281,17 @@ Add these annotations to LoadBalancer Services for HA mode:
 
 - **CiliumLoadBalancerIPPool** — for Cilium LB-IPAM (`spec.blocks` with start/stop)
 - **CiliumCIDRGroup** — for network policies (`spec.externalCIDRs`)
+- **MetalLB IPAddressPool** — for MetalLB LoadBalancer pools (`spec.addresses` with CIDR or start-end entries)
+- **Calico IPPool** — for Calico LoadBalancer IPAM (`spec.cidr`; address ranges must align to one exact CIDR)
+
+### Backend Notes
+
+| Backend | Resource | Address range mode | Subnet mode | Notes |
+|---------|----------|--------------------|-------------|-------|
+| Cilium | `CiliumLoadBalancerIPPool` | Precise `start`/`stop` blocks | CIDR blocks | Preserves unmanaged IPv4/static IPv6 blocks |
+| Cilium | `CiliumCIDRGroup` | Approximate containing CIDR | CIDR entries | Intended for network policy CIDR groups |
+| MetalLB | `IPAddressPool` | Precise `start-end` entries | CIDR entries | `L2Advertisement`/`BGPAdvertisement` remain user-managed |
+| Calico | `IPPool` | Exact CIDR-aligned ranges only | `spec.cidr` | Requires Calico LoadBalancer IPAM and, for BGP, user-managed `BGPConfiguration` |
 
 ## Configuration Reference
 
@@ -331,7 +343,7 @@ status:
 ## Requirements
 
 - Kubernetes 1.28+
-- Cilium (for LB-IPAM pools)
+- At least one supported pool backend CRD: Cilium, MetalLB, or Calico
 - `hostNetwork: true` for the operator pod (to see Router Advertisements)
 - `NET_RAW` capability (for raw ICMPv6 sockets)
 
@@ -341,7 +353,7 @@ When your ISP changes your prefix:
 
 1. **Detection**: The RA receiver detects the new prefix within seconds
 2. **Status Update**: DynamicPrefix status is updated with new prefix and calculated ranges
-3. **Pool Sync**: All annotated Cilium pools are updated with both old and new blocks
+3. **Pool Sync**: All annotated backend pools are updated with both old and new blocks where the backend supports it
 4. **Service Sync** (HA mode): Services get both IPs, DNS target updated with current IPv6 (preserving hostnames/IPv4)
 5. **DNS Update**: external-dns updates records based on Service IPs or target override
 
@@ -374,10 +386,10 @@ When your ISP changes your prefix:
 - [x] HA mode with multi-IP Services and DNS targeting
 - [x] Suffix annotation for declarative dual-stack IP management
 - [x] Dual-stack IP preservation (IPv4 + static IPv6 untouched)
-- [ ] Subnet mode with BGP (carve /64s from larger prefix)
-- [ ] DHCPv6-PD client (act as PD client)
-- [ ] Calico IPPool backend
-- [ ] MetalLB IPAddressPool backend
+- [x] Subnet mode with BGP (carve /64s from larger prefix)
+- [x] DHCPv6-PD client (act as PD client)
+- [x] Calico IPPool backend
+- [x] MetalLB IPAddressPool backend
 
 ## Contributing
 

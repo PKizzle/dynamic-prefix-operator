@@ -142,9 +142,46 @@ config dhcp 'lan'
 
 ---
 
-## Future: Subnet Mode with BGP
+## Subnet Mode with BGP (Advanced)
 
-A future release will support carving dedicated /64 subnets from larger prefixes (e.g., /56 or /48) and announcing them via BGP. This requires Cilium BGP Control Plane and is currently in development.
+Subnet mode is implemented for users who receive a larger delegated prefix (for example `/56` or `/48`) and want to carve dedicated service subnets from it. The operator calculates `status.subnets` from `spec.subnets`, updates annotated pools that reference `dynamic-prefix.io/subnet`, and can create Cilium `CiliumBGPAdvertisement` resources for subnets with `bgp.advertise: true`.
+
+```yaml
+apiVersion: dynamic-prefix.io/v1alpha1
+kind: DynamicPrefix
+metadata:
+  name: advanced-ipv6
+spec:
+  acquisition:
+    dhcpv6pd:
+      interface: eth0
+      requestedPrefixLength: 56
+    routerAdvertisement:
+      interface: eth0
+      enabled: true
+
+  subnets:
+    - name: loadbalancers
+      # Nth /64 inside the delegated prefix; with 2001:db8:1234::/56,
+      # offset 255 becomes 2001:db8:1234:ff::/64.
+      offset: 255
+      prefixLength: 64
+      bgp:
+        advertise: true
+        community: "65001:100"
+```
+
+### Requirements
+
+- A prefix source that exposes a prefix larger than the target subnet. DHCPv6-PD is supported directly via `spec.acquisition.dhcpv6pd`; Router Advertisement monitoring can still be configured as a fallback.
+- For Cilium BGP advertisement, Cilium BGP Control Plane and peering must be configured separately. The operator manages what to advertise, not the peer/session setup.
+- For MetalLB or Calico backends, configure their advertisement/peering resources separately. The operator manages pool addresses only.
+
+### Who should use this
+
+- Users with a delegated `/56` or larger prefix.
+- Setups that need strict separation between Kubernetes service space and the LAN `/64`.
+- Operators who are comfortable managing BGP peering and route filters.
 
 ---
 

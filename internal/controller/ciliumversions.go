@@ -30,10 +30,20 @@ import (
 // ciliumAPIGroup is the API group for all Cilium custom resources.
 const ciliumAPIGroup = "cilium.io"
 
+const (
+	metallbAPIGroup = "metallb.io"
+	calicoAPIGroup  = "projectcalico.org"
+)
+
 // preferredVersions lists API versions in order of preference (most preferred first).
 // Cilium 1.16+ serves v2 as the stable API; v2alpha1 is deprecated but still
 // served for backward compatibility with older clusters.
 var preferredVersions = []string{"v2", "v2alpha1"}
+
+var (
+	preferredMetalLBVersions = []string{"v1beta1"}
+	preferredCalicoVersions  = []string{"v3"}
+)
 
 // CiliumVersions holds the resolved GroupVersionKind for each Cilium resource
 // the operator interacts with. The versions are determined at startup by
@@ -62,14 +72,12 @@ func DiscoverCiliumVersions(dc discovery.DiscoveryInterface) (*CiliumVersions, e
 	resourceVersions := discoverCiliumResources(dc, available)
 
 	resolve := func(kind, plural string) (schema.GroupVersionKind, error) {
-		for _, v := range preferredVersions {
-			if hasResource(resourceVersions, plural, v) {
-				gvk := schema.GroupVersionKind{Group: ciliumAPIGroup, Version: v, Kind: kind}
-				log.Info("Resolved Cilium API version", "kind", kind, "version", v)
-				return gvk, nil
-			}
+		gvk, err := resolveResource(resourceVersions, ciliumAPIGroup, kind, plural, preferredVersions)
+		if err != nil {
+			return schema.GroupVersionKind{}, err
 		}
-		return schema.GroupVersionKind{}, fmt.Errorf("no supported API version found for %s/%s (checked %v)", ciliumAPIGroup, kind, preferredVersions)
+		log.Info("Resolved Cilium API version", "kind", kind, "version", gvk.Version)
+		return gvk, nil
 	}
 
 	lbPool, err := resolve("CiliumLoadBalancerIPPool", "ciliumloadbalancerippools")
@@ -92,6 +100,51 @@ func DiscoverCiliumVersions(dc discovery.DiscoveryInterface) (*CiliumVersions, e
 	}, nil
 }
 
+// DiscoverPoolBackendGVKs probes the Kubernetes API server for supported pool
+// backend resources. It returns only resources that are currently available and
+// can be watched by PoolSyncReconciler.
+func DiscoverPoolBackendGVKs(dc discovery.DiscoveryInterface) ([]schema.GroupVersionKind, error) {
+	log := ctrl.Log.WithName("setup")
+	definitions := []struct {
+		group             string
+		kind              string
+		plural            string
+		preferredVersions []string
+	}{
+		{group: ciliumAPIGroup, kind: "CiliumLoadBalancerIPPool", plural: "ciliumloadbalancerippools", preferredVersions: preferredVersions},
+		{group: ciliumAPIGroup, kind: "CiliumCIDRGroup", plural: "ciliumcidrgroups", preferredVersions: preferredVersions},
+		{group: metallbAPIGroup, kind: "IPAddressPool", plural: "ipaddresspools", preferredVersions: preferredMetalLBVersions},
+		{group: calicoAPIGroup, kind: "IPPool", plural: "ippools", preferredVersions: preferredCalicoVersions},
+	}
+
+	resourceVersionsByGroup := make(map[string]resourceSet)
+	var gvks []schema.GroupVersionKind
+	for _, def := range definitions {
+		resourceVersions, ok := resourceVersionsByGroup[def.group]
+		if !ok {
+			available, err := discoverGroupVersions(dc, def.group)
+			if err != nil {
+				continue
+			}
+			resourceVersions = discoverResources(dc, def.group, available)
+			resourceVersionsByGroup[def.group] = resourceVersions
+		}
+
+		gvk, err := resolveResource(resourceVersions, def.group, def.kind, def.plural, def.preferredVersions)
+		if err != nil {
+			log.V(1).Info("Pool backend resource not available", "group", def.group, "kind", def.kind, "reason", err.Error())
+			continue
+		}
+		log.Info("Resolved pool backend API version", "kind", def.kind, "group", def.group, "version", gvk.Version)
+		gvks = append(gvks, gvk)
+	}
+
+	if len(gvks) == 0 {
+		return nil, fmt.Errorf("no supported pool backend APIs found")
+	}
+	return gvks, nil
+}
+
 // ListGVK returns the List variant of a GVK (e.g. CiliumLoadBalancerIPPoolList).
 func ListGVK(gvk schema.GroupVersionKind) schema.GroupVersionKind {
 	return schema.GroupVersionKind{
@@ -110,13 +163,17 @@ func APIVersion(gvk schema.GroupVersionKind) string {
 // discoverCiliumGroupVersions returns the list of served versions for the
 // cilium.io API group.
 func discoverCiliumGroupVersions(dc discovery.DiscoveryInterface) ([]string, error) {
+	return discoverGroupVersions(dc, ciliumAPIGroup)
+}
+
+func discoverGroupVersions(dc discovery.DiscoveryInterface, groupName string) ([]string, error) {
 	groups, err := dc.ServerGroups()
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch API groups: %w", err)
 	}
 
 	for _, g := range groups.Groups {
-		if g.Name == ciliumAPIGroup {
+		if g.Name == groupName {
 			var versions []string
 			for _, v := range g.Versions {
 				versions = append(versions, v.Version)
@@ -125,7 +182,7 @@ func discoverCiliumGroupVersions(dc discovery.DiscoveryInterface) ([]string, err
 		}
 	}
 
-	return nil, fmt.Errorf("%s API group not found on the cluster — is Cilium installed?", ciliumAPIGroup)
+	return nil, fmt.Errorf("%s API group not found on the cluster", groupName)
 }
 
 // resourceSet maps resource plural name to the set of versions that serve it.
@@ -134,10 +191,14 @@ type resourceSet map[string]map[string]bool
 // discoverCiliumResources fetches the resources served under each available
 // cilium.io version and builds a lookup table.
 func discoverCiliumResources(dc discovery.DiscoveryInterface, versions []string) resourceSet {
+	return discoverResources(dc, ciliumAPIGroup, versions)
+}
+
+func discoverResources(dc discovery.DiscoveryInterface, group string, versions []string) resourceSet {
 	rs := make(resourceSet)
 
 	for _, v := range versions {
-		resources, err := dc.ServerResourcesForGroupVersion(ciliumAPIGroup + "/" + v)
+		resources, err := dc.ServerResourcesForGroupVersion(group + "/" + v)
 		if err != nil {
 			// Version might be listed in the group but not yet available
 			continue
@@ -151,6 +212,15 @@ func discoverCiliumResources(dc discovery.DiscoveryInterface, versions []string)
 	}
 
 	return rs
+}
+
+func resolveResource(rs resourceSet, group, kind, plural string, preferred []string) (schema.GroupVersionKind, error) {
+	for _, v := range preferred {
+		if hasResource(rs, plural, v) {
+			return schema.GroupVersionKind{Group: group, Version: v, Kind: kind}, nil
+		}
+	}
+	return schema.GroupVersionKind{}, fmt.Errorf("no supported API version found for %s/%s (checked %v)", group, kind, preferred)
 }
 
 // hasResource checks whether a resource is served under a specific version.
@@ -220,5 +290,63 @@ func (s *CiliumControllerStarter) Start(ctx context.Context) error {
 // NeedLeaderElection implements manager.LeaderElectionRunnable. Returns true
 // because the controllers this starter registers require leader election.
 func (s *CiliumControllerStarter) NeedLeaderElection() bool {
+	return true
+}
+
+// PoolBackendControllerStarter polls for any supported pool backend API and
+// registers PoolSync once at least one backend resource is available.
+type PoolBackendControllerStarter struct {
+	// Discovery is used to probe the API server for supported pool backend APIs.
+	Discovery discovery.DiscoveryInterface
+	// PollInterval controls how often to check for backend APIs.
+	// Defaults to 30 seconds if zero.
+	PollInterval time.Duration
+	// SetupControllers is called once when backend APIs are detected.
+	SetupControllers func(gvks []schema.GroupVersionKind) error
+}
+
+// Start implements manager.Runnable. It polls for supported backend APIs and
+// registers controllers when they become available. Returns nil when controllers
+// are registered or the context is cancelled.
+func (s *PoolBackendControllerStarter) Start(ctx context.Context) error {
+	log := ctrl.Log.WithName("setup")
+
+	interval := s.PollInterval
+	if interval == 0 {
+		interval = 30 * time.Second
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	log.Info("Waiting for pool backend APIs to become available", "pollInterval", interval)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("Stopping pool backend API discovery (context cancelled)")
+			return nil
+		case <-ticker.C:
+			gvks, err := DiscoverPoolBackendGVKs(s.Discovery)
+			if err != nil {
+				log.V(1).Info("Pool backend APIs not yet available, will retry", "reason", err.Error())
+				continue
+			}
+
+			log.Info("Pool backend APIs detected, registering PoolSync controller", "backendCount", len(gvks))
+
+			if err := s.SetupControllers(gvks); err != nil {
+				return fmt.Errorf("failed to register PoolSync controller: %w", err)
+			}
+
+			log.Info("PoolSync controller registered successfully")
+			return nil
+		}
+	}
+}
+
+// NeedLeaderElection implements manager.LeaderElectionRunnable. Returns true
+// because PoolSync updates shared cluster resources.
+func (s *PoolBackendControllerStarter) NeedLeaderElection() bool {
 	return true
 }

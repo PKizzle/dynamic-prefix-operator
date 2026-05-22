@@ -20,13 +20,17 @@ package controller
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
@@ -379,9 +383,166 @@ func TestAnnotationConstants(t *testing.T) {
 	}
 }
 
+func TestMetalLBIPAddressPoolBackendUpdate(t *testing.T) {
+	ctx := context.Background()
+	scheme := newPoolBackendTestScheme(t)
+
+	pool := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": APIVersion(DefaultMetalLBIPAddressPoolGVK),
+			"kind":       "IPAddressPool",
+			"metadata": map[string]interface{}{
+				"name": "metallb-pool",
+			},
+			"spec": map[string]interface{}{
+				"addresses": []interface{}{
+					"198.51.100.1-198.51.100.10",
+					"fd00::/64",
+					"2001:db8:1::/64",
+				},
+				"autoAssign": false,
+			},
+		},
+	}
+	pool.SetGroupVersionKind(DefaultMetalLBIPAddressPoolGVK)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool).Build()
+	reconciler := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
+	backend := metalLBIPAddressPoolBackend{resourceGVK: DefaultMetalLBIPAddressPoolGVK}
+	configs := []poolConfiguration{
+		{useAddressRange: true, start: "2001:db8:2::1", end: "2001:db8:2::ff"},
+		{cidr: "2001:db8:3::/64"},
+	}
+	managedPrefixes := []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}
+
+	updated, err := backend.update(ctx, reconciler, pool, configs, managedPrefixes)
+	if err != nil {
+		t.Fatalf("backend.update() unexpected error: %v", err)
+	}
+	if !updated {
+		t.Fatal("backend.update() updated = false, want true")
+	}
+
+	fetched := &unstructured.Unstructured{}
+	fetched.SetGroupVersionKind(DefaultMetalLBIPAddressPoolGVK)
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "metallb-pool"}, fetched); err != nil {
+		t.Fatalf("failed to fetch updated MetalLB pool: %v", err)
+	}
+
+	addresses, found, err := unstructured.NestedStringSlice(fetched.Object, "spec", "addresses")
+	if err != nil || !found {
+		t.Fatalf("failed to read spec.addresses: found=%v err=%v", found, err)
+	}
+	expected := []string{
+		"198.51.100.1-198.51.100.10",
+		"fd00::/64",
+		"2001:db8:2::1-2001:db8:2::ff",
+		"2001:db8:3::/64",
+	}
+	if strings.Join(addresses, ",") != strings.Join(expected, ",") {
+		t.Fatalf("spec.addresses = %v, want %v", addresses, expected)
+	}
+	if _, ok := fetched.GetAnnotations()[AnnotationLastSync]; !ok {
+		t.Fatal("last-sync annotation was not set")
+	}
+	autoAssign, found, err := unstructured.NestedBool(fetched.Object, "spec", "autoAssign")
+	if err != nil || !found || autoAssign {
+		t.Fatalf("spec.autoAssign = %v found=%v err=%v, want false", autoAssign, found, err)
+	}
+
+	updated, err = backend.update(ctx, reconciler, fetched, configs, managedPrefixes)
+	if err != nil {
+		t.Fatalf("second backend.update() unexpected error: %v", err)
+	}
+	if updated {
+		t.Fatal("second backend.update() updated = true, want false")
+	}
+}
+
+func TestCalicoIPPoolBackendUpdateCIDR(t *testing.T) {
+	ctx := context.Background()
+	scheme := newPoolBackendTestScheme(t)
+
+	pool := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": APIVersion(DefaultCalicoIPPoolGVK),
+			"kind":       "IPPool",
+			"metadata": map[string]interface{}{
+				"name": "calico-pool",
+			},
+			"spec": map[string]interface{}{
+				"cidr":         "2001:db8:1::/64",
+				"blockSize":    int64(122),
+				"nodeSelector": "all()",
+				"allowedUses":  []interface{}{"LoadBalancer"},
+			},
+		},
+	}
+	pool.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool).Build()
+	reconciler := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
+	backend := calicoIPPoolBackend{resourceGVK: DefaultCalicoIPPoolGVK}
+	configs := []poolConfiguration{{cidr: "2001:db8:2::/64"}}
+
+	updated, err := backend.update(ctx, reconciler, pool, configs, nil)
+	if err != nil {
+		t.Fatalf("backend.update() unexpected error: %v", err)
+	}
+	if !updated {
+		t.Fatal("backend.update() updated = false, want true")
+	}
+
+	fetched := &unstructured.Unstructured{}
+	fetched.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "calico-pool"}, fetched); err != nil {
+		t.Fatalf("failed to fetch updated Calico pool: %v", err)
+	}
+
+	cidr, _, err := unstructured.NestedString(fetched.Object, "spec", "cidr")
+	if err != nil || cidr != "2001:db8:2::/64" {
+		t.Fatalf("spec.cidr = %q err=%v, want 2001:db8:2::/64", cidr, err)
+	}
+	blockSize, _, err := unstructured.NestedInt64(fetched.Object, "spec", "blockSize")
+	if err != nil || blockSize != 122 {
+		t.Fatalf("spec.blockSize = %d err=%v, want 122", blockSize, err)
+	}
+	if _, ok := fetched.GetAnnotations()[AnnotationLastSync]; !ok {
+		t.Fatal("last-sync annotation was not set")
+	}
+}
+
+func TestCalicoCIDRForConfigRejectsNonExactAddressRange(t *testing.T) {
+	_, err := calicoCIDRForConfig(poolConfiguration{
+		useAddressRange: true,
+		start:           "2001:db8::1",
+		end:             "2001:db8::3",
+	})
+	if err == nil {
+		t.Fatal("calicoCIDRForConfig() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "CIDR-aligned") {
+		t.Fatalf("calicoCIDRForConfig() error = %q, want CIDR-aligned", err.Error())
+	}
+}
+
+func newPoolBackendTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add client-go scheme: %v", err)
+	}
+	if err := dynamicprefixiov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("failed to add DynamicPrefix scheme: %v", err)
+	}
+	scheme.AddKnownTypeWithName(DefaultMetalLBIPAddressPoolGVK, &unstructured.Unstructured{})
+	scheme.AddKnownTypeWithName(DefaultCalicoIPPoolGVK, &unstructured.Unstructured{})
+	return scheme
+}
+
 func TestGVKConstants(t *testing.T) {
-	if DefaultCiliumLBIPPoolGVK.Group != "cilium.io" {
-		t.Errorf("DefaultCiliumLBIPPoolGVK.Group = %q, want %q", DefaultCiliumLBIPPoolGVK.Group, "cilium.io")
+	if DefaultCiliumLBIPPoolGVK.Group != ciliumAPIGroup {
+		t.Errorf("DefaultCiliumLBIPPoolGVK.Group = %q, want %q", DefaultCiliumLBIPPoolGVK.Group, ciliumAPIGroup)
 	}
 	if DefaultCiliumLBIPPoolGVK.Version != "v2" {
 		t.Errorf("DefaultCiliumLBIPPoolGVK.Version = %q, want %q", DefaultCiliumLBIPPoolGVK.Version, "v2")
@@ -390,8 +551,8 @@ func TestGVKConstants(t *testing.T) {
 		t.Errorf("DefaultCiliumLBIPPoolGVK.Kind = %q, want %q", DefaultCiliumLBIPPoolGVK.Kind, "CiliumLoadBalancerIPPool")
 	}
 
-	if DefaultCiliumCIDRGroupGVK.Group != "cilium.io" {
-		t.Errorf("DefaultCiliumCIDRGroupGVK.Group = %q, want %q", DefaultCiliumCIDRGroupGVK.Group, "cilium.io")
+	if DefaultCiliumCIDRGroupGVK.Group != ciliumAPIGroup {
+		t.Errorf("DefaultCiliumCIDRGroupGVK.Group = %q, want %q", DefaultCiliumCIDRGroupGVK.Group, ciliumAPIGroup)
 	}
 	if DefaultCiliumCIDRGroupGVK.Version != "v2" {
 		t.Errorf("DefaultCiliumCIDRGroupGVK.Version = %q, want %q", DefaultCiliumCIDRGroupGVK.Version, "v2")

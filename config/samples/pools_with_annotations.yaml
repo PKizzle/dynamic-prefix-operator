@@ -95,6 +95,85 @@ spec:
       zone: dmz
 
 # =============================================================================
+# MetalLB IPAddressPool Examples
+# =============================================================================
+# MetalLB uses spec.addresses entries. The operator writes precise start-end
+# entries for address ranges and CIDRs for subnet/raw-prefix mode.
+
+---
+# MetalLB IPAddressPool using address range (Mode 1)
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: ipv6-loadbalancers
+  namespace: metallb-system
+  annotations:
+    dynamic-prefix.io/name: home-ipv6
+    dynamic-prefix.io/address-range: loadbalancers
+spec:
+  # The operator manages this list while preserving unmanaged IPv4/static entries.
+  addresses: []
+  autoAssign: true
+
+---
+# MetalLB IPAddressPool using subnet mode (Mode 2)
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: ipv6-advanced-lb
+  namespace: metallb-system
+  annotations:
+    dynamic-prefix.io/name: advanced-ipv6
+    dynamic-prefix.io/subnet: loadbalancers
+spec:
+  addresses: []
+  autoAssign: true
+
+# =============================================================================
+# Calico IPPool Examples
+# =============================================================================
+# Calico IPPools are CIDR-only. Address ranges must align exactly to one CIDR;
+# otherwise the operator refuses to widen the range to avoid address conflicts.
+
+---
+# Calico IPPool using an exact-CIDR address range (Mode 1)
+apiVersion: projectcalico.org/v3
+kind: IPPool
+metadata:
+  name: ipv6-loadbalancers
+  annotations:
+    dynamic-prefix.io/name: home-ipv6
+    dynamic-prefix.io/address-range: loadbalancers
+spec:
+  # Calico requires a valid CIDR at creation time. The operator replaces this
+  # placeholder on first sync; avoid creating Services that use it until synced.
+  cidr: 2001:db8::/128
+  blockSize: 122
+  natOutgoing: false
+  disabled: false
+  assignmentMode: Automatic
+  allowedUses:
+    - LoadBalancer
+
+---
+# Calico IPPool using subnet mode (Mode 2)
+apiVersion: projectcalico.org/v3
+kind: IPPool
+metadata:
+  name: ipv6-advanced-lb
+  annotations:
+    dynamic-prefix.io/name: advanced-ipv6
+    dynamic-prefix.io/subnet: loadbalancers
+spec:
+  cidr: 2001:db8::/128
+  blockSize: 122
+  natOutgoing: false
+  disabled: false
+  assignmentMode: Automatic
+  allowedUses:
+    - LoadBalancer
+
+# =============================================================================
 # CIDRGroup Examples (for Network Policies)
 # =============================================================================
 # CIDRGroups only support CIDR format, so they use the approximate CIDR

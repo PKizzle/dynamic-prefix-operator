@@ -63,6 +63,16 @@ var (
 		Version: "v2",
 		Kind:    "CiliumCIDRGroup",
 	}
+	DefaultMetalLBIPAddressPoolGVK = schema.GroupVersionKind{
+		Group:   "metallb.io",
+		Version: "v1beta1",
+		Kind:    "IPAddressPool",
+	}
+	DefaultCalicoIPPoolGVK = schema.GroupVersionKind{
+		Group:   "projectcalico.org",
+		Version: "v3",
+		Kind:    "IPPool",
+	}
 )
 
 // poolConfiguration holds the resolved configuration for a pool update.
@@ -77,12 +87,15 @@ type poolConfiguration struct {
 	cidr string
 }
 
-// PoolSyncReconciler reconciles Cilium pool resources annotated with dynamic-prefix.io annotations.
+// PoolSyncReconciler reconciles supported pool backend resources annotated with dynamic-prefix.io annotations.
 type PoolSyncReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	// CiliumVersions holds the resolved Cilium API versions. If nil, defaults are used.
 	CiliumVersions *CiliumVersions
+	// BackendGVKs holds discovered pool backend resources. If empty, the reconciler
+	// falls back to the default Cilium resources for tests and backward compatibility.
+	BackendGVKs []schema.GroupVersionKind
 }
 
 // lbIPPoolGVK returns the GVK for CiliumLoadBalancerIPPool.
@@ -103,23 +116,19 @@ func (r *PoolSyncReconciler) cidrGroupGVK() schema.GroupVersionKind {
 
 // +kubebuilder:rbac:groups=cilium.io,resources=ciliumloadbalancerippools,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=cilium.io,resources=ciliumcidrgroups,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=metallb.io,resources=ipaddresspools,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=projectcalico.org,resources=ippools,verbs=get;list;watch;update;patch
 
-// Reconcile handles pool synchronization for annotated Cilium resources.
+// Reconcile handles pool synchronization for annotated backend resources.
 func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	// Determine resource type from request
-	// Try to fetch as CiliumLoadBalancerIPPool first
-	pool := &unstructured.Unstructured{}
-	pool.SetGroupVersionKind(r.lbIPPoolGVK())
-
-	if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
-		// Try CiliumCIDRGroup
-		pool = &unstructured.Unstructured{}
-		pool.SetGroupVersionKind(r.cidrGroupGVK())
-		if err := r.Get(ctx, req.NamespacedName, pool); err != nil {
-			return ctrl.Result{}, client.IgnoreNotFound(err)
-		}
+	pool, backend, err := r.getPool(ctx, req.NamespacedName)
+	if err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if pool == nil || backend == nil {
+		return ctrl.Result{}, nil
 	}
 
 	// Get annotations
@@ -137,7 +146,7 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Syncing pool", "pool", req.Name, "dynamicPrefix", dpName, "subnet", subnetName, "addressRange", addressRangeName)
+	log.Info("Syncing pool", "backend", backend.name(), "pool", req.Name, "dynamicPrefix", dpName, "subnet", subnetName, "addressRange", addressRangeName)
 
 	// Fetch the referenced DynamicPrefix
 	var dp dynamicprefixiov1alpha1.DynamicPrefix
@@ -161,21 +170,7 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Collect all managed prefixes for block preservation logic
 	managedPrefixes := collectManagedPrefixes(&dp)
 
-	// Update the pool based on its type
-	gvk := pool.GetObjectKind().GroupVersionKind()
-	var updated bool
-	var updateErr error
-
-	switch gvk.Kind {
-	case "CiliumLoadBalancerIPPool":
-		updated, updateErr = r.updateLoadBalancerIPPool(ctx, pool, configs, managedPrefixes)
-	case "CiliumCIDRGroup":
-		// CIDRGroup doesn't support start/end ranges, use CIDR only
-		updated, updateErr = r.updateCIDRGroup(ctx, pool, configs, managedPrefixes)
-	default:
-		log.Info("Unknown pool type", "kind", gvk.Kind)
-		return ctrl.Result{}, nil
-	}
+	updated, updateErr := backend.update(ctx, r, pool, configs, managedPrefixes)
 
 	if updateErr != nil {
 		log.Error(updateErr, "Failed to update pool")
@@ -183,11 +178,28 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if updated {
-		log.Info("Pool updated successfully", "pool", req.Name, "blockCount", len(configs))
+		log.Info("Pool updated successfully", "backend", backend.name(), "pool", req.Name, "blockCount", len(configs))
 	} else {
-		log.Info("Pool already up-to-date", "pool", req.Name, "blockCount", len(configs))
+		log.Info("Pool already up-to-date", "backend", backend.name(), "pool", req.Name, "blockCount", len(configs))
 	}
 	return ctrl.Result{}, nil
+}
+
+// getPool tries each configured backend GVK until the requested object is found.
+func (r *PoolSyncReconciler) getPool(ctx context.Context, name types.NamespacedName) (*unstructured.Unstructured, poolBackend, error) {
+	var lastErr error
+	for _, backend := range r.poolBackends() {
+		pool := &unstructured.Unstructured{}
+		pool.SetGroupVersionKind(backend.gvk())
+		if err := r.Get(ctx, name, pool); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				lastErr = err
+			}
+			continue
+		}
+		return pool, backend, nil
+	}
+	return nil, nil, lastErr
 }
 
 // buildPoolConfigurations builds pool configurations for current prefix and historical prefixes.
@@ -541,7 +553,7 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 		}
 		p, err := netip.ParsePrefix(cidrStr)
 		if err != nil {
-			// Can't parse — preserve to avoid data loss
+			// Can't parse - preserve to avoid data loss
 			preserved = append(preserved, c)
 			continue
 		}
@@ -671,6 +683,11 @@ func collectManagedPrefixes(dp *dynamicprefixiov1alpha1.DynamicPrefix) []netip.P
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *PoolSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	backends := r.poolBackends()
+	if len(backends) == 0 {
+		return fmt.Errorf("no pool backends configured")
+	}
+
 	// Create predicate for resources with dynamic-prefix.io/name annotation
 	hasAnnotation := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		annotations := obj.GetAnnotations()
@@ -681,25 +698,19 @@ func (r *PoolSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return ok
 	})
 
-	// Watch CiliumLoadBalancerIPPool
-	lbIPPool := &unstructured.Unstructured{}
-	lbIPPool.SetGroupVersionKind(r.lbIPPoolGVK())
-
-	// Watch CiliumCIDRGroup
-	cidrGroup := &unstructured.Unstructured{}
-	cidrGroup.SetGroupVersionKind(r.cidrGroupGVK())
-
 	// Build controller
+	primary := &unstructured.Unstructured{}
+	primary.SetGroupVersionKind(backends[0].gvk())
 	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
-		Named("poolsync")
+		Named("poolsync").
+		For(primary, builder.WithPredicates(hasAnnotation))
 
-	// Add watch for CiliumLoadBalancerIPPool (if CRD exists)
-	controllerBuilder = controllerBuilder.
-		For(lbIPPool, builder.WithPredicates(hasAnnotation))
-
-	// Add watch for CiliumCIDRGroup
-	controllerBuilder = controllerBuilder.
-		Watches(cidrGroup, &handler.EnqueueRequestForObject{}, builder.WithPredicates(hasAnnotation))
+	for _, backend := range backends[1:] {
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(backend.gvk())
+		controllerBuilder = controllerBuilder.
+			Watches(obj, &handler.EnqueueRequestForObject{}, builder.WithPredicates(hasAnnotation))
+	}
 
 	// Watch DynamicPrefix and enqueue referencing pools
 	controllerBuilder = controllerBuilder.
@@ -718,46 +729,26 @@ func (r *PoolSyncReconciler) findReferencingPools(ctx context.Context, obj clien
 	log := logf.FromContext(ctx)
 	var requests []reconcile.Request
 
-	// List CiliumLoadBalancerIPPools
-	lbPoolList := &unstructured.UnstructuredList{}
-	lbPoolList.SetGroupVersionKind(ListGVK(r.lbIPPoolGVK()))
+	for _, backend := range r.poolBackends() {
+		poolList := &unstructured.UnstructuredList{}
+		poolList.SetGroupVersionKind(ListGVK(backend.gvk()))
 
-	if err := r.List(ctx, lbPoolList); err == nil {
-		for _, pool := range lbPoolList.Items {
-			if annotations := pool.GetAnnotations(); annotations != nil {
-				if annotations[AnnotationName] == dp.Name {
-					requests = append(requests, reconcile.Request{
-						NamespacedName: types.NamespacedName{
-							Name:      pool.GetName(),
-							Namespace: pool.GetNamespace(),
-						},
-					})
+		if err := r.List(ctx, poolList); err == nil {
+			for _, pool := range poolList.Items {
+				if annotations := pool.GetAnnotations(); annotations != nil {
+					if annotations[AnnotationName] == dp.Name {
+						requests = append(requests, reconcile.Request{
+							NamespacedName: types.NamespacedName{
+								Name:      pool.GetName(),
+								Namespace: pool.GetNamespace(),
+							},
+						})
+					}
 				}
 			}
+		} else {
+			log.V(1).Info("Failed to list pool backend resources", "backend", backend.name(), "error", err)
 		}
-	} else {
-		log.V(1).Info("Failed to list CiliumLoadBalancerIPPools", "error", err)
-	}
-
-	// List CiliumCIDRGroups
-	cidrGroupList := &unstructured.UnstructuredList{}
-	cidrGroupList.SetGroupVersionKind(ListGVK(r.cidrGroupGVK()))
-
-	if err := r.List(ctx, cidrGroupList); err == nil {
-		for _, group := range cidrGroupList.Items {
-			if annotations := group.GetAnnotations(); annotations != nil {
-				if annotations[AnnotationName] == dp.Name {
-					requests = append(requests, reconcile.Request{
-						NamespacedName: types.NamespacedName{
-							Name:      group.GetName(),
-							Namespace: group.GetNamespace(),
-						},
-					})
-				}
-			}
-		}
-	} else {
-		log.V(1).Info("Failed to list CiliumCIDRGroups", "error", err)
 	}
 
 	if len(requests) > 0 {

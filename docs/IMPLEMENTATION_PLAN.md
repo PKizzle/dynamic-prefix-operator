@@ -71,9 +71,9 @@ dynamic-prefix-operator/
 │   │   │   ├── lbipam.go         # CiliumLoadBalancerIPPool handler
 │   │   │   ├── cidrgroup.go      # CiliumCIDRGroup handler
 │   │   │   └── cilium_test.go
-│   │   ├── calico/               # Future: Calico
+│   │   ├── calico/               # Calico IPPool backend
 │   │   │   └── ippool.go
-│   │   └── metallb/              # Future: MetalLB
+│   │   └── metallb/              # MetalLB IPAddressPool backend
 │   │       └── addresspool.go
 │   │
 │   └── transition/
@@ -198,7 +198,7 @@ type SubnetSpec struct {
     // Name identifies this subnet
     Name string `json:"name"`
 
-    // Offset within the received prefix (hex supported)
+    // Offset selects the Nth subnet of PrefixLength within the received prefix
     Offset int64 `json:"offset"`
 
     // PrefixLength of the subnet
@@ -609,9 +609,15 @@ rules:
     resources: ["dynamicprefixes/status"]
     verbs: ["get", "update", "patch"]
 
-  # Cilium resources (update annotated pools)
+  # Pool backend resources (update annotated pools)
   - apiGroups: ["cilium.io"]
     resources: ["ciliumloadbalancerippools", "ciliumcidrgroups"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["metallb.io"]
+    resources: ["ipaddresspools"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["projectcalico.org"]
+    resources: ["ippools"]
     verbs: ["get", "list", "watch", "update", "patch"]
 
   # Events

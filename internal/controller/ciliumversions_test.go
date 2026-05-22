@@ -161,10 +161,83 @@ func TestDiscoverCiliumVersions_MissingResource(t *testing.T) {
 			},
 		},
 	}
-
 	_, err := DiscoverCiliumVersions(dc)
 	if err == nil {
 		t.Fatal("expected error when required resource is missing, got nil")
+	}
+}
+
+func TestDiscoverPoolBackendGVKs_DetectsAvailableBackends(t *testing.T) {
+	dc := &fake.FakeDiscovery{Fake: &coretesting.Fake{}}
+	dc.Resources = []*metav1.APIResourceList{
+		{
+			GroupVersion: "cilium.io/v2",
+			APIResources: []metav1.APIResource{
+				{Name: "ciliumloadbalancerippools", Kind: "CiliumLoadBalancerIPPool"},
+				{Name: "ciliumcidrgroups", Kind: "CiliumCIDRGroup"},
+			},
+		},
+		{
+			GroupVersion: "metallb.io/v1beta1",
+			APIResources: []metav1.APIResource{
+				{Name: "ipaddresspools", Kind: "IPAddressPool"},
+			},
+		},
+		{
+			GroupVersion: "projectcalico.org/v3",
+			APIResources: []metav1.APIResource{
+				{Name: "ippools", Kind: "IPPool"},
+			},
+		},
+	}
+
+	gvks, err := DiscoverPoolBackendGVKs(dc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expected := []schema.GroupVersionKind{
+		DefaultCiliumLBIPPoolGVK,
+		DefaultCiliumCIDRGroupGVK,
+		DefaultMetalLBIPAddressPoolGVK,
+		DefaultCalicoIPPoolGVK,
+	}
+	for _, want := range expected {
+		if !containsGVK(gvks, want) {
+			t.Errorf("DiscoverPoolBackendGVKs() missing %s from %v", want, gvks)
+		}
+	}
+}
+
+func TestDiscoverPoolBackendGVKs_AllowsNonCiliumBackends(t *testing.T) {
+	dc := &fake.FakeDiscovery{Fake: &coretesting.Fake{}}
+	dc.Resources = []*metav1.APIResourceList{
+		{
+			GroupVersion: "metallb.io/v1beta1",
+			APIResources: []metav1.APIResource{
+				{Name: "ipaddresspools", Kind: "IPAddressPool"},
+			},
+		},
+	}
+
+	gvks, err := DiscoverPoolBackendGVKs(dc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gvks) != 1 || gvks[0] != DefaultMetalLBIPAddressPoolGVK {
+		t.Fatalf("DiscoverPoolBackendGVKs() = %v, want [%s]", gvks, DefaultMetalLBIPAddressPoolGVK)
+	}
+}
+
+func TestDiscoverPoolBackendGVKs_NoBackends(t *testing.T) {
+	dc := &fake.FakeDiscovery{Fake: &coretesting.Fake{}}
+	dc.Resources = []*metav1.APIResourceList{
+		{GroupVersion: "apps/v1", APIResources: []metav1.APIResource{{Name: "deployments", Kind: "Deployment"}}},
+	}
+
+	_, err := DiscoverPoolBackendGVKs(dc)
+	if err == nil {
+		t.Fatal("expected error when no pool backends are found, got nil")
 	}
 }
 
@@ -222,6 +295,15 @@ func assertGVK(t *testing.T, gvk schema.GroupVersionKind, version, kind string) 
 	if gvk.Kind != kind {
 		t.Errorf("GVK.Kind = %q, want %q", gvk.Kind, kind)
 	}
+}
+
+func containsGVK(gvks []schema.GroupVersionKind, want schema.GroupVersionKind) bool {
+	for _, gvk := range gvks {
+		if gvk == want {
+			return true
+		}
+	}
+	return false
 }
 
 // ciliumResources returns a standard set of Cilium API resources for testing.

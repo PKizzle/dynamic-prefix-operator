@@ -33,7 +33,7 @@ spec:
         description: |-
           DynamicPrefix is the Schema for the dynamicprefixes API.
           It represents a dynamically acquired IPv6 prefix that can be subdivided
-          into subnets and used to populate Cilium IP pools and other resources.
+          into subnets and used to populate supported pool backends and other resources.
         properties:
           apiVersion:
             description: |-
@@ -164,8 +164,10 @@ spec:
                       type: string
                     offset:
                       default: 0
-                      description: Offset is the address offset within the received
-                        prefix (in host units)
+                      description: |-
+                        Offset selects the Nth subnet of PrefixLength within the received prefix.
+                        For example, with a /56 base prefix and PrefixLength 64, offset 255 selects
+                        the last /64 in the /56.
                       format: int64
                       type: integer
                     prefixLength:

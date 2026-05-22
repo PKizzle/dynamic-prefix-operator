@@ -78,6 +78,30 @@ rules:
       - patch
       - delete
 
+  # MetalLB IPAddressPool permissions
+  - apiGroups:
+      - metallb.io
+    resources:
+      - ipaddresspools
+    verbs:
+      - get
+      - list
+      - patch
+      - update
+      - watch
+
+  # Calico IPPool permissions
+  - apiGroups:
+      - projectcalico.org
+    resources:
+      - ippools
+    verbs:
+      - get
+      - list
+      - patch
+      - update
+      - watch
+
   # Service permissions (for HA mode)
   - apiGroups:
       - ""
