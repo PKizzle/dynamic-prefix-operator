@@ -30,7 +30,7 @@ Namespace: {{ .Release.Namespace }}
    kubectl get dynamicprefixes
    kubectl describe dynamicprefix my-prefix
 
-3. Add annotations to Cilium resources you want to sync:
+3. Add annotations to supported pool resources you want to sync:
 
    For CiliumLoadBalancerIPPool (using address range):
 
@@ -43,6 +43,18 @@ Namespace: {{ .Release.Namespace }}
    kubectl annotate ciliumcidrgroup my-group \
      dynamic-prefix.io/name=my-prefix \
      dynamic-prefix.io/address-range=loadbalancers
+
+   For MetalLB IPAddressPool:
+
+   kubectl annotate ipaddresspool -n metallb-system my-pool \
+     dynamic-prefix.io/name=my-prefix \
+     dynamic-prefix.io/address-range=loadbalancers
+
+   For Calico IPPool:
+
+   kubectl annotate ippool my-pool \
+     dynamic-prefix.io/name=my-prefix \
+     dynamic-prefix.io/subnet=loadbalancers
 
 == Supported Annotations ==
 

@@ -5,7 +5,7 @@
 ```
                               Upstream Router / ISP
                                        │
-                                       │ Router Advertisements (prefix info)
+                                       │ Router Advertisements / DHCPv6-PD
                                        │
                                        ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -69,6 +69,13 @@
 │   │   - start: <addr>      │    │   [CIDR]               │                   │
 │   │     stop: <addr>       │    │                        │                   │
 │   └───────────┬────────────┘    └────────────────────────┘                   │
+│                                                                              │
+│   ┌────────────────────────┐    ┌────────────────────────┐                   │
+│   │ MetalLB IPAddressPool  │    │ Calico IPPool          │                   │
+│   │                        │    │                        │                   │
+│   │ spec.addresses:        │    │ spec.cidr:             │                   │
+│   │   [CIDR or start-end]  │    │   CIDR                 │                   │
+│   └───────────┬────────────┘    └───────────┬────────────┘                   │
 │               │                                                              │
 │               ▼                                                              │
 │   ┌────────────────────────┐                                                 │
@@ -162,7 +169,8 @@ When a prefix changes, pools retain blocks for both the current and historical p
 **Annotation-Based Binding:**
 
 ```yaml
-# Pool references DynamicPrefix via annotation
+# Cilium pool references DynamicPrefix via annotation. MetalLB and Calico use
+# the same annotations on their pool resources.
 apiVersion: cilium.io/v2alpha1
 kind: CiliumLoadBalancerIPPool
 metadata:
@@ -256,7 +264,11 @@ The operator rotates only the managed IPv6 addresses. IPv4 addresses and static 
 2. Pool sync controller detects annotation
 3. Looks up referenced DynamicPrefix
 4. Gets address range from status
-5. Updates pool's spec.blocks with start/stop
+5. Updates the backend-specific pool field:
+  - Cilium `CiliumLoadBalancerIPPool`: `spec.blocks`
+  - Cilium `CiliumCIDRGroup`: `spec.externalCIDRs`
+  - MetalLB `IPAddressPool`: `spec.addresses`
+  - Calico `IPPool`: `spec.cidr`
 6. Pool is now in sync
 ```
 
@@ -267,7 +279,7 @@ The operator rotates only the managed IPv6 addresses. IPv4 addresses and static 
 2. DynamicPrefix controller updates status (adds to history)
 3. Pool sync controller sees status change
 4. Finds all pools referencing this DynamicPrefix
-5. Adds new block to each pool (keeps historical blocks)
+5. Adds new backend-specific entries where supported (keeps historical entries)
 6. Existing Services keep old IPs, new Services get new IPs
 7. external-dns sees new LB IPs, updates DNS
 ```
@@ -379,7 +391,7 @@ securityContext:
 
 Minimal permissions:
 - Read/write DynamicPrefix CRs
-- Update Cilium pools (only annotated ones)
+- Update supported pool backend resources (only annotated ones)
 - Read/update Services (for HA mode)
 - Create events
 - Leader election

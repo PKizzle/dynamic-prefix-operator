@@ -27,58 +27,17 @@ helm install dynamic-prefix-operator ./charts/dynamic-prefix-operator
 
 ## Configuration
 
-### Watch Configuration
+### Pool Backend Discovery
 
-Control which resources the operator watches and manages:
+The operator discovers supported pool backend CRDs at startup and registers PoolSync for the APIs present in the cluster. Supported pool backends are:
 
-```yaml
-watch:
-  # Namespaces to watch (empty = all namespaces)
-  namespaces: []
+- Cilium `CiliumLoadBalancerIPPool` and `CiliumCIDRGroup`
+- MetalLB `IPAddressPool`
+- Calico `IPPool`
 
-  # CiliumLoadBalancerIPPool settings
-  ciliumLoadBalancerIPPool:
-    enabled: true
-    labelSelector:
-      app.kubernetes.io/managed-by: dynamic-prefix-operator
-    annotationSelector: {}
-
-  # CiliumCIDRGroup settings
-  ciliumCIDRGroup:
-    enabled: true
-    labelSelector: {}
-    annotationSelector: {}
-
-  # Ingress settings (for future use)
-  ingress:
-    enabled: false
-    ingressClassName: nginx
-    labelSelector:
-      dynamic-prefix.io/enabled: "true"
-
-  # Service settings (for future use)
-  service:
-    enabled: false
-    types:
-      - LoadBalancer
-    labelSelector: {}
-```
+Annotate pools with `dynamic-prefix.io/name` plus either `dynamic-prefix.io/address-range` or `dynamic-prefix.io/subnet` to opt them into synchronization.
 
 ### Common Configuration Examples
-
-#### Watch only specific namespaces
-
-```bash
-helm install dynamic-prefix-operator ./charts/dynamic-prefix-operator \
-  --set 'watch.namespaces={production,staging}'
-```
-
-#### Filter pools by label
-
-```bash
-helm install dynamic-prefix-operator ./charts/dynamic-prefix-operator \
-  --set 'watch.ciliumLoadBalancerIPPool.labelSelector.environment=production'
-```
 
 #### Enable Prometheus monitoring
 
@@ -127,18 +86,9 @@ helm install dynamic-prefix-operator ./charts/dynamic-prefix-operator \
 | `image.tag` | Image tag | Chart appVersion |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 
-### Watch Configuration
+### Pool Backend Watches
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `watch.namespaces` | Namespaces to watch | `[]` (all) |
-| `watch.ciliumLoadBalancerIPPool.enabled` | Watch CiliumLoadBalancerIPPool | `true` |
-| `watch.ciliumLoadBalancerIPPool.labelSelector` | Label selector for pools | `{}` |
-| `watch.ciliumCIDRGroup.enabled` | Watch CiliumCIDRGroup | `true` |
-| `watch.ingress.enabled` | Watch Ingress resources | `false` |
-| `watch.ingress.ingressClassName` | Filter by ingress class | `""` |
-| `watch.service.enabled` | Watch Service resources | `false` |
-| `watch.service.types` | Service types to watch | `[LoadBalancer]` |
+Pool backend watches are discovered automatically from installed CRDs. ServiceSync watches Kubernetes Services and can be cache-scoped with `config.serviceSync.cacheLabelSelector`.
 
 ### Operator Configuration
 
@@ -185,7 +135,9 @@ spec:
       prefixLength: 64
 ```
 
-Then annotate resources you want the operator to manage:
+Then annotate resources you want the operator to manage.
+
+### Cilium
 
 ```yaml
 apiVersion: cilium.io/v2alpha1
@@ -197,6 +149,37 @@ metadata:
     dynamic-prefix.io/subnet: loadbalancers
 spec:
   blocks: []  # Managed by operator
+```
+
+### MetalLB
+
+```yaml
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: ipv6-pool
+  namespace: metallb-system
+  annotations:
+    dynamic-prefix.io/name: home-ipv6
+    dynamic-prefix.io/subnet: loadbalancers
+spec:
+  addresses: []  # Managed by operator
+```
+
+### Calico
+
+```yaml
+apiVersion: projectcalico.org/v3
+kind: IPPool
+metadata:
+  name: ipv6-pool
+  annotations:
+    dynamic-prefix.io/name: home-ipv6
+    dynamic-prefix.io/subnet: loadbalancers
+spec:
+  cidr: 2001:db8::/64  # Replaced by operator
+  allowedUses:
+    - LoadBalancer
 ```
 
 ## Upgrading

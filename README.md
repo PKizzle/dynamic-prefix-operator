@@ -1,5 +1,10 @@
 # Dynamic Prefix Operator
 
+[![Tests](https://github.com/PKizzle/dynamic-prefix-operator/actions/workflows/test.yml/badge.svg)](https://github.com/PKizzle/dynamic-prefix-operator/actions/workflows/test.yml)
+[![Build](https://github.com/PKizzle/dynamic-prefix-operator/actions/workflows/docker.yaml/badge.svg)](https://github.com/PKizzle/dynamic-prefix-operator/actions/workflows/docker.yaml)
+[![Latest Release](https://img.shields.io/github/v/release/PKizzle/dynamic-prefix-operator?sort=semver)](https://github.com/PKizzle/dynamic-prefix-operator/releases/latest)
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/dynamic-prefix-operator)](https://artifacthub.io/packages/search?repo=dynamic-prefix-operator)
+
 A Kubernetes operator that manages dynamic IPv6 prefix delegation for bare-metal and home/SOHO Kubernetes clusters.
 
 ## The Problem
@@ -20,7 +25,7 @@ Many residential and SOHO ISPs assign IPv6 prefixes dynamically. These prefixes 
 
 When your prefix changes from `2001:db8:1234::/64` to `2001:db8:5678::/64`, **everything breaks**:
 
-- **LoadBalancer IPs** become unreachable (Cilium LB-IPAM pools are static)
+- **LoadBalancer IPs** become unreachable (bare-metal IPAM pools are static)
 - **DNS records** point to stale addresses
 - **Firewall rules** reference invalid CIDRs
 - **Network policies** stop matching traffic
@@ -97,7 +102,11 @@ spec:
       end: "::ffff:ffff:ffff:ffff"
 ```
 
-### 3. Create a Cilium pool that references it
+### 3. Create a supported pool that references it
+
+Use the same `dynamic-prefix.io/*` annotations on whichever pool backend you run.
+
+#### Cilium LB-IPAM
 
 ```yaml
 apiVersion: cilium.io/v2alpha1
@@ -111,6 +120,39 @@ spec:
   blocks: []  # Operator manages this
 ```
 
+#### MetalLB
+
+```yaml
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: ipv6-lb-pool
+  namespace: metallb-system
+  annotations:
+    dynamic-prefix.io/name: home-ipv6
+    dynamic-prefix.io/address-range: loadbalancers
+spec:
+  addresses: []  # Operator manages this
+```
+
+#### Calico
+
+Calico `IPPool.spec.cidr` can only hold one exact CIDR, so use subnet mode or an address range that aligns exactly to one CIDR.
+
+```yaml
+apiVersion: projectcalico.org/v3
+kind: IPPool
+metadata:
+  name: ipv6-lb-pool
+  annotations:
+    dynamic-prefix.io/name: home-ipv6
+    dynamic-prefix.io/subnet: loadbalancers
+spec:
+  cidr: 2001:db8::/64  # Operator replaces this with the calculated CIDR
+  allowedUses:
+    - LoadBalancer
+```
+
 ### 4. Watch the operator populate the pool
 
 ```bash
@@ -120,6 +162,8 @@ kubectl get ciliumloadbalancerippool ipv6-lb-pool -o yaml
 #   stop: "2001:db8:1234:0:ffff:ffff:ffff:ffff"
 ```
 
+For MetalLB, inspect `spec.addresses`; for Calico, inspect `spec.cidr`.
+
 When your prefix changes, the operator automatically updates all annotated pools.
 
 ## Architecture
@@ -127,28 +171,41 @@ When your prefix changes, the operator automatically updates all annotated pools
 ```
                          Upstream Router / ISP
                                   │
-                                  │ Router Advertisement
+                                  │ Router Advertisement or DHCPv6-PD
                                   ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     Dynamic Prefix Operator                         │
-│                                                                     │
-│  ┌─────────────────────┐      ┌─────────────────────────────────┐   │
-│  │   Prefix Receiver   │      │     Pool Sync Controller        │   │
-│  │                     │      │                                 │   │
-│  │  • RA Monitor       │─────▶│  Updates pools that reference   │   │
-│  │  • Prefix Detection │      │  DynamicPrefix via annotations: │   │
-│  │                     │      │                                 │   │
-│  └─────────────────────┘      │  • CiliumLoadBalancerIPPool     │   │
-│           │                   │  • CiliumCIDRGroup              │   │
-│           ▼                   └─────────────────────────────────┘   │
-│  ┌─────────────────────┐                     │                      │
-│  │  DynamicPrefix CR   │                     │                      │
-│  │                     │                     ▼                      │
-│  │  • Current prefix   │      ┌─────────────────────────────────┐   │
-│  │  • Address ranges   │      │  Pools with annotation:         │   │
-│  │  • Lease state      │      │  dynamic-prefix.io/name: xxx    │   │
-│  └─────────────────────┘      └─────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────┐
+│                         Dynamic Prefix Operator                            │
+│                                                                            │
+│  ┌─────────────────────┐        ┌──────────────────────────────────────┐   │
+│  │ Prefix Receivers    │        │ DynamicPrefix Controller             │   │
+│  │ • RA monitor        │───────▶│ • Manages receiver lifecycle         │   │
+│  │ • DHCPv6-PD client  │        │ • Calculates ranges/subnets          │   │
+│  └─────────────────────┘        │ • Updates status/history/conditions  │   │
+│                                 └──────────────────┬───────────────────┘   │
+│                                                    │ status.currentPrefix  │
+│                                                    ▼                       │
+│  ┌─────────────────────┐        ┌──────────────────────────────────────┐   │
+│  │ Pool Backend        │◀───────│ PoolSync Controller                  │   │
+│  │ Discovery           │        │ • Watches annotated backend pools     │   │
+│  └─────────────────────┘        │ • Preserves unmanaged entries         │   │
+│                                 │ • Keeps current + historical blocks   │   │
+│                                 └──────────────────┬───────────────────┘   │
+│                                                    ▼                       │
+│                         ┌──────────────────────────────────────────────┐   │
+│                         │ Supported pool backends                      │   │
+│                         │ • CiliumLoadBalancerIPPool / CIDRGroup       │   │
+│                         │ • MetalLB IPAddressPool                      │   │
+│                         │ • Calico IPPool                              │   │
+│                         └──────────────────────────────────────────────┘   │
+│                                                                            │
+│  ┌─────────────────────────────┐      ┌────────────────────────────────┐   │
+│  │ ServiceSync Controller      │      │ BGPSync Controller             │   │
+│  │ • HA mode multi-IP Services │      │ • CiliumBGPAdvertisement sync  │   │
+│  │ • DNS target management     │      │ • Subnet mode route adverts    │   │
+│  └─────────────────────────────┘      └────────────────────────────────┘   │
+│                                                                            │
+│  Emits Kubernetes events and Prometheus metrics for prefix/pool activity.   │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Address Range Mode (Recommended)
@@ -158,7 +215,7 @@ For most home/SOHO setups, you receive a /64 prefix from your ISP. The operator 
 **How it works:**
 1. Configure your router to NOT hand out addresses in a specific range (e.g., `::f000:0:0:0` to `::ffff:ffff:ffff:ffff`)
 2. Tell the operator about this reserved range
-3. The operator monitors RAs for prefix changes and updates your Cilium pools with the full addresses
+3. The operator monitors RAs for prefix changes and updates your annotated pool backend with the full addresses
 
 **Advantages:**
 - Works with standard /64 allocations

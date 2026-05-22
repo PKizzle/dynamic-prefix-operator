@@ -2,7 +2,7 @@
 
 ## Status
 
-**Approved** - Ready for implementation
+**Implemented for Cilium BGP Control Plane**
 
 ## Summary
 
@@ -10,13 +10,13 @@ This document describes how the Dynamic Prefix Operator advertises carved-out su
 
 ## Problem Statement
 
-In subnet mode, the operator carves dedicated subnets (e.g., `/64`) from a larger ISP-delegated prefix (e.g., `/56`). These subnets are used to populate `CiliumLoadBalancerIPPool` resources. However, the upstream router has no route to these subnets—traffic cannot reach the Kubernetes cluster.
+In subnet mode, the operator carves dedicated subnets (e.g., `/64`) from a larger ISP-delegated prefix (e.g., `/56`). These subnets are used to populate supported pool backends. For Cilium subnet-mode deployments, the upstream router still needs routes to the Kubernetes cluster; without advertisement, traffic cannot reach the allocated Service IPs.
 
 ```
 ISP → Router (receives /56 via DHCPv6-PD) → K8s node
                                               │
                           Operator calculates: 2001:db8:1234:ff::/64
-                          Updates CiliumLoadBalancerIPPool
+                          Updates annotated pool backend
                                               │
                           ❌ Router has no route to this /64
 ```
@@ -48,7 +48,7 @@ Router ← BGP: "2001:db8:1234:ff::1/128 via node-1" ← Cilium BGP
 | `CiliumBGPClusterConfig` | User | Peering is security-sensitive; user controls BGP sessions |
 | `CiliumBGPPeerConfig` | User | Authentication and peer settings are site-specific |
 | `CiliumBGPAdvertisement` | Operator | What to advertise matches operator's domain |
-| `CiliumLoadBalancerIPPool` | Operator | Already implemented |
+| `CiliumLoadBalancerIPPool` | Operator | Pool backend managed by PoolSync |
 
 ### Advertisement Strategy: Per-IP vs Aggregation
 

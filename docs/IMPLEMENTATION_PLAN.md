@@ -249,7 +249,7 @@ type Prefix struct {
 #### DHCPv6-PD Implementation
 
 ```go
-// internal/prefix/dhcpv6/client.go
+// internal/prefix/dhcpv6_receiver.go
 type Client struct {
     iface        string
     prefixLen    uint8
@@ -278,11 +278,11 @@ func (c *Client) Start(ctx context.Context) error {
 **Objective**: Implement RA monitoring as fallback.
 
 ```go
-// internal/prefix/ra/monitor.go
+// internal/prefix/ra_receiver.go
 type Monitor struct {
     iface    string
     conn     *ndp.Conn
-    prefixes chan PrefixEvent
+  events   chan Event
 }
 
 func (m *Monitor) Start(ctx context.Context) error {
@@ -358,11 +358,10 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 // Watch multiple pool types
 func (r *PoolSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
-    return ctrl.NewControllerManagedBy(mgr).
-  For(primaryBackendObject).
-  Watches(additionalBackendObjects...).
-        Watches(&v1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findPoolsForPrefix)).
-        Complete(r)
+  builder := ctrl.NewControllerManagedBy(mgr).For(primaryBackendObject)
+  builder = builder.Watches(additionalBackendObjects...)
+  builder = builder.Watches(&v1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findPoolsForPrefix))
+  return builder.Complete(r)
 }
 ```
 
