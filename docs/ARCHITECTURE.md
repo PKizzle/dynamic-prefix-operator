@@ -390,9 +390,10 @@ Minimal permissions:
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `dynamic_prefix_received_total` | Counter | Prefixes received |
-| `dynamic_prefix_changes_total` | Counter | Prefix changes |
-| `dynamic_prefix_pools_synced` | Gauge | Pools currently synced |
+| `dynamic_prefix_received_total` | Counter | Prefixes acquired, labeled by DynamicPrefix name and source |
+| `dynamic_prefix_changes_total` | Counter | Prefix changes after an initial prefix was already active |
+| `dynamic_prefix_lease_expiry_seconds` | Gauge | Unix timestamp for the current prefix lease expiry, or `0` when unknown |
+| `dynamic_prefix_pools_synced` | Gauge | Successful pool sync state labeled by backend, DynamicPrefix, and pool |
 
 ### Events
 
@@ -401,6 +402,9 @@ Minimal permissions:
 | `PrefixReceived` | New prefix obtained |
 | `PrefixChanged` | Prefix changed |
 | `PoolUpdated` | Pool spec updated |
+| `TransitionStarted` | A replaced prefix is added to history for draining |
+| `TransitionCompleted` | A historical prefix is pruned after `maxPrefixHistory` |
+| `ReceiverCreationFailed` | A prefix receiver cannot be created or started |
 
 ## Extensibility
 

@@ -22,6 +22,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -37,6 +39,11 @@ import (
 )
 
 var _ = Describe("PoolSync Controller", func() {
+	const (
+		timeout  = time.Second * 10
+		interval = time.Millisecond * 250
+	)
+
 	Context("When reconciling a CiliumLoadBalancerIPPool", func() {
 		const (
 			poolName   = "test-pool"
@@ -111,9 +118,11 @@ var _ = Describe("PoolSync Controller", func() {
 		})
 
 		It("should update pool spec.blocks with subnet CIDR", func() {
+			recorder := record.NewFakeRecorder(4)
 			reconciler := &PoolSyncReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Recorder: recorder,
 			}
 
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -138,6 +147,14 @@ var _ = Describe("PoolSync Controller", func() {
 			// Check last-sync annotation
 			annotations := pool.GetAnnotations()
 			Expect(annotations).To(HaveKey(AnnotationLastSync))
+			Eventually(func() string {
+				select {
+				case event := <-recorder.Events:
+					return event
+				default:
+					return ""
+				}
+			}, timeout, interval).Should(ContainSubstring(eventReasonPoolUpdated))
 			lastSync := annotations[AnnotationLastSync]
 			resourceVersion := pool.GetResourceVersion()
 

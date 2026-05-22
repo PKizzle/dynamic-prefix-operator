@@ -11,16 +11,22 @@ This changelog follows the fork's published GitHub releases and does not align w
 - Added generic PoolSync backend dispatch with optional CRD discovery for supported pool APIs.
 - Added MetalLB `IPAddressPool` synchronization through `dynamic-prefix.io/*` annotations, including address-range, subnet, history, and unmanaged-address preservation support.
 - Added Calico `IPPool` synchronization through `dynamic-prefix.io/*` annotations, including safe exact-CIDR handling for address ranges.
+- Added Prometheus metrics for prefix acquisition, prefix changes, lease expiry, and pool synchronization.
+- Added Kubernetes events for prefix acquisition, prefix changes, prefix transition lifecycle, receiver startup failures, and pool updates.
+- Added CEL/OpenAPI validation for acquisition configuration, named range/subnet lists, and non-negative subnet offsets.
+- Added Helm repository publishing for GitHub Pages and Artifact Hub metadata for chart discovery.
 
 ### Changed
 
 - Updated manager startup so PoolSync can run with Cilium, MetalLB, Calico, or any combination of available backend CRDs instead of requiring Cilium before registering pool synchronization.
 - Updated README, architecture, prefix-acquisition, implementation-plan, and sample manifests to document DHCPv6-PD, subnet mode, MetalLB, and Calico as implemented features.
+- Updated observability documentation to list dynamic-prefix specific metrics and emitted events.
+- Updated install documentation and release notes to prefer the Helm repository while retaining OCI install instructions.
 - Corrected subnet offset documentation to describe offset as the Nth target subnet inside the delegated prefix.
 
 ### Tests
 
-- Added unit coverage for optional pool backend discovery and MetalLB/Calico backend update behavior.
+- Added unit coverage for optional pool backend discovery, MetalLB/Calico backend update behavior, and Kubernetes event emission.
 
 ## v0.0.6 - 2026-05-22
 

@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -90,7 +91,8 @@ type poolConfiguration struct {
 // PoolSyncReconciler reconciles supported pool backend resources annotated with dynamic-prefix.io annotations.
 type PoolSyncReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 	// CiliumVersions holds the resolved Cilium API versions. If nil, defaults are used.
 	CiliumVersions *CiliumVersions
 	// BackendGVKs holds discovered pool backend resources. If empty, the reconciler
@@ -179,9 +181,12 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if updated {
 		log.Info("Pool updated successfully", "backend", backend.name(), "pool", req.Name, "blockCount", len(configs))
+		emitNormalEvent(r.Recorder, pool, eventReasonPoolUpdated,
+			fmt.Sprintf("Synced %s pool %s from DynamicPrefix %s with %d managed configuration(s)", backend.name(), req.Name, dpName, len(configs)))
 	} else {
 		log.Info("Pool already up-to-date", "backend", backend.name(), "pool", req.Name, "blockCount", len(configs))
 	}
+	recordPoolSyncedMetric(backend.name(), dpName, req.String())
 	return ctrl.Result{}, nil
 }
 

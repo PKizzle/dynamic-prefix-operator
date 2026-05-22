@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -52,6 +53,7 @@ type DynamicPrefixReconciler struct {
 	client.Client
 	Scheme          *runtime.Scheme
 	ReceiverFactory ReceiverFactory
+	Recorder        record.EventRecorder
 
 	// receiversMu protects the receivers map
 	receiversMu sync.RWMutex
@@ -71,6 +73,7 @@ func NewDynamicPrefixReconciler(c client.Client, scheme *runtime.Scheme) *Dynami
 // +kubebuilder:rbac:groups=dynamic-prefix.io,resources=dynamicprefixes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=dynamic-prefix.io,resources=dynamicprefixes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=dynamic-prefix.io,resources=dynamicprefixes/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -116,6 +119,7 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		log.Error(err, "Failed to create receiver")
 		r.setCondition(&dp, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired, metav1.ConditionFalse,
 			"ReceiverCreationFailed", err.Error())
+		emitWarningEvent(r.Recorder, &dp, eventReasonReceiverCreationFailed, err.Error())
 		if statusErr := r.updateStatusIfChanged(ctx, &dp, originalStatus); statusErr != nil {
 			log.Error(statusErr, "Failed to update status")
 		}
@@ -135,9 +139,20 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Update status with current prefix
-	prefixChanged := dp.Status.CurrentPrefix != currentPrefix.Network.String()
+	oldPrefix := dp.Status.CurrentPrefix
+	prefixChanged := oldPrefix != currentPrefix.Network.String()
 	if prefixChanged {
-		log.Info("Prefix changed", "oldPrefix", dp.Status.CurrentPrefix, "newPrefix", currentPrefix.Network.String())
+		prefixSource := string(sourceToPrefixSource(receiver.Source()))
+		log.Info("Prefix changed", "oldPrefix", oldPrefix, "newPrefix", currentPrefix.Network.String())
+		recordPrefixReceivedMetric(dp.Name, prefixSource)
+		if oldPrefix == "" {
+			emitNormalEvent(r.Recorder, &dp, eventReasonPrefixReceived,
+				fmt.Sprintf("Prefix %s acquired via %s", currentPrefix.Network, prefixSource))
+		} else {
+			recordPrefixChangedMetric(dp.Name)
+			emitNormalEvent(r.Recorder, &dp, eventReasonPrefixChanged,
+				fmt.Sprintf("Prefix changed from %s to %s via %s", oldPrefix, currentPrefix.Network, prefixSource))
+		}
 		r.handlePrefixChange(ctx, &dp, currentPrefix)
 	}
 
@@ -148,6 +163,10 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if currentPrefix.ValidLifetime > 0 {
 		expiresAt := metav1.NewTime(currentPrefix.ReceivedAt.Add(currentPrefix.ValidLifetime))
 		dp.Status.LeaseExpiresAt = &expiresAt
+		recordPrefixLeaseExpiryMetric(dp.Name, &expiresAt.Time)
+	} else {
+		dp.Status.LeaseExpiresAt = nil
+		recordPrefixLeaseExpiryMetric(dp.Name, nil)
 	}
 
 	// Calculate subnets (Mode 2)
@@ -345,13 +364,20 @@ func (r *DynamicPrefixReconciler) handlePrefixChange(ctx context.Context, dp *dy
 			maxHistory = dp.Spec.Transition.MaxPrefixHistory
 		}
 		if len(dp.Status.History) > maxHistory {
+			completed := dp.Status.History[:len(dp.Status.History)-maxHistory]
 			dp.Status.History = dp.Status.History[len(dp.Status.History)-maxHistory:]
+			for _, entry := range completed {
+				emitNormalEvent(r.Recorder, dp, eventReasonTransitionCompleted,
+					fmt.Sprintf("Completed transition for historical prefix %s after retaining %d prefix history entry(s)", entry.Prefix, maxHistory))
+			}
 		}
 
 		log.Info("Added prefix to history",
 			"oldPrefix", dp.Status.CurrentPrefix,
 			"newPrefix", newPrefix.Network.String(),
 			"state", dynamicprefixiov1alpha1.PrefixStateDraining)
+		emitNormalEvent(r.Recorder, dp, eventReasonTransitionStarted,
+			fmt.Sprintf("Started draining historical prefix %s after acquiring %s", dp.Status.CurrentPrefix, newPrefix.Network))
 	}
 }
 

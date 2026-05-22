@@ -207,6 +207,7 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
+	eventRecorder := mgr.GetEventRecorderFor("dynamic-prefix-operator")
 
 	if err := mgr.Add(controller.NewLeaderElectionStatusLogger(
 		setupLog.WithName("leader-election"),
@@ -246,6 +247,7 @@ func main() {
 		mgr.GetScheme(),
 	)
 	dynamicPrefixReconciler.ReceiverFactory = receiverFactory
+	dynamicPrefixReconciler.Recorder = eventRecorder
 	if err := dynamicPrefixReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DynamicPrefix")
 		os.Exit(1)
@@ -265,6 +267,7 @@ func main() {
 		if err := (&controller.PoolSyncReconciler{
 			Client:      mgr.GetClient(),
 			Scheme:      mgr.GetScheme(),
+			Recorder:    eventRecorder,
 			BackendGVKs: gvks,
 		}).SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("unable to create PoolSync controller: %w", err)

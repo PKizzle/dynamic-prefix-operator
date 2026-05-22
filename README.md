@@ -50,8 +50,14 @@ But all of this assumes **stable IP addressing**. Cloud providers give you stati
 ### 1. Install the operator
 
 ```bash
-# Using Helm
-helm install dynamic-prefix-operator oci://ghcr.io/pkizzle/dynamic-prefix-operator/helm/dynamic-prefix-operator
+# Using the Helm repository
+helm repo add dynamic-prefix-operator https://pkizzle.github.io/dynamic-prefix-operator
+helm repo update
+helm install dynamic-prefix-operator dynamic-prefix-operator/dynamic-prefix-operator
+
+# Or using Helm OCI
+helm install dynamic-prefix-operator \
+  oci://ghcr.io/pkizzle/dynamic-prefix-operator/helm/dynamic-prefix-operator
 
 # Or using kubectl
 kubectl apply -f https://github.com/pkizzle/dynamic-prefix-operator/releases/latest/download/install.yaml
@@ -374,6 +380,19 @@ When your ISP changes your prefix:
 - Use HA mode if you need zero-downtime during prefix transitions
 - Ensure your applications handle reconnection gracefully
 - Monitor the `PrefixAcquired` condition for alerting
+
+## Observability
+
+The operator exports controller-runtime metrics plus dynamic-prefix specific Prometheus series:
+
+| Metric | Description |
+|--------|-------------|
+| `dynamic_prefix_received_total` | Prefixes acquired, labeled by DynamicPrefix name and source |
+| `dynamic_prefix_changes_total` | Prefix changes after an initial prefix was active |
+| `dynamic_prefix_lease_expiry_seconds` | Current lease expiry as a Unix timestamp, or `0` when unknown |
+| `dynamic_prefix_pools_synced` | Successful pool sync state labeled by backend, DynamicPrefix, and pool |
+
+It also emits Kubernetes events for prefix acquisition, prefix changes, transition history pruning, receiver failures, and pool updates.
 
 ## Roadmap
 

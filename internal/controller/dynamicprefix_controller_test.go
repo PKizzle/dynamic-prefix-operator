@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
@@ -71,9 +72,11 @@ var _ = Describe("DynamicPrefix Controller", func() {
 			Expect(k8sClient.Create(ctx, dp)).Should(Succeed())
 
 			// Create reconciler with injectable mock receiver
+			recorder := record.NewFakeRecorder(4)
 			reconciler := &DynamicPrefixReconciler{
 				Client:    k8sClient,
 				Scheme:    k8sClient.Scheme(),
+				Recorder:  recorder,
 				receivers: make(map[string]prefix.Receiver),
 			}
 
@@ -114,6 +117,14 @@ var _ = Describe("DynamicPrefix Controller", func() {
 			Expect(updatedDP.Status.Subnets[0].CIDR).To(Equal("2001:db8::/64"))
 			Expect(updatedDP.Status.Subnets[1].Name).To(Equal("services"))
 			Expect(updatedDP.Status.Subnets[1].CIDR).To(Equal("2001:db8:0:1::/64"))
+			Eventually(func() string {
+				select {
+				case event := <-recorder.Events:
+					return event
+				default:
+					return ""
+				}
+			}, timeout, interval).Should(ContainSubstring(eventReasonPrefixReceived))
 
 			stableResourceVersion := updatedDP.ResourceVersion
 
@@ -160,9 +171,11 @@ var _ = Describe("DynamicPrefix Controller", func() {
 
 			Expect(k8sClient.Create(ctx, dp)).Should(Succeed())
 
+			recorder := record.NewFakeRecorder(4)
 			reconciler := &DynamicPrefixReconciler{
 				Client:    k8sClient,
 				Scheme:    k8sClient.Scheme(),
+				Recorder:  recorder,
 				receivers: make(map[string]prefix.Receiver),
 			}
 
@@ -186,6 +199,14 @@ var _ = Describe("DynamicPrefix Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dpName}, &updatedDP)).Should(Succeed())
 			Expect(updatedDP.Status.CurrentPrefix).To(Equal("2001:db8:1::/48"))
 			Expect(updatedDP.Status.History).To(BeEmpty())
+			Eventually(func() string {
+				select {
+				case event := <-recorder.Events:
+					return event
+				default:
+					return ""
+				}
+			}, timeout, interval).Should(ContainSubstring(eventReasonPrefixReceived))
 
 			// Simulate prefix change
 			prefix2 := netip.MustParsePrefix("2001:db8:2::/48")
@@ -203,6 +224,14 @@ var _ = Describe("DynamicPrefix Controller", func() {
 			Expect(updatedDP.Status.History).To(HaveLen(1))
 			Expect(updatedDP.Status.History[0].Prefix).To(Equal("2001:db8:1::/48"))
 			Expect(updatedDP.Status.History[0].State).To(Equal(dynamicprefixiov1alpha1.PrefixStateDraining))
+			Eventually(func() string {
+				select {
+				case event := <-recorder.Events:
+					return event
+				default:
+					return ""
+				}
+			}, timeout, interval).Should(ContainSubstring(eventReasonPrefixChanged))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, dp)).Should(Succeed())

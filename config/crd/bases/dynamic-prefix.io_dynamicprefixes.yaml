@@ -90,6 +90,9 @@ spec:
                         type: string
                     type: object
                 type: object
+                x-kubernetes-validations:
+                - message: at least one acquisition method must be configured
+                  rule: has(self.dhcpv6pd) || has(self.routerAdvertisement)
               addressRanges:
                 description: |-
                   AddressRanges defines address ranges within the received prefix.
@@ -124,6 +127,9 @@ spec:
                   - start
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               subnets:
                 description: |-
                   Subnets defines how to subdivide the received prefix into smaller subnets.
@@ -169,6 +175,7 @@ spec:
                         For example, with a /56 base prefix and PrefixLength 64, offset 255 selects
                         the last /64 in the /56.
                       format: int64
+                      minimum: 0
                       type: integer
                     prefixLength:
                       description: PrefixLength is the prefix length of the subnet
@@ -181,6 +188,9 @@ spec:
                   - prefixLength
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               transition:
                 description: Transition defines graceful transition settings when
                   prefix changes

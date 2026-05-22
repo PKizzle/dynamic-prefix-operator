@@ -30,12 +30,16 @@ type DynamicPrefixSpec struct {
 	// AddressRanges defines address ranges within the received prefix.
 	// Use this for Mode 1 (recommended): reserve a range within your /64 that
 	// your router's DHCPv6/SLAAC won't hand out. No BGP required.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	AddressRanges []AddressRangeSpec `json:"addressRanges,omitempty"`
 
 	// Subnets defines how to subdivide the received prefix into smaller subnets.
 	// Use this for Mode 2 (advanced): carve out dedicated /64s from a larger
 	// prefix. Requires BGP to announce the subnets to your router.
+	// +listType=map
+	// +listMapKey=name
 	// +optional
 	Subnets []SubnetSpec `json:"subnets,omitempty"`
 
@@ -45,6 +49,7 @@ type DynamicPrefixSpec struct {
 }
 
 // AcquisitionSpec defines how to acquire/receive the IPv6 prefix
+// +kubebuilder:validation:XValidation:rule="has(self.dhcpv6pd) || has(self.routerAdvertisement)",message="at least one acquisition method must be configured"
 type AcquisitionSpec struct {
 	// DHCPv6PD configures DHCPv6 Prefix Delegation to receive prefix from upstream router
 	// +optional
@@ -119,6 +124,7 @@ type SubnetSpec struct {
 	// the last /64 in the /56.
 	// +optional
 	// +kubebuilder:default=0
+	// +kubebuilder:validation:Minimum=0
 	Offset int64 `json:"offset,omitempty"`
 
 	// PrefixLength is the prefix length of the subnet (e.g., 120 for a /120)

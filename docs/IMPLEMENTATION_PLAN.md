@@ -38,47 +38,33 @@ Following [Go project layout best practices](https://github.com/golang-standards
 dynamic-prefix-operator/
 ├── api/
 │   └── v1alpha1/
-│       ├── dynamicprefix_types.go      # DynamicPrefix CRD
+│       ├── dynamicprefix_types.go      # DynamicPrefix CRD + OpenAPI/CEL markers
 │       ├── groupversion_info.go
 │       ├── zz_generated.deepcopy.go
-│       └── webhook_validation.go       # CEL validation webhooks
 │
 ├── cmd/
-│   └── manager/
-│       └── main.go                     # Operator entrypoint
+│   └── main.go                         # Operator entrypoint
 │
 ├── internal/
 │   ├── controller/
 │   │   ├── dynamicprefix_controller.go     # Main reconciler
-│   │   ├── pool_controller.go              # Watches annotated pools
+│   │   ├── poolsync_controller.go          # Watches annotated pools
+│   │   ├── poolsync_backends.go            # Cilium, MetalLB, Calico pool backends
+│   │   ├── servicesync_controller.go       # HA Service management
+│   │   ├── bgpsync_controller.go           # Cilium BGP advertisement sync
+│   │   ├── metrics.go                      # Prometheus collectors
+│   │   ├── events.go                       # Kubernetes event helpers
 │   │   ├── suite_test.go                   # envtest setup
 │   │   └── dynamicprefix_controller_test.go
 │   │
 │   ├── prefix/
-│   │   ├── receiver.go           # Interface for prefix reception
-│   │   ├── dhcpv6/
-│   │   │   ├── client.go         # DHCPv6-PD client implementation
-│   │   │   ├── lease.go          # Lease management
-│   │   │   └── client_test.go
-│   │   ├── ra/
-│   │   │   ├── monitor.go        # Router Advertisement monitor
-│   │   │   └── monitor_test.go
-│   │   └── store.go              # Prefix state management
+│   │   ├── types.go              # Interface for prefix reception
+│   │   ├── factory.go            # Receiver factory
+│   │   ├── dhcpv6_receiver.go    # DHCPv6-PD client implementation
+│   │   ├── ra_receiver.go        # Router Advertisement monitor
+│   │   └── addressrange.go       # Address range/subnet calculation
 │   │
-│   ├── pool/
-│   │   ├── manager.go            # Pool discovery and updates
-│   │   ├── cilium/
-│   │   │   ├── lbipam.go         # CiliumLoadBalancerIPPool handler
-│   │   │   ├── cidrgroup.go      # CiliumCIDRGroup handler
-│   │   │   └── cilium_test.go
-│   │   ├── calico/               # Calico IPPool backend
-│   │   │   └── ippool.go
-│   │   └── metallb/              # MetalLB IPAddressPool backend
-│   │       └── addresspool.go
-│   │
-│   └── transition/
-│       ├── manager.go            # Graceful transition logic
-│       └── manager_test.go
+│   └── integration/              # ISP simulation scenarios
 │
 ├── config/
 │   ├── crd/
@@ -158,7 +144,7 @@ spec:
 
 3. **Implement CRD types** with proper spec/status separation
 
-4. **Add CEL validation rules**
+4. **Add CEL/OpenAPI validation rules**
 
 5. **Generate manifests**
 
@@ -224,10 +210,10 @@ type DynamicPrefixStatus struct {
 ```
 
 #### Deliverables
-- [ ] Compilable project structure
-- [ ] DynamicPrefix CRD with OpenAPI validation
-- [ ] Basic controller stub
-- [ ] CI pipeline (GitHub Actions)
+- [x] Compilable project structure
+- [x] DynamicPrefix CRD with OpenAPI and CEL validation
+- [x] DynamicPrefix, PoolSync, ServiceSync, and BGPSync controllers
+- [x] CI pipeline (GitHub Actions)
 
 ### Phase 2: DHCPv6-PD Client (Week 2)
 
@@ -241,8 +227,8 @@ type Receiver interface {
     // Start begins receiving prefixes
     Start(ctx context.Context) error
 
-    // Prefixes returns a channel of prefix events
-    Prefixes() <-chan PrefixEvent
+    // Events returns a channel of prefix events
+    Events() <-chan Event
 
     // CurrentPrefix returns the current prefix if any
     CurrentPrefix() *Prefix
@@ -356,25 +342,25 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 #### Controller Design
 
 ```go
-// internal/controller/pool_controller.go
-type PoolReconciler struct {
+// internal/controller/poolsync_controller.go
+type PoolSyncReconciler struct {
     client.Client
-    poolHandlers map[string]PoolHandler
+    BackendGVKs []schema.GroupVersionKind
 }
 
-func (r *PoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-    // 1. Fetch the pool (could be any supported type)
+func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+    // 1. Fetch the pool from the discovered backend set
     // 2. Check for dynamic-prefix.io/name annotation
     // 3. Look up the referenced DynamicPrefix
-    // 4. Get the subnet CIDR from status
-    // 5. Update the pool's CIDR
+    // 4. Resolve address-range, subnet, or raw-prefix configuration
+    // 5. Update backend-specific pool fields idempotently
 }
 
 // Watch multiple pool types
-func (r *PoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *PoolSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
     return ctrl.NewControllerManagedBy(mgr).
-        For(&ciliumv2alpha1.CiliumLoadBalancerIPPool{}).
-        Watches(&ciliumv2.CiliumCIDRGroup{}, handler.EnqueueRequestsFromMapFunc(r.findPoolsForCIDRGroup)).
+  For(primaryBackendObject).
+  Watches(additionalBackendObjects...).
         Watches(&v1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findPoolsForPrefix)).
         Complete(r)
 }
@@ -383,51 +369,27 @@ func (r *PoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 #### Pool Handlers
 
 ```go
-// internal/pool/manager.go
-type PoolHandler interface {
-    // GetAnnotations extracts dynamic-prefix annotations
-    GetAnnotations(obj client.Object) (prefixName, subnetName string, ok bool)
-
-    // UpdateCIDR updates the pool with the new CIDR
-    UpdateCIDR(ctx context.Context, obj client.Object, cidr netip.Prefix) error
-}
-
-// internal/pool/cilium/lbipam.go
-type LBIPAMHandler struct{}
-
-func (h *LBIPAMHandler) UpdateCIDR(ctx context.Context, obj client.Object, cidr netip.Prefix) error {
-    pool := obj.(*ciliumv2alpha1.CiliumLoadBalancerIPPool)
-    pool.Spec.Blocks = []ciliumv2alpha1.CiliumLoadBalancerIPPoolIPBlock{
-        {Cidr: ciliumv2alpha1.IPv6CIDR(cidr.String())},
-    }
-    return nil
+// internal/controller/poolsync_backends.go
+type poolBackend interface {
+    name() string
+    gvk() schema.GroupVersionKind
+    update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error)
 }
 ```
+
+Implemented backends currently include Cilium `CiliumLoadBalancerIPPool`, Cilium `CiliumCIDRGroup`, MetalLB `IPAddressPool`, and Calico `IPPool`.
 
 ### Phase 6: Graceful Transitions (Week 5)
 
 **Objective**: Handle prefix changes without disruption.
 
-```go
-// internal/transition/manager.go
-type Manager struct {
-    drainPeriod time.Duration
-    pending     map[string]*Transition
-}
+Graceful transitions are implemented in controller status and reconciliation rather than a separate transition package:
 
-type Transition struct {
-    OldPrefix  netip.Prefix
-    NewPrefix  netip.Prefix
-    StartedAt  time.Time
-    DrainUntil time.Time
-}
-
-func (m *Manager) StartTransition(old, new netip.Prefix) {
-    // 1. Keep old prefix in pools (add new, don't remove old yet)
-    // 2. Start drain timer
-    // 3. After drain period, remove old prefix
-}
-```
+1. `DynamicPrefixReconciler` adds the previous prefix to `status.history` when a new prefix is acquired.
+2. `PoolSyncReconciler` renders current + historical configurations into supported pools, preserving unmanaged entries where possible.
+3. `ServiceSyncReconciler` implements HA mode by assigning current + historical Service IPs while targeting DNS at the current prefix.
+4. `maxPrefixHistory` controls when older history entries are pruned.
+5. Kubernetes events announce transition start and completion/pruning.
 
 ### Phase 7: Observability (Week 6)
 
@@ -455,6 +417,13 @@ var (
             Name: "dynamic_prefix_lease_expiry_seconds",
         },
         []string{"name"},
+    )
+
+    poolsSynced = prometheus.NewGaugeVec(
+        prometheus.GaugeOpts{
+            Name: "dynamic_prefix_pools_synced",
+        },
+        []string{"backend", "dynamic_prefix", "pool"},
     )
 )
 ```
@@ -515,6 +484,9 @@ spec:
               properties:
                 acquisition:
                   type: object
+                  x-kubernetes-validations:
+                    - rule: has(self.dhcpv6pd) || has(self.routerAdvertisement)
+                      message: at least one acquisition method must be configured
                   properties:
                     dhcpv6pd:
                       type: object
@@ -533,8 +505,24 @@ spec:
                           type: string
                         enabled:
                           type: boolean
+                addressRanges:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [name]
+                  items:
+                    type: object
+                    required: [name, start, end]
+                    properties:
+                      name:
+                        type: string
+                      start:
+                        type: string
+                      end:
+                        type: string
                 subnets:
                   type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys: [name]
                   items:
                     type: object
                     required: [name, prefixLength]
@@ -543,6 +531,7 @@ spec:
                         type: string
                       offset:
                         type: integer
+                        minimum: 0
                       prefixLength:
                         type: integer
                         minimum: 48
@@ -550,12 +539,15 @@ spec:
                 transition:
                   type: object
                   properties:
-                    drainPeriodMinutes:
-                      type: integer
-                      default: 60
+                    mode:
+                      type: string
+                      enum: [simple, ha]
+                      default: simple
                     maxPrefixHistory:
                       type: integer
                       default: 2
+                      minimum: 1
+                      maximum: 10
             status:
               type: object
               properties:
