@@ -6,6 +6,8 @@ This changelog follows the fork's published GitHub releases and does not align w
 
 ## Unreleased
 
+## v0.0.8 - 2026-05-22
+
 ### Fixed
 
 - Reduced no-op fan-out by ignoring DynamicPrefix lease-expiry and condition-only updates in dependent PoolSync, ServiceSync, and BGPSync watches.
