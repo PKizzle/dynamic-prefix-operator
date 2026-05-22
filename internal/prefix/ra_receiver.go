@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/mdlayher/ndp"
 	"golang.org/x/net/ipv6"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -93,14 +94,14 @@ func (r *RAReceiver) Start(ctx context.Context) error {
 	}
 
 	log := logf.FromContext(ctx).WithName("ra-receiver")
-	log.Info("Looking up interface", "name", r.iface)
+	log.V(1).Info("Looking up interface", "name", r.iface)
 
 	ifi, err := net.InterfaceByName(r.iface)
 	if err != nil {
 		return fmt.Errorf("failed to get interface %s: %w", r.iface, err)
 	}
 
-	log.Info("Found interface",
+	log.V(1).Info("Found interface",
 		"name", ifi.Name,
 		"index", ifi.Index,
 		"hwAddr", ifi.HardwareAddr.String(),
@@ -118,7 +119,7 @@ func (r *RAReceiver) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create NDP listener on %s: %w", r.iface, err)
 	}
 
-	log.Info("NDP listener started", "interface", r.iface, "localAddr", addr.String())
+	log.V(1).Info("NDP listener started", "interface", r.iface, "localAddr", addr.String())
 
 	r.conn = conn
 	r.ctx, r.cancel = context.WithCancel(ctx)
@@ -172,16 +173,16 @@ func (r *RAReceiver) Source() Source {
 // receiveLoop continuously reads Router Advertisements from the interface.
 func (r *RAReceiver) receiveLoop() {
 	log := logf.Log.WithName("ra-receiver")
-	log.Info("Receive loop started", "interface", r.iface)
+	log.V(1).Info("Receive loop started", "interface", r.iface)
 
 	iterationCount := 0
 	for {
 		select {
 		case <-r.stopCh:
-			log.Info("Receive loop stopping (stopCh)")
+			log.V(1).Info("Receive loop stopping (stopCh)")
 			return
 		case <-r.ctx.Done():
-			log.Info("Receive loop stopping (ctx done)")
+			log.V(1).Info("Receive loop stopping (ctx done)")
 			return
 		default:
 		}
@@ -218,7 +219,7 @@ func (r *RAReceiver) receiveLoop() {
 			continue
 		}
 
-		log.Info("Received Router Advertisement", "from", from, "optionCount", len(ra.Options))
+		log.V(1).Info("Received Router Advertisement", "from", from, "optionCount", len(ra.Options))
 		r.handleRouterAdvertisement(ra)
 	}
 }
@@ -256,7 +257,7 @@ func (r *RAReceiver) sendInitialRouterSolicitations(hwAddr net.HardwareAddr) {
 		if err := r.sendRouterSolicitation(hwAddr); err != nil {
 			log.Error(err, "Failed to send Router Solicitation", "interface", r.iface, "attempt", attempt, "maxAttempts", maxSolicitations)
 		} else {
-			log.Info("Router Solicitation sent", "interface", r.iface, "attempt", attempt, "maxAttempts", maxSolicitations)
+			log.V(1).Info("Router Solicitation sent", "interface", r.iface, "attempt", attempt, "maxAttempts", maxSolicitations)
 		}
 
 		if attempt == maxSolicitations {
@@ -321,7 +322,7 @@ func (r *RAReceiver) handleRouterAdvertisement(ra *ndp.RouterAdvertisement) {
 			continue
 		}
 
-		log.Info("Found prefix option",
+		log.V(2).Info("Found prefix option",
 			"prefix", pi.Prefix,
 			"prefixLength", pi.PrefixLength,
 			"onLink", pi.OnLink,
@@ -369,7 +370,7 @@ func (r *RAReceiver) handleRouterAdvertisement(ra *ndp.RouterAdvertisement) {
 	}
 
 	prefix := netip.PrefixFrom(bestPrefix.Prefix, int(bestPrefix.PrefixLength))
-	log.Info("Selected prefix", "prefix", prefix, "validLifetime", bestPrefix.ValidLifetime)
+	log.V(1).Info("Selected prefix", "prefix", prefix, "validLifetime", bestPrefix.ValidLifetime)
 
 	r.updatePrefix(prefix, bestPrefix.ValidLifetime, bestPrefix.PreferredLifetime)
 }
@@ -398,17 +399,24 @@ func (r *RAReceiver) updatePrefix(prefix netip.Prefix, validLifetime, preferredL
 		eventType = EventTypeRenewed
 	}
 
-	log.Info("Updating prefix",
+	var previousPrefix any
+	if r.currentPrefix != nil {
+		previousPrefix = r.currentPrefix.Network
+	}
+
+	logInfoAtVerbosity(log, prefixEventLogVerbosity(eventType), prefixEventLogMessage(eventType),
 		"prefix", prefix,
+		"validLifetime", validLifetime,
+		"preferredLifetime", preferredLifetime,
 		"eventType", eventType,
-		"previousPrefix", r.currentPrefix)
+		"previousPrefix", previousPrefix)
 
 	r.currentPrefix = newPrefix
 
 	// Send event (non-blocking to avoid deadlock)
 	select {
 	case r.events <- Event{Type: eventType, Prefix: newPrefix}:
-		log.Info("Event sent successfully", "eventType", eventType)
+		log.V(2).Info("Event sent", "eventType", eventType)
 	default:
 		log.Info("Event channel full, event dropped", "eventType", eventType)
 	}
@@ -420,6 +428,37 @@ func (r *RAReceiver) sendError(err error) {
 	case r.events <- Event{Type: EventTypeFailed, Error: err}:
 	default:
 		// Channel full, event dropped
+	}
+}
+
+func logInfoAtVerbosity(log logr.Logger, verbosity int, msg string, keysAndValues ...any) {
+	if verbosity <= 0 {
+		log.Info(msg, keysAndValues...)
+		return
+	}
+
+	log.V(verbosity).Info(msg, keysAndValues...)
+}
+
+func prefixEventLogMessage(eventType EventType) string {
+	switch eventType {
+	case EventTypeAcquired:
+		return "Prefix acquired"
+	case EventTypeChanged:
+		return "Prefix changed"
+	case EventTypeRenewed:
+		return "Prefix renewed"
+	default:
+		return "Prefix updated"
+	}
+}
+
+func prefixEventLogVerbosity(eventType EventType) int {
+	switch eventType {
+	case EventTypeAcquired, EventTypeChanged:
+		return 0
+	default:
+		return 1
 	}
 }
 

@@ -81,6 +81,12 @@ priorityClassName: ""
 # Operator Configuration
 # ==============================================================================
 config:
+  # -- Use zap development mode (console-friendly, debug-oriented defaults). Keep false for production-oriented cluster logging.
+  logDevelopment: false
+
+  # -- Log encoder (json or console)
+  logEncoder: json
+
   # -- Log level (debug, info, error)
   logLevel: info
 

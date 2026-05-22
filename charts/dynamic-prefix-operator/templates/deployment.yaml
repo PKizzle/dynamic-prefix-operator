@@ -55,6 +55,8 @@ spec:
             - --metrics-bind-address=0
             {{- end }}
             - --health-probe-bind-address={{ .Values.config.health.bindAddress }}
+            - --zap-devel={{ .Values.config.logDevelopment }}
+            - --zap-encoder={{ .Values.config.logEncoder }}
             - --zap-log-level={{ .Values.config.logLevel }}
             {{- with .Values.config.serviceSync.cacheLabelSelector }}
             - --service-cache-label-selector={{ . | quote }}

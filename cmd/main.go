@@ -64,6 +64,12 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+func defaultZapOptions() zap.Options {
+	return zap.Options{
+		Development: false,
+	}
+}
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string
@@ -94,9 +100,7 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&serviceCacheLabelSelector, "service-cache-label-selector", "",
 		"Optional Kubernetes label selector limiting the Service informer cache, for example dynamic-prefix.io/name")
-	opts := zap.Options{
-		Development: true,
-	}
+	opts := defaultZapOptions()
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 

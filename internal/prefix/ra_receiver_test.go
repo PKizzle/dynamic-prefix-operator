@@ -20,15 +20,20 @@ package prefix
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/mdlayher/ndp"
 	"golang.org/x/net/ipv6"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 func TestIsGlobalUnicast(t *testing.T) {
@@ -332,6 +337,138 @@ func TestRAReceiver_sendInitialRouterSolicitationsUsesMaxAttempts(t *testing.T) 
 	if got := conn.messageCount(); got != 3 {
 		t.Fatalf("sent %d Router Solicitations, want 3", got)
 	}
+}
+
+func TestRAReceiver_handleRouterAdvertisementLogsAcquisitionAtInfo(t *testing.T) {
+	buf := captureStructuredLogs(t)
+	r := NewRAReceiver("eth0")
+
+	r.handleRouterAdvertisement(testRouterAdvertisement())
+
+	entries := decodeStructuredLogs(t, buf)
+	if len(entries) != 1 {
+		t.Fatalf("log entries = %d, want 1\nraw logs:\n%s", len(entries), buf.String())
+	}
+
+	if got := entries[0].Logger; got != "ra-receiver" {
+		t.Fatalf("logger = %q, want %q", got, "ra-receiver")
+	}
+	if got := entries[0].Message; got != "Prefix acquired" {
+		t.Fatalf("message = %q, want %q", got, "Prefix acquired")
+	}
+	if got := entries[0].EventType; got != string(EventTypeAcquired) {
+		t.Fatalf("eventType = %q, want %q", got, EventTypeAcquired)
+	}
+}
+
+func TestLogInfoAtVerbositySuppressesVerboseLogsAtDefault(t *testing.T) {
+	var buf bytes.Buffer
+	log := zap.New(zap.UseDevMode(false), zap.WriteTo(&buf)).WithName("ra-receiver")
+
+	logInfoAtVerbosity(log, 1, "Lifecycle detail")
+	if got := strings.TrimSpace(buf.String()); got != "" {
+		t.Fatalf("expected verbose log to be suppressed at default level, got:\n%s", got)
+	}
+
+	logInfoAtVerbosity(log, 0, "Operator visible event")
+	entries := decodeStructuredLogs(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("log entries = %d, want 1\nraw logs:\n%s", len(entries), buf.String())
+	}
+	if got := entries[0].Message; got != "Operator visible event" {
+		t.Fatalf("message = %q, want %q", got, "Operator visible event")
+	}
+}
+
+func TestRAReceiver_handleRouterAdvertisementLogsRenewalsVerbosely(t *testing.T) {
+	buf := captureStructuredLogs(t)
+	r := NewRAReceiver("eth0")
+	r.currentPrefix = &Prefix{
+		Network:           netip.MustParsePrefix("2001:db8::/64"),
+		ValidLifetime:     2 * time.Hour,
+		PreferredLifetime: 30 * time.Minute,
+		Source:            SourceRouterAdvertisement,
+		ReceivedAt:        time.Now(),
+	}
+
+	r.handleRouterAdvertisement(testRouterAdvertisement())
+
+	if got := strings.TrimSpace(buf.String()); got != "" {
+		t.Fatalf("expected no info-level log output for renewal, got:\n%s", got)
+	}
+
+	select {
+	case event := <-r.Events():
+		if event.Type != EventTypeRenewed {
+			t.Fatalf("event.Type = %v, want %v", event.Type, EventTypeRenewed)
+		}
+	default:
+		t.Fatal("expected renewal event")
+	}
+}
+
+type structuredLogEntry struct {
+	Logger    string `json:"logger"`
+	Message   string `json:"msg"`
+	EventType string `json:"eventType"`
+}
+
+func captureStructuredLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	var buf bytes.Buffer
+	logf.SetLogger(zap.New(zap.UseDevMode(false), zap.WriteTo(&buf)))
+	t.Cleanup(func() {
+		logf.SetLogger(logr.Discard())
+	})
+
+	return &buf
+}
+
+func decodeStructuredLogs(t *testing.T, buf *bytes.Buffer) []structuredLogEntry {
+	t.Helper()
+
+	raw := strings.TrimSpace(buf.String())
+	if raw == "" {
+		return nil
+	}
+
+	lines := strings.Split(raw, "\n")
+	entries := make([]structuredLogEntry, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		var entry structuredLogEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("failed to decode log line %q: %v", line, err)
+		}
+		entries = append(entries, entry)
+	}
+
+	return entries
+}
+
+func testRouterAdvertisement() *ndp.RouterAdvertisement {
+	return &ndp.RouterAdvertisement{Options: []ndp.Option{
+		&ndp.PrefixInformation{
+			Prefix:                         netip.MustParseAddr("2001:db8::"),
+			PrefixLength:                   64,
+			OnLink:                         true,
+			AutonomousAddressConfiguration: true,
+			ValidLifetime:                  2 * time.Hour,
+			PreferredLifetime:              30 * time.Minute,
+		},
+		&ndp.PrefixInformation{
+			Prefix:                         netip.MustParseAddr("fd00::"),
+			PrefixLength:                   64,
+			OnLink:                         true,
+			AutonomousAddressConfiguration: true,
+			ValidLifetime:                  2 * time.Hour,
+			PreferredLifetime:              time.Hour,
+		},
+	}}
 }
 
 type fakeNDPConn struct {
