@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -450,7 +451,7 @@ func (r *BGPSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("bgpsync").
-		For(&dynamicprefixiov1alpha1.DynamicPrefix{}).
+		For(&dynamicprefixiov1alpha1.DynamicPrefix{}, builder.WithPredicates(dynamicPrefixDependentChangePredicate())).
 		Owns(bgpAdv).
 		Watches(&unstructured.Unstructured{
 			Object: map[string]interface{}{

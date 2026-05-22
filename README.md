@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/PKizzle/dynamic-prefix-operator/actions/workflows/test.yml/badge.svg)](https://github.com/PKizzle/dynamic-prefix-operator/actions/workflows/test.yml)
 [![Build](https://github.com/PKizzle/dynamic-prefix-operator/actions/workflows/docker.yaml/badge.svg)](https://github.com/PKizzle/dynamic-prefix-operator/actions/workflows/docker.yaml)
-[![Latest Release](https://img.shields.io/github/v/release/PKizzle/dynamic-prefix-operator?sort=semver)](https://github.com/PKizzle/dynamic-prefix-operator/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/PKizzle/dynamic-prefix-operator?label=latest%20release&sort=semver)](https://github.com/PKizzle/dynamic-prefix-operator/releases/latest)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/dynamic-prefix-operator)](https://artifacthub.io/packages/search?repo=dynamic-prefix-operator)
 
 A Kubernetes operator that manages dynamic IPv6 prefix delegation for bare-metal and home/SOHO Kubernetes clusters.
@@ -438,6 +438,8 @@ When your ISP changes your prefix:
 - Ensure your applications handle reconnection gracefully
 - Monitor the `PrefixAcquired` condition for alerting
 
+**Current limitation**: The operator updates DynamicPrefix status, pool backends, HA Service IP annotations, DNS target annotations, and Cilium BGP advertisements. It does **not** automatically restart arbitrary workloads after a prefix change. If an application caches external addresses, source addresses, or resolver state in-process, handle restarts with your deployment tooling (for example, a rollout controller or GitOps automation) until workload restart orchestration is added.
+
 ## Observability
 
 The operator exports controller-runtime metrics plus dynamic-prefix specific Prometheus series:
@@ -466,6 +468,7 @@ It also emits Kubernetes events for prefix acquisition, prefix changes, transiti
 - [x] DHCPv6-PD client (act as PD client)
 - [x] Calico IPPool backend
 - [x] MetalLB IPAddressPool backend
+- [ ] Optional workload restart orchestration for applications that require restart after prefix change
 
 ## Contributing
 

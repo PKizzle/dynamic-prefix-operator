@@ -629,7 +629,7 @@ func (r *ServiceSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("servicesync").
 		For(&corev1.Service{}, builder.WithPredicates(hasAnnotation)).
-		Watches(&dynamicprefixiov1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findReferencingServices)).
+		Watches(&dynamicprefixiov1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findReferencingServices), builder.WithPredicates(dynamicPrefixDependentChangePredicate())).
 		Complete(r)
 }
 

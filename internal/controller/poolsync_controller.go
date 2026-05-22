@@ -719,7 +719,7 @@ func (r *PoolSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Watch DynamicPrefix and enqueue referencing pools
 	controllerBuilder = controllerBuilder.
-		Watches(&dynamicprefixiov1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findReferencingPools))
+		Watches(&dynamicprefixiov1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findReferencingPools), builder.WithPredicates(dynamicPrefixDependentChangePredicate()))
 
 	return controllerBuilder.Complete(r)
 }

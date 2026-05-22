@@ -4,6 +4,17 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## Unreleased
+
+### Fixed
+
+- Reduced no-op fan-out by ignoring DynamicPrefix lease-expiry and condition-only updates in dependent PoolSync, ServiceSync, and BGPSync watches.
+- Refreshed the latest-release README badge URL to avoid stale invalid badge rendering.
+
+### Documentation
+
+- Documented that automatic workload restart orchestration after prefix changes is not implemented yet.
+
 ## v0.0.7 - 2026-05-22
 
 ### Added
