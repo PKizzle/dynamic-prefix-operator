@@ -126,22 +126,22 @@ When your prefix changes, the operator automatically updates all annotated pools
 ┌─────────────────────────────────────────────────────────────────────┐
 │                     Dynamic Prefix Operator                         │
 │                                                                     │
-│  ┌─────────────────────┐      ┌─────────────────────────────────┐  │
-│  │   Prefix Receiver   │      │     Pool Sync Controller        │  │
-│  │                     │      │                                 │  │
-│  │  • RA Monitor       │─────▶│  Updates pools that reference   │  │
-│  │  • Prefix Detection │      │  DynamicPrefix via annotations: │  │
-│  │                     │      │                                 │  │
-│  └─────────────────────┘      │  • CiliumLoadBalancerIPPool    │  │
-│           │                   │  • CiliumCIDRGroup             │  │
-│           ▼                   └─────────────────────────────────┘  │
+│  ┌─────────────────────┐      ┌─────────────────────────────────┐   │
+│  │   Prefix Receiver   │      │     Pool Sync Controller        │   │
+│  │                     │      │                                 │   │
+│  │  • RA Monitor       │─────▶│  Updates pools that reference   │   │
+│  │  • Prefix Detection │      │  DynamicPrefix via annotations: │   │
+│  │                     │      │                                 │   │
+│  └─────────────────────┘      │  • CiliumLoadBalancerIPPool     │   │
+│           │                   │  • CiliumCIDRGroup              │   │
+│           ▼                   └─────────────────────────────────┘   │
 │  ┌─────────────────────┐                     │                      │
 │  │  DynamicPrefix CR   │                     │                      │
 │  │                     │                     ▼                      │
-│  │  • Current prefix   │      ┌─────────────────────────────────┐  │
-│  │  • Address ranges   │      │  Pools with annotation:         │  │
-│  │  • Lease state      │      │  dynamic-prefix.io/name: xxx    │  │
-│  └─────────────────────┘      └─────────────────────────────────┘  │
+│  │  • Current prefix   │      ┌─────────────────────────────────┐   │
+│  │  • Address ranges   │      │  Pools with annotation:         │   │
+│  │  • Lease state      │      │  dynamic-prefix.io/name: xxx    │   │
+│  └─────────────────────┘      └─────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
