@@ -1,0 +1,6 @@
+# Artifact Hub repository metadata.
+# Add repositoryID after the repository has been added to Artifact Hub to enable
+# the verified publisher badge.
+owners:
+  - name: pkizzle
+    email: philipp.kolberg@t-online.de

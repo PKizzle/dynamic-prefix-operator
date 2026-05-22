@@ -8,9 +8,12 @@ on:
 permissions:
   contents: write
   packages: write
+  pages: write
+  id-token: write
 
 env:
   REGISTRY: ghcr.io
+  HELM_REPO_URL: https://pkizzle.github.io/dynamic-prefix-operator
 
 jobs:
   release:
@@ -132,11 +135,21 @@ jobs:
 
           ## Installation
 
-          ### Using Helm (recommended)
+          ### Using the Helm repository
 
           \`\`\`bash
-          helm install dynamic-prefix-operator \\
-            oci://ghcr.io/${REPOSITORY_OWNER_LOWER}/dynamic-prefix-operator/helm/dynamic-prefix-operator \\
+          helm repo add dynamic-prefix-operator ${HELM_REPO_URL}
+          helm repo update
+          helm install dynamic-prefix-operator \
+            dynamic-prefix-operator/dynamic-prefix-operator \
+            --version ${VERSION}
+          \`\`\`
+
+          ### Using Helm OCI
+
+          \`\`\`bash
+          helm install dynamic-prefix-operator \
+            oci://ghcr.io/${REPOSITORY_OWNER_LOWER}/dynamic-prefix-operator/helm/dynamic-prefix-operator \
             --version ${VERSION}
           \`\`\`
 
@@ -183,3 +196,96 @@ jobs:
                 install.yaml dynamic-prefix-operator-${{ github.ref_name }}.tgz
             fi
           fi
+
+      - name: Build Helm repository for GitHub Pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          PAGES_DIR="dist/helm-repo"
+          ASSETS_DIR="dist/chart-assets"
+
+          rm -rf "$PAGES_DIR" "$ASSETS_DIR"
+          mkdir -p "$PAGES_DIR" "$ASSETS_DIR"
+
+          # Ensure the just-built package is indexed even if the release asset
+          # takes a few seconds to appear in the GitHub Releases API.
+          cp "dynamic-prefix-operator-${{ github.ref_name }}.tgz" "$ASSETS_DIR/"
+
+          # Backfill the index from all release chart assets so the first Pages
+          # deployment already exposes historical chart versions.
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            gh release download "$tag" \
+              --pattern 'dynamic-prefix-operator-*.tgz' \
+              --dir "$ASSETS_DIR" \
+              --clobber || true
+          done
+
+          rm -f "$PAGES_DIR/index.yaml"
+          shopt -s nullglob
+          packages=("$ASSETS_DIR"/dynamic-prefix-operator-*.tgz)
+          if (( ${#packages[@]} == 0 )); then
+            echo "::error::No Helm chart packages found for repository index generation"
+            exit 1
+          fi
+
+          for package in "${packages[@]}"; do
+            version="$(helm show chart "$package" | awk '$1 == "version:" { print $2; exit }')"
+            if [[ -z "$version" ]]; then
+              echo "::error::Unable to determine chart version for $package"
+              exit 1
+            fi
+
+            tmpdir="$(mktemp -d)"
+            cp "$package" "$tmpdir/"
+
+            package_url="https://github.com/${{ github.repository }}/releases/download/${version}"
+            if [[ -f "$PAGES_DIR/index.yaml" ]]; then
+              helm repo index "$tmpdir" --url "$package_url" --merge "$PAGES_DIR/index.yaml"
+            else
+              helm repo index "$tmpdir" --url "$package_url"
+            fi
+
+            cp "$tmpdir/index.yaml" "$PAGES_DIR/index.yaml"
+            rm -rf "$tmpdir"
+          done
+
+          cp artifacthub-repo.yml "$PAGES_DIR/artifacthub-repo.yml"
+          touch "$PAGES_DIR/.nojekyll"
+          cat > "$PAGES_DIR/README.md" <<EOF
+          # Dynamic Prefix Operator Helm Repository
+
+          Add this repository with:
+
+              helm repo add dynamic-prefix-operator ${HELM_REPO_URL}
+              helm repo update
+
+          Then install the chart with:
+
+              helm install dynamic-prefix-operator dynamic-prefix-operator/dynamic-prefix-operator
+          EOF
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Upload Helm repository Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist/helm-repo
+          include-hidden-files: true
+
+  deploy-pages:
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy Helm repository to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

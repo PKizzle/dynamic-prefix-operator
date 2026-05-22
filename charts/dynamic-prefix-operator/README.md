@@ -6,17 +6,20 @@ A Helm chart for deploying the Dynamic Prefix Operator - a Kubernetes operator t
 
 - Kubernetes 1.26+
 - Helm 3.0+
-- (Optional) Cilium for CiliumLoadBalancerIPPool and CiliumCIDRGroup support
+- At least one supported pool backend CRD: Cilium, MetalLB, or Calico
 
 ## Installation
 
 ```bash
-# Add the repository (if published)
-helm repo add dynamic-prefix-operator https://jr42.github.io/dynamic-prefix-operator
+# Add the repository
+helm repo add dynamic-prefix-operator https://pkizzle.github.io/dynamic-prefix-operator
 helm repo update
 
 # Install the chart
 helm install dynamic-prefix-operator dynamic-prefix-operator/dynamic-prefix-operator
+
+# Or install from OCI
+helm install dynamic-prefix-operator oci://ghcr.io/pkizzle/dynamic-prefix-operator/helm/dynamic-prefix-operator
 
 # Or install from local directory
 helm install dynamic-prefix-operator ./charts/dynamic-prefix-operator
