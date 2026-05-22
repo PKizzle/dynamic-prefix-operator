@@ -57,6 +57,17 @@ helm install dynamic-prefix-operator oci://ghcr.io/pkizzle/dynamic-prefix-operat
 kubectl apply -f https://github.com/pkizzle/dynamic-prefix-operator/releases/latest/download/install.yaml
 ```
 
+### Operator HA
+
+Leader election is supported for the operator itself, but the default deployment
+still uses a single replica to keep the footprint small. Scale the operator to
+at least two replicas if you want a warm standby that can take over when the
+leader pod exits.
+
+Non-leader replicas intentionally still serve health probes and metrics while
+they wait for the lease. Controllers and prefix receivers only become active on
+the elected leader.
+
 ### 2. Create a DynamicPrefix with Address Ranges
 
 The recommended approach for home/SOHO: reserve a portion of your /64 that your router won't hand out via DHCPv6/SLAAC.

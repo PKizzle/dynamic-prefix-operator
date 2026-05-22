@@ -54,6 +54,8 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
+const leaderElectionID = "2949475c.dynamic-prefix.io"
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
@@ -187,7 +189,7 @@ func main() {
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "2949475c.dynamic-prefix.io",
+		LeaderElectionID:       leaderElectionID,
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -202,6 +204,16 @@ func main() {
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
+		os.Exit(1)
+	}
+
+	if err := mgr.Add(controller.NewLeaderElectionStatusLogger(
+		setupLog.WithName("leader-election"),
+		enableLeaderElection,
+		leaderElectionID,
+		mgr.Elected(),
+	)); err != nil {
+		setupLog.Error(err, "unable to add leader election status logger")
 		os.Exit(1)
 	}
 
@@ -290,7 +302,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting manager")
+	if enableLeaderElection {
+		setupLog.Info("starting manager; only the elected replica will run controllers", "leaderElectionID", leaderElectionID)
+	} else {
+		setupLog.Info("starting manager without leader election; this replica will run controllers immediately")
+	}
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)

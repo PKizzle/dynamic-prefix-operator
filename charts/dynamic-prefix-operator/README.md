@@ -99,8 +99,16 @@ the matching label is only used to narrow the informer cache.
 
 #### High availability setup
 
+Leader election is enabled by default, but the chart keeps `replicaCount: 1`
+for low-footprint installs. Set `replicaCount` to at least `2` if you want a
+warm standby replica that can take over automatically.
+
+Non-leader replicas intentionally still expose health probes and metrics while
+they wait for the lease; controllers become active only on the elected leader.
+
 ```bash
 helm install dynamic-prefix-operator ./charts/dynamic-prefix-operator \
+  --set replicaCount=2 \
   --set podDisruptionBudget.enabled=true \
   --set config.leaderElection.enabled=true
 ```
@@ -111,7 +119,7 @@ helm install dynamic-prefix-operator ./charts/dynamic-prefix-operator \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `replicaCount` | Number of replicas | `1` |
+| `replicaCount` | Number of replicas (`2+` enables warm-standby HA) | `1` |
 | `image.repository` | Image repository | `ghcr.io/pkizzle/dynamic-prefix-operator` |
 | `image.tag` | Image tag | Chart appVersion |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
@@ -134,7 +142,7 @@ helm install dynamic-prefix-operator ./charts/dynamic-prefix-operator \
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `config.logLevel` | Log level | `info` |
-| `config.leaderElection.enabled` | Enable leader election | `true` |
+| `config.leaderElection.enabled` | Enable leader election for multi-replica deployments | `true` |
 | `config.metrics.enabled` | Enable metrics endpoint | `true` |
 | `config.serviceSync.cacheLabelSelector` | Optional label selector for the Service informer cache | `""` |
 
