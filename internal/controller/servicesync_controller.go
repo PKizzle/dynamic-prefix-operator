@@ -205,10 +205,9 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		log.V(1).Info("Skipping external-dns target update (opted out via annotation)", "service", req.NamespacedName)
 	}
 
-	// Update last-sync annotation
-	newAnnotations[AnnotationLastSync] = time.Now().UTC().Format(time.RFC3339)
-
 	if updated {
+		// Update last-sync annotation only when this reconcile actually changes managed annotations.
+		newAnnotations[AnnotationLastSync] = time.Now().UTC().Format(time.RFC3339)
 		svc.SetAnnotations(newAnnotations)
 		if err := r.Update(ctx, &svc); err != nil {
 			log.Error(err, "Failed to update Service annotations")

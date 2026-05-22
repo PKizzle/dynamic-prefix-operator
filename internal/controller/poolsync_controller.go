@@ -23,6 +23,7 @@ import (
 	"net/netip"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -502,6 +503,13 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 		blocks = append(blocks, block)
 	}
 
+	// Check if blocks actually changed before updating to avoid feedback loops
+	currentBlocks, _, _ := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+	if equality.Semantic.DeepEqual(currentBlocks, blocks) {
+		log.V(2).Info("Pool blocks unchanged, skipping update", "pool", pool.GetName())
+		return nil
+	}
+
 	if err := unstructured.SetNestedField(pool.Object, blocks, "spec", "blocks"); err != nil {
 		return fmt.Errorf("failed to set spec.blocks: %w", err)
 	}
@@ -516,6 +524,8 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 // Multiple CIDRs are added for current prefix plus historical prefixes.
 // Existing CIDRs that are not within managed prefixes are preserved.
 func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) error {
+	log := logf.FromContext(ctx)
+
 	// Preserve existing CIDRs that are not within managed prefixes
 	existingCIDRs, _, _ := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
 	var preserved []interface{}
@@ -540,6 +550,13 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 
 	for _, config := range configs {
 		externalCIDRs = append(externalCIDRs, config.cidr)
+	}
+
+	// Check if CIDRs actually changed before updating to avoid feedback loops
+	currentCIDRs, _, _ := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
+	if equality.Semantic.DeepEqual(currentCIDRs, externalCIDRs) {
+		log.V(2).Info("CIDRGroup unchanged, skipping update", "cidrGroup", pool.GetName())
+		return nil
 	}
 
 	if err := unstructured.SetNestedField(pool.Object, externalCIDRs, "spec", "externalCIDRs"); err != nil {

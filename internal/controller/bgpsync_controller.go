@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -199,23 +200,29 @@ func (r *BGPSyncReconciler) reconcileAdvertisement(
 		}
 		log.Info("Created CiliumBGPAdvertisement", "name", advName, "subnet", subnet.Name)
 	} else {
-		// Update existing advertisement
-		adv.Object["spec"] = advSpec
-
-		// Ensure labels are set
+		// Check if the spec or labels actually changed before updating
 		labels := adv.GetLabels()
 		if labels == nil {
 			labels = make(map[string]string)
 		}
-		labels[LabelManagedBy] = LabelManagedByValue
-		labels[LabelDynamicPrefixName] = dp.Name
-		labels[LabelSubnetName] = subnet.Name
-		adv.SetLabels(labels)
+		labelsChanged := labels[LabelManagedBy] != LabelManagedByValue ||
+			labels[LabelDynamicPrefixName] != dp.Name ||
+			labels[LabelSubnetName] != subnet.Name
 
-		if err := r.Update(ctx, adv); err != nil {
-			return fmt.Errorf("failed to update CiliumBGPAdvertisement: %w", err)
+		if !equality.Semantic.DeepEqual(adv.Object["spec"], advSpec) || labelsChanged {
+			adv.Object["spec"] = advSpec
+			labels[LabelManagedBy] = LabelManagedByValue
+			labels[LabelDynamicPrefixName] = dp.Name
+			labels[LabelSubnetName] = subnet.Name
+			adv.SetLabels(labels)
+
+			if err := r.Update(ctx, adv); err != nil {
+				return fmt.Errorf("failed to update CiliumBGPAdvertisement: %w", err)
+			}
+			log.V(1).Info("Updated CiliumBGPAdvertisement", "name", advName, "subnet", subnet.Name)
+		} else {
+			log.V(2).Info("CiliumBGPAdvertisement unchanged, skipping update", "name", advName)
 		}
-		log.V(1).Info("Updated CiliumBGPAdvertisement", "name", advName, "subnet", subnet.Name)
 	}
 
 	return nil
