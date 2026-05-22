@@ -105,34 +105,58 @@ jobs:
       - name: Generate release notes
         id: notes
         run: |
-          cat << 'EOF' > release-notes.md
+          VERSION="${{ github.ref_name }}"
+          REPOSITORY="${{ github.repository }}"
+          REPOSITORY_LOWER="${{ steps.repository.outputs.lowercase }}"
+          REPOSITORY_OWNER_LOWER="${{ steps.repository_owner.outputs.lowercase }}"
+
+          CHANGELOG_SECTION="$(awk -v version="$VERSION" '
+            $1 == "##" && $2 == version { in_section = 1; next }
+            in_section && /^## / { exit }
+            in_section {
+              if (!seen_content && $0 == "") { next }
+              seen_content = 1
+              print
+            }
+          ' CHANGELOG.md)"
+
+          if [[ -z "${CHANGELOG_SECTION//[[:space:]]/}" ]]; then
+            echo "::error::No CHANGELOG.md entry found for ${VERSION}"
+            exit 1
+          fi
+
+          cat > release-notes.md <<EOF
+          ## Release Highlights
+
+          ${CHANGELOG_SECTION}
+
           ## Installation
 
           ### Using Helm (recommended)
 
-          ```bash
-          helm install dynamic-prefix-operator \
-            oci://ghcr.io/${{ steps.repository_owner.outputs.lowercase }}/dynamic-prefix-operator/helm/dynamic-prefix-operator \
-            --version ${{ github.ref_name }}
-          ```
+          \`\`\`bash
+          helm install dynamic-prefix-operator \\
+            oci://ghcr.io/${REPOSITORY_OWNER_LOWER}/dynamic-prefix-operator/helm/dynamic-prefix-operator \\
+            --version ${VERSION}
+          \`\`\`
 
           ### Using kubectl
 
-          ```bash
-          kubectl apply -f https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/install.yaml
-          ```
+          \`\`\`bash
+          kubectl apply -f https://github.com/${REPOSITORY}/releases/download/${VERSION}/install.yaml
+          \`\`\`
 
           ## Docker Images
 
           Multi-arch images (amd64, arm64) are available at:
 
-          ```
-          ghcr.io/${{ steps.repository.outputs.lowercase }}:${{ github.ref_name }}
-          ```
+          \`\`\`
+          ghcr.io/${REPOSITORY_LOWER}:${VERSION}
+          \`\`\`
 
           ## What's Changed
 
-          See the [commit history](https://github.com/${{ steps.repository.outputs.lowercase }}/commits/${{ github.ref_name }}) for details.
+          See the [commit history](https://github.com/${REPOSITORY_LOWER}/commits/${VERSION}) for details.
           EOF
 
       - name: Create GitHub Release
@@ -141,10 +165,21 @@ jobs:
         run: |
           tag="${{ github.ref_name }}"
           if gh release view "$tag" > /dev/null 2>&1; then
+            gh release edit "$tag" --notes-file release-notes.md
             gh release upload "$tag" install.yaml dynamic-prefix-operator-${{ github.ref_name }}.tgz --clobber
           else
-            gh release create "$tag" \
-              --target "${{ github.sha }}" \
-              --generate-notes \
-              install.yaml dynamic-prefix-operator-${{ github.ref_name }}.tgz
+            if [[ "${{ steps.prerelease.outputs.is_prerelease }}" == "true" ]]; then
+              gh release create "$tag" \
+                --target "${{ github.sha }}" \
+                --title "$tag" \
+                --notes-file release-notes.md \
+                --prerelease \
+                install.yaml dynamic-prefix-operator-${{ github.ref_name }}.tgz
+            else
+              gh release create "$tag" \
+                --target "${{ github.sha }}" \
+                --title "$tag" \
+                --notes-file release-notes.md \
+                install.yaml dynamic-prefix-operator-${{ github.ref_name }}.tgz
+            fi
           fi
