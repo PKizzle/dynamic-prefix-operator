@@ -163,14 +163,15 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Update the pool based on its type
 	gvk := pool.GetObjectKind().GroupVersionKind()
+	var updated bool
 	var updateErr error
 
 	switch gvk.Kind {
 	case "CiliumLoadBalancerIPPool":
-		updateErr = r.updateLoadBalancerIPPool(ctx, pool, configs, managedPrefixes)
+		updated, updateErr = r.updateLoadBalancerIPPool(ctx, pool, configs, managedPrefixes)
 	case "CiliumCIDRGroup":
 		// CIDRGroup doesn't support start/end ranges, use CIDR only
-		updateErr = r.updateCIDRGroup(ctx, pool, configs, managedPrefixes)
+		updated, updateErr = r.updateCIDRGroup(ctx, pool, configs, managedPrefixes)
 	default:
 		log.Info("Unknown pool type", "kind", gvk.Kind)
 		return ctrl.Result{}, nil
@@ -181,7 +182,11 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	log.Info("Pool synced successfully", "pool", req.Name, "blockCount", len(configs))
+	if updated {
+		log.Info("Pool updated successfully", "pool", req.Name, "blockCount", len(configs))
+	} else {
+		log.Info("Pool already up-to-date", "pool", req.Name, "blockCount", len(configs))
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -455,7 +460,7 @@ func (r *PoolSyncReconciler) calculateSubnetConfig(
 // Multiple blocks are created for current prefix plus historical prefixes.
 // Existing blocks that are not within the operator's managed prefixes (IPv4 blocks,
 // static IPv6 blocks from other prefixes) are preserved.
-func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) error {
+func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
 	log := logf.FromContext(ctx)
 
 	// Preserve existing blocks that are NOT within managed prefixes.
@@ -507,23 +512,23 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 	currentBlocks, _, _ := unstructured.NestedSlice(pool.Object, "spec", "blocks")
 	if equality.Semantic.DeepEqual(currentBlocks, blocks) {
 		log.V(2).Info("Pool blocks unchanged, skipping update", "pool", pool.GetName())
-		return nil
+		return false, nil
 	}
 
 	if err := unstructured.SetNestedField(pool.Object, blocks, "spec", "blocks"); err != nil {
-		return fmt.Errorf("failed to set spec.blocks: %w", err)
+		return false, fmt.Errorf("failed to set spec.blocks: %w", err)
 	}
 
 	// Update last-sync annotation
 	r.setLastSyncAnnotation(pool)
 
-	return r.Update(ctx, pool)
+	return true, r.Update(ctx, pool)
 }
 
 // updateCIDRGroup updates a CiliumCIDRGroup with the new CIDRs.
 // Multiple CIDRs are added for current prefix plus historical prefixes.
 // Existing CIDRs that are not within managed prefixes are preserved.
-func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) error {
+func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
 	log := logf.FromContext(ctx)
 
 	// Preserve existing CIDRs that are not within managed prefixes
@@ -556,17 +561,17 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 	currentCIDRs, _, _ := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
 	if equality.Semantic.DeepEqual(currentCIDRs, externalCIDRs) {
 		log.V(2).Info("CIDRGroup unchanged, skipping update", "cidrGroup", pool.GetName())
-		return nil
+		return false, nil
 	}
 
 	if err := unstructured.SetNestedField(pool.Object, externalCIDRs, "spec", "externalCIDRs"); err != nil {
-		return fmt.Errorf("failed to set spec.externalCIDRs: %w", err)
+		return false, fmt.Errorf("failed to set spec.externalCIDRs: %w", err)
 	}
 
 	// Update last-sync annotation
 	r.setLastSyncAnnotation(pool)
 
-	return r.Update(ctx, pool)
+	return true, r.Update(ctx, pool)
 }
 
 // setLastSyncAnnotation sets the last-sync annotation to the current timestamp.

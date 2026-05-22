@@ -26,30 +26,60 @@ import (
 	"time"
 
 	"github.com/mdlayher/ndp"
+	"golang.org/x/net/ipv6"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+const (
+	// RFC 4861 section 10 defines MAX_RTR_SOLICITATIONS as 3 transmissions.
+	defaultMaxRouterSolicitations = 3
+	// RFC 4861 section 10 defines RTR_SOLICITATION_INTERVAL as 4 seconds.
+	defaultRouterSolicitationInterval = 4 * time.Second
+)
+
+var allRoutersMulticast = netip.MustParseAddr("ff02::2")
+
+type ndpConn interface {
+	Close() error
+	ReadFrom() (ndp.Message, *ipv6.ControlMessage, netip.Addr, error)
+	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
+	WriteTo(m ndp.Message, cm *ipv6.ControlMessage, dst netip.Addr) error
+}
+
+type ndpListenFunc func(ifi *net.Interface, addr ndp.Addr) (ndpConn, netip.Addr, error)
+
+func defaultNDPListen(ifi *net.Interface, addr ndp.Addr) (ndpConn, netip.Addr, error) {
+	return ndp.Listen(ifi, addr)
+}
 
 // RAReceiver monitors Router Advertisements to passively detect IPv6 prefix changes.
 // This is useful when another service (like Talos or systemd-networkd) is handling
 // DHCPv6-PD and we just need to observe the prefix being used.
 type RAReceiver struct {
-	mu            sync.RWMutex
-	iface         string
-	conn          *ndp.Conn
-	currentPrefix *Prefix
-	events        chan Event
-	stopCh        chan struct{}
-	started       bool
-	ctx           context.Context
-	cancel        context.CancelFunc
+	mu                         sync.RWMutex
+	iface                      string
+	conn                       ndpConn
+	currentPrefix              *Prefix
+	events                     chan Event
+	stopCh                     chan struct{}
+	started                    bool
+	ctx                        context.Context
+	cancel                     context.CancelFunc
+	listen                     ndpListenFunc
+	maxRouterSolicitations     int
+	routerSolicitationInterval time.Duration
 }
 
 // NewRAReceiver creates a new Router Advertisement receiver for the given interface.
 func NewRAReceiver(iface string) *RAReceiver {
 	return &RAReceiver{
-		iface:  iface,
-		events: make(chan Event, 10),
-		stopCh: make(chan struct{}),
+		iface:                      iface,
+		events:                     make(chan Event, 10),
+		stopCh:                     make(chan struct{}),
+		listen:                     defaultNDPListen,
+		maxRouterSolicitations:     defaultMaxRouterSolicitations,
+		routerSolicitationInterval: defaultRouterSolicitationInterval,
 	}
 }
 
@@ -77,8 +107,13 @@ func (r *RAReceiver) Start(ctx context.Context) error {
 		"mtu", ifi.MTU,
 		"flags", ifi.Flags.String())
 
+	listen := r.listen
+	if listen == nil {
+		listen = defaultNDPListen
+	}
+
 	// Create NDP connection for listening to Router Advertisements
-	conn, addr, err := ndp.Listen(ifi, ndp.LinkLocal)
+	conn, addr, err := listen(ifi, ndp.LinkLocal)
 	if err != nil {
 		return fmt.Errorf("failed to create NDP listener on %s: %w", r.iface, err)
 	}
@@ -90,6 +125,7 @@ func (r *RAReceiver) Start(ctx context.Context) error {
 	r.started = true
 
 	go r.receiveLoop()
+	go r.sendInitialRouterSolicitations(ifi.HardwareAddr)
 
 	return nil
 }
@@ -185,6 +221,92 @@ func (r *RAReceiver) receiveLoop() {
 		log.Info("Received Router Advertisement", "from", from, "optionCount", len(ra.Options))
 		r.handleRouterAdvertisement(ra)
 	}
+}
+
+func (r *RAReceiver) sendInitialRouterSolicitations(hwAddr net.HardwareAddr) {
+	log := logf.Log.WithName("ra-receiver")
+	maxSolicitations := r.maxRouterSolicitations
+	if maxSolicitations <= 0 {
+		maxSolicitations = defaultMaxRouterSolicitations
+	}
+	interval := r.routerSolicitationInterval
+	if interval <= 0 {
+		interval = defaultRouterSolicitationInterval
+	}
+
+	// RFC 4861 recommends a random delay before the first Router Solicitation
+	// to avoid synchronized host startup bursts. This operator creates at most
+	// one shared RA receiver per configured interface, and its goal is to learn
+	// the current delegated prefix as soon as the pod starts, so we intentionally
+	// send the first solicitation immediately and keep the standard retry limit.
+	for attempt := 1; attempt <= maxSolicitations; attempt++ {
+		if r.CurrentPrefix() != nil {
+			log.V(1).Info("Router Solicitation loop stopping: prefix already acquired", "interface", r.iface)
+			return
+		}
+
+		select {
+		case <-r.stopCh:
+			return
+		case <-r.ctx.Done():
+			return
+		default:
+		}
+
+		if err := r.sendRouterSolicitation(hwAddr); err != nil {
+			log.Error(err, "Failed to send Router Solicitation", "interface", r.iface, "attempt", attempt, "maxAttempts", maxSolicitations)
+		} else {
+			log.Info("Router Solicitation sent", "interface", r.iface, "attempt", attempt, "maxAttempts", maxSolicitations)
+		}
+
+		if attempt == maxSolicitations {
+			return
+		}
+
+		timer := time.NewTimer(interval)
+		select {
+		case <-r.stopCh:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-r.ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (r *RAReceiver) sendRouterSolicitation(hwAddr net.HardwareAddr) error {
+	r.mu.RLock()
+	conn := r.conn
+	r.mu.RUnlock()
+
+	if conn == nil {
+		return fmt.Errorf("NDP connection is not initialized")
+	}
+
+	options := make([]ndp.Option, 0, 1)
+	if len(hwAddr) > 0 {
+		hwAddrCopy := append(net.HardwareAddr(nil), hwAddr...)
+		options = append(options, &ndp.LinkLayerAddress{
+			Direction: ndp.Source,
+			Addr:      hwAddrCopy,
+		})
+	}
+
+	if err := conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		return fmt.Errorf("failed to set write deadline: %w", err)
+	}
+
+	if err := conn.WriteTo(&ndp.RouterSolicitation{Options: options}, nil, allRoutersMulticast); err != nil {
+		return fmt.Errorf("failed to write Router Solicitation: %w", err)
+	}
+
+	return nil
 }
 
 // handleRouterAdvertisement processes a received Router Advertisement.
