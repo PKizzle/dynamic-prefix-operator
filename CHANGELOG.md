@@ -6,6 +6,10 @@ This changelog follows the fork's published GitHub releases and does not align w
 
 ## Unreleased
 
+### Fixed
+
+- Fixed Helm repository publishing so the GitHub Pages Helm index points to the correct GitHub release chart assets without duplicating the packaged charts on Pages.
+
 ## v0.0.8 - 2026-05-22
 
 ### Fixed

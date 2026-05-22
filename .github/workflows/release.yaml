@@ -205,43 +205,43 @@ jobs:
 
           PAGES_DIR="dist/helm-repo"
           ASSETS_DIR="dist/chart-assets"
+          CURRENT_TAG="${{ github.ref_name }}"
 
           rm -rf "$PAGES_DIR" "$ASSETS_DIR"
-          mkdir -p "$PAGES_DIR" "$ASSETS_DIR"
+          mkdir -p "$PAGES_DIR" "$ASSETS_DIR/$CURRENT_TAG"
 
-          # Ensure the just-built package is indexed even if the release asset
-          # takes a few seconds to appear in the GitHub Releases API.
-          cp "dynamic-prefix-operator-${{ github.ref_name }}.tgz" "$ASSETS_DIR/"
+          # Keep GitHub Releases as the single host for chart archives while
+          # still publishing a classic Helm index via GitHub Pages.
+          cp "dynamic-prefix-operator-${CURRENT_TAG}.tgz" "$ASSETS_DIR/$CURRENT_TAG/"
 
           # Backfill the index from all release chart assets so the first Pages
           # deployment already exposes historical chart versions.
           gh release list --limit 100 --json tagName --jq '.[].tagName' | while IFS= read -r tag; do
             [[ -z "$tag" ]] && continue
+            mkdir -p "$ASSETS_DIR/$tag"
             gh release download "$tag" \
               --pattern 'dynamic-prefix-operator-*.tgz' \
-              --dir "$ASSETS_DIR" \
+              --dir "$ASSETS_DIR/$tag" \
               --clobber || true
           done
 
           rm -f "$PAGES_DIR/index.yaml"
           shopt -s nullglob
-          packages=("$ASSETS_DIR"/dynamic-prefix-operator-*.tgz)
-          if (( ${#packages[@]} == 0 )); then
-            echo "::error::No Helm chart packages found for repository index generation"
-            exit 1
-          fi
+          found_package=false
+          for release_dir in "$ASSETS_DIR"/*; do
+            [[ -d "$release_dir" ]] || continue
 
-          for package in "${packages[@]}"; do
-            version="$(helm show chart "$package" | awk '$1 == "version:" { print $2; exit }')"
-            if [[ -z "$version" ]]; then
-              echo "::error::Unable to determine chart version for $package"
-              exit 1
+            tag="$(basename "$release_dir")"
+            packages=("$release_dir"/dynamic-prefix-operator-*.tgz)
+            if (( ${#packages[@]} == 0 )); then
+              continue
             fi
 
+            found_package=true
             tmpdir="$(mktemp -d)"
-            cp "$package" "$tmpdir/"
+            cp "${packages[@]}" "$tmpdir/"
 
-            package_url="https://github.com/${{ github.repository }}/releases/download/${version}"
+            package_url="https://github.com/${{ github.repository }}/releases/download/${tag}"
             if [[ -f "$PAGES_DIR/index.yaml" ]]; then
               helm repo index "$tmpdir" --url "$package_url" --merge "$PAGES_DIR/index.yaml"
             else
@@ -251,6 +251,21 @@ jobs:
             cp "$tmpdir/index.yaml" "$PAGES_DIR/index.yaml"
             rm -rf "$tmpdir"
           done
+
+          if [[ "$found_package" != "true" ]]; then
+            echo "::error::No Helm chart packages found for repository index generation"
+            exit 1
+          fi
+
+          if ! grep -q "https://github.com/${{ github.repository }}/releases/download/" "$PAGES_DIR/index.yaml"; then
+            echo "::error::Helm repository index must point to GitHub release chart assets"
+            exit 1
+          fi
+
+          if compgen -G "$PAGES_DIR/*.tgz" > /dev/null; then
+            echo "::error::GitHub Pages artifact must not duplicate chart archives"
+            exit 1
+          fi
 
           cp artifacthub-repo.yml "$PAGES_DIR/artifacthub-repo.yml"
           touch "$PAGES_DIR/.nojekyll"
