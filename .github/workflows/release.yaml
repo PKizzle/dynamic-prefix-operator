@@ -167,6 +167,12 @@ jobs:
           ghcr.io/${REPOSITORY_LOWER}:${VERSION}
           \`\`\`
 
+          Nydus-converted multi-arch images are available at:
+
+          \`\`\`
+          ghcr.io/${REPOSITORY_LOWER}:${VERSION}-nydus
+          \`\`\`
+
           ## What's Changed
 
           See the [commit history](https://github.com/${REPOSITORY_LOWER}/commits/${VERSION}) for details.

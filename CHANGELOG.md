@@ -6,9 +6,25 @@ This changelog follows the fork's published GitHub releases and does not align w
 
 ## Unreleased
 
+## v0.0.9 - 2026-05-25
+
+### Added
+
+- Added release workflow support for publishing Nydus-compatible multi-architecture container images using the latest upstream `nydusify` tooling.
+
+### Changed
+
+- Switched the default controller-runtime/zap logging configuration to production-oriented output in the manager binary, Helm chart, and kustomize manager manifest while keeping zap flags configurable.
+- Updated generated GitHub release notes to document the new `-nydus` GHCR image tag alongside the standard multi-arch release image.
+
 ### Fixed
 
 - Fixed Helm repository publishing so the GitHub Pages Helm index points to the correct GitHub release chart assets without duplicating the packaged charts on Pages.
+- Reduced Router Advertisement receiver log noise by moving steady-state lifecycle, solicitation, advertisement, and renewal messages to verbose levels instead of default info output.
+
+### Tests
+
+- Added unit coverage for Router Advertisement log verbosity behavior and the default production logger configuration.
 
 ## v0.0.8 - 2026-05-22
 

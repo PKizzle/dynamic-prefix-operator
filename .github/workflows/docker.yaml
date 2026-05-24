@@ -150,3 +150,74 @@ jobs:
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.REGISTRY }}/${{ steps.image_name.outputs.lowercase }}@sha256:%s ' *)
+
+      - name: Install latest Nydus tools
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+
+          case "$(uname -m)" in
+            x86_64)
+              nydus_arch="amd64"
+              ;;
+            aarch64|arm64)
+              nydus_arch="arm64"
+              ;;
+            *)
+              echo "::error::Unsupported runner architecture: $(uname -m)"
+              exit 1
+              ;;
+          esac
+
+          tmpdir="$(mktemp -d)"
+          trap 'rm -rf "$tmpdir"' EXIT
+          cd "$tmpdir"
+
+          release_json="$(curl -fsSL -H 'Accept: application/vnd.github+json' https://api.github.com/repos/dragonflyoss/nydus/releases/latest)"
+          asset_name="$(jq -r --arg suffix "linux-${nydus_arch}.tgz" '.assets[].name | select(startswith("nydus-static-v") and endswith($suffix))' <<< "$release_json" | head -n 1)"
+
+          if [[ -z "$asset_name" ]]; then
+            echo "::error::Unable to find latest Nydus static Linux ${nydus_arch} tarball"
+            exit 1
+          fi
+
+          asset_url="$(jq -r --arg name "$asset_name" '.assets[] | select(.name == $name) | .browser_download_url' <<< "$release_json")"
+          checksum_name="${asset_name}.sha256sum"
+          checksum_url="$(jq -r --arg name "$checksum_name" '.assets[] | select(.name == $name) | .browser_download_url' <<< "$release_json")"
+
+          curl -fsSLO "$asset_url"
+          if [[ -n "$checksum_url" && "$checksum_url" != "null" ]]; then
+            curl -fsSLO "$checksum_url"
+            sha256sum -c "$checksum_name"
+          else
+            echo "::warning::No checksum asset found for $asset_name; continuing without checksum verification"
+          fi
+
+          sudo tar -xzf "$asset_name" -C /usr/local/bin --strip-components=1 \
+            nydus-static/nydusify \
+            nydus-static/nydus-image
+          sudo chmod +x /usr/local/bin/nydusify /usr/local/bin/nydus-image
+
+          nydusify --version
+
+      - name: Create and push Nydus image
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          if (( ${#tags[@]} == 0 )); then
+            echo "::error::No image tags found in Docker metadata output"
+            exit 1
+          fi
+
+          echo "## Nydus images" >> "$GITHUB_STEP_SUMMARY"
+          for source_image in "${tags[@]}"; do
+            target_image="${source_image}-nydus"
+            echo "Converting ${source_image} to ${target_image}"
+            DOCKER_CONFIG="$HOME/.docker" nydusify convert \
+              --source "$source_image" \
+              --target "$target_image" \
+              --all-platforms
+            echo "- ${target_image}" >> "$GITHUB_STEP_SUMMARY"
+          done
