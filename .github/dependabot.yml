@@ -1,0 +1,56 @@
+version: 2
+
+updates:
+  # The x/net and x/text advisories that reached this operator arrived through
+  # indirect dependencies, so the Go ecosystem entry deliberately does not
+  # restrict itself to direct ones.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - go
+    groups:
+      # Kubernetes libraries have to move in lockstep: controller-runtime pins
+      # the k8s.io/* minor it was built against, so splitting them across PRs
+      # produces a set that does not compile.
+      kubernetes:
+        patterns:
+          - k8s.io/*
+          - sigs.k8s.io/controller-runtime
+      # Everything else, grouped by update type to keep the PR count sane while
+      # still separating the risky bumps from the routine ones.
+      patch-and-minor:
+        patterns:
+          - '*'
+        exclude-patterns:
+          - k8s.io/*
+          - sigs.k8s.io/controller-runtime
+        update-types:
+          - patch
+          - minor
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      actions:
+        patterns:
+          - '*'
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - docker

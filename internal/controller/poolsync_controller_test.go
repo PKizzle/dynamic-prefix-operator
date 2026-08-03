@@ -29,10 +29,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
@@ -888,6 +891,106 @@ func TestIsPrefixManaged_EdgeCases(t *testing.T) {
 			result := isPrefixManaged(p, tt.managed)
 			if result != tt.expected {
 				t.Errorf("isPrefixManaged(%s) = %v, want %v", tt.prefix, result, tt.expected)
+			}
+		})
+	}
+}
+
+// A reconcile.Request carries only name and namespace, so getPool has to work
+// out which backend it belongs to. It used to probe every backend in order and
+// take the first hit -- and because the API server ignores the namespace when
+// reading a cluster-scoped resource, a request for the namespaced MetalLB
+// IPAddressPool matched the same-named cluster-scoped Cilium pool instead. The
+// MetalLB pool was then never synced, silently, since the wrong Get succeeded.
+// The repo's own config/samples ship exactly this name collision.
+//
+// The fake client keys everything by the namespace it is handed, so it does not
+// reproduce that on its own. The interceptor below supplies the missing API
+// server behaviour: for a cluster-scoped kind the namespace is dropped before
+// the lookup. It also records which kinds were probed, which is what pins the
+// fix -- a mismatched backend must not be consulted at all.
+func TestGetPoolDiscriminatesBackendsByScope(t *testing.T) {
+	ctx := context.Background()
+	scheme := newPoolBackendTestScheme(t)
+	scheme.AddKnownTypeWithName(DefaultCiliumLBIPPoolGVK, &unstructured.Unstructured{})
+
+	const sharedName = "ipv6-loadbalancers"
+
+	ciliumPool := &unstructured.Unstructured{}
+	ciliumPool.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
+	ciliumPool.SetName(sharedName) // cluster-scoped: no namespace
+
+	metalLBPool := &unstructured.Unstructured{}
+	metalLBPool.SetGroupVersionKind(DefaultMetalLBIPAddressPoolGVK)
+	metalLBPool.SetName(sharedName)
+	metalLBPool.SetNamespace("metallb-system")
+
+	for _, tt := range []struct {
+		name        string
+		key         types.NamespacedName
+		wantBackend string
+		wantProbed  []string
+	}{
+		{
+			name:        "namespaced request resolves to the namespaced backend",
+			key:         types.NamespacedName{Namespace: "metallb-system", Name: sharedName},
+			wantBackend: "metallb-ip-address-pool",
+			wantProbed:  []string{"IPAddressPool"},
+		},
+		{
+			name:        "cluster-scoped request resolves to the cluster-scoped backend",
+			key:         types.NamespacedName{Name: sharedName},
+			wantBackend: "cilium-load-balancer-ip-pool",
+			wantProbed:  []string{"CiliumLoadBalancerIPPool"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var probed []string
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(ciliumPool, metalLBPool).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey,
+						obj client.Object, opts ...client.GetOption) error {
+						kind := obj.GetObjectKind().GroupVersionKind().Kind
+						probed = append(probed, kind)
+						// Cilium's pool is cluster-scoped: the API server
+						// discards the namespace, so a namespaced key still
+						// finds it.
+						if kind == DefaultCiliumLBIPPoolGVK.Kind {
+							key.Namespace = ""
+						}
+						return c.Get(ctx, key, obj, opts...)
+					},
+				}).
+				Build()
+
+			reconciler := &PoolSyncReconciler{
+				Client: fakeClient,
+				Scheme: scheme,
+				// Cilium first, so an unscoped probe hits it before MetalLB.
+				BackendGVKs: []schema.GroupVersionKind{
+					DefaultCiliumLBIPPoolGVK,
+					DefaultMetalLBIPAddressPoolGVK,
+				},
+			}
+
+			pool, backend, err := reconciler.getPool(ctx, tt.key)
+			if err != nil {
+				t.Fatalf("getPool() unexpected error: %v", err)
+			}
+			if backend == nil {
+				t.Fatal("getPool() returned no backend")
+			}
+			if backend.name() != tt.wantBackend {
+				t.Fatalf("getPool() backend = %q, want %q", backend.name(), tt.wantBackend)
+			}
+			if pool.GetNamespace() != tt.key.Namespace {
+				t.Fatalf("getPool() returned an object in namespace %q, want %q",
+					pool.GetNamespace(), tt.key.Namespace)
+			}
+			if strings.Join(probed, ",") != strings.Join(tt.wantProbed, ",") {
+				t.Fatalf("getPool() probed kinds %v, want %v", probed, tt.wantProbed)
 			}
 		})
 	}

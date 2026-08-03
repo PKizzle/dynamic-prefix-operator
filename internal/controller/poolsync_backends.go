@@ -35,6 +35,12 @@ import (
 type poolBackend interface {
 	name() string
 	gvk() schema.GroupVersionKind
+	// namespaced reports whether this backend's resource is namespace-scoped.
+	// A reconcile.Request carries no GVK, so getPool has to probe backends by
+	// name -- and the API server ignores the namespace when reading a
+	// cluster-scoped resource. Without the scope to discriminate on, a request
+	// for a namespaced pool matches a same-named cluster-scoped one.
+	namespaced() bool
 	update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error)
 }
 
@@ -46,6 +52,9 @@ func (b ciliumLoadBalancerIPPoolBackend) name() string { return "cilium-load-bal
 func (b ciliumLoadBalancerIPPoolBackend) gvk() schema.GroupVersionKind {
 	return b.resourceGVK
 }
+
+// CiliumLoadBalancerIPPool is cluster-scoped.
+func (b ciliumLoadBalancerIPPoolBackend) namespaced() bool { return false }
 func (b ciliumLoadBalancerIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
 	return r.updateLoadBalancerIPPool(ctx, pool, configs, managedPrefixes)
 }
@@ -58,6 +67,9 @@ func (b ciliumCIDRGroupBackend) name() string { return "cilium-cidr-group" }
 func (b ciliumCIDRGroupBackend) gvk() schema.GroupVersionKind {
 	return b.resourceGVK
 }
+
+// CiliumCIDRGroup is cluster-scoped.
+func (b ciliumCIDRGroupBackend) namespaced() bool { return false }
 func (b ciliumCIDRGroupBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
 	return r.updateCIDRGroup(ctx, pool, configs, managedPrefixes)
 }
@@ -70,6 +82,9 @@ func (b metalLBIPAddressPoolBackend) name() string { return "metallb-ip-address-
 func (b metalLBIPAddressPoolBackend) gvk() schema.GroupVersionKind {
 	return b.resourceGVK
 }
+
+// MetalLB IPAddressPool lives in a namespace (metallb-system by default).
+func (b metalLBIPAddressPoolBackend) namespaced() bool { return true }
 func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
 	logger := log.FromContext(ctx)
 
@@ -123,6 +138,9 @@ func (b calicoIPPoolBackend) name() string { return "calico-ip-pool" }
 func (b calicoIPPoolBackend) gvk() schema.GroupVersionKind {
 	return b.resourceGVK
 }
+
+// Calico IPPool is cluster-scoped.
+func (b calicoIPPoolBackend) namespaced() bool { return false }
 func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
 	logger := log.FromContext(ctx)
 

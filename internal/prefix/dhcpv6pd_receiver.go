@@ -444,10 +444,14 @@ func (r *DHCPv6PDReceiver) processIAPDReply(reply *dhcpv6.Message, expectedIAID 
 		return fmt.Errorf("IA_PD did not contain any prefixes")
 	}
 
-	// Use the first valid prefix
+	// Use the first valid prefix. Prefix may be nil even when the lifetimes
+	// parsed fine: the wire format carries them ahead of the prefix-length
+	// byte, and the decoder nils the prefix when that byte is zero. Screening
+	// on the lifetime alone would dereference nil below, panicking runLoop --
+	// a bare goroutine with no recover, so it takes the process down.
 	var bestPrefix *dhcpv6.OptIAPrefix
 	for _, p := range prefixes {
-		if p.ValidLifetime > 0 {
+		if p.ValidLifetime > 0 && p.Prefix != nil {
 			bestPrefix = p
 			break
 		}
@@ -462,7 +466,14 @@ func (r *DHCPv6PDReceiver) processIAPDReply(reply *dhcpv6.Message, expectedIAID 
 	if !ok {
 		return fmt.Errorf("invalid prefix address")
 	}
-	ones, _ := bestPrefix.Prefix.Mask.Size()
+	// A prefix-length byte above 128 makes net.CIDRMask return nil, and Size()
+	// reports (0, 0) for any non-canonical mask. Left unchecked that becomes a
+	// /0 delegation covering the whole address space, which would propagate
+	// into status, subnet math and the advertised pools.
+	ones, bits := bestPrefix.Prefix.Mask.Size()
+	if bits != net.IPv6len*8 || ones == 0 {
+		return fmt.Errorf("invalid prefix length in IA_PD")
+	}
 	prefix := netip.PrefixFrom(addr, ones)
 
 	// Calculate T1/T2 from IA_PD or use defaults

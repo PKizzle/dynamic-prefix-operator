@@ -191,9 +191,21 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 // getPool tries each configured backend GVK until the requested object is found.
+//
+// Only backends whose scope matches the request are probed. A reconcile.Request
+// carries no GVK, and the API server drops the namespace when reading a
+// cluster-scoped resource, so probing every backend would let a request for a
+// namespaced pool (MetalLB's IPAddressPool) match a same-named cluster-scoped
+// one (Cilium's CiliumLoadBalancerIPPool). That returned the wrong object, and
+// the namespaced pool was then never synced -- silently, because the wrong Get
+// succeeded.
 func (r *PoolSyncReconciler) getPool(ctx context.Context, name types.NamespacedName) (*unstructured.Unstructured, poolBackend, error) {
 	var lastErr error
+	wantNamespaced := name.Namespace != ""
 	for _, backend := range r.poolBackends() {
+		if backend.namespaced() != wantNamespaced {
+			continue
+		}
 		pool := &unstructured.Unstructured{}
 		pool.SetGroupVersionKind(backend.gvk())
 		if err := r.Get(ctx, name, pool); err != nil {

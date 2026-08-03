@@ -342,3 +342,81 @@ func TestParsePrefix(t *testing.T) {
 		})
 	}
 }
+
+// CalculateSubnet used to trust the offset: big.Int.FillBytes panics when the
+// value exceeds the 16-byte buffer, and Offset has no upper bound in the CRD,
+// so a large value produced a permanent panic/requeue loop. Offsets that stay
+// under 2^128 but past the end of the delegation were worse -- they returned a
+// subnet the operator does not own and went on to advertise it.
+func TestCalculateSubnetRejectsOutOfRangeOffsets(t *testing.T) {
+	tests := []struct {
+		name       string
+		basePrefix string
+		config     SubnetConfig
+	}{
+		{
+			// 3e14 << (128-48) overflows 128 bits -> used to panic.
+			name:       "offset overflows the address space",
+			basePrefix: "2001:db8::/48",
+			config:     SubnetConfig{Name: "overflow", Offset: 300000000000000, PrefixLength: 48},
+		},
+		{
+			// Fits in 128 bits, but lands outside the /48 -> used to be
+			// returned as a valid subnet.
+			name:       "offset one past the last subnet",
+			basePrefix: "2001:db8::/48",
+			config:     SubnetConfig{Name: "past-end", Offset: 65536, PrefixLength: 64},
+		},
+		{
+			name:       "negative offset",
+			basePrefix: "2001:db8::/48",
+			config:     SubnetConfig{Name: "negative", Offset: -1, PrefixLength: 64},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := netip.MustParsePrefix(tt.basePrefix)
+
+			got, err := CalculateSubnet(base, tt.config)
+
+			if err == nil {
+				t.Fatalf("expected an error, got subnet %v", got.CIDR)
+			}
+		})
+	}
+}
+
+// The last in-range offset must still work, and the result must sit inside the
+// base prefix.
+func TestCalculateSubnetAcceptsLastValidOffset(t *testing.T) {
+	base := netip.MustParsePrefix("2001:db8::/48")
+
+	got, err := CalculateSubnet(base, SubnetConfig{Name: "last", Offset: 65535, PrefixLength: 64})
+	if err != nil {
+		t.Fatalf("expected the last /64 to be valid, got %v", err)
+	}
+	if got.CIDR.String() != "2001:db8:0:ffff::/64" {
+		t.Fatalf("expected 2001:db8:0:ffff::/64, got %v", got.CIDR)
+	}
+	if !base.Contains(got.CIDR.Addr()) {
+		t.Fatalf("subnet %v is outside base %v", got.CIDR, base)
+	}
+}
+
+// A base prefix carrying host bits (netip.PrefixFrom does not mask, and a
+// received RA is not masked) must not push the subnet out of the delegation.
+func TestCalculateSubnetMasksBasePrefix(t *testing.T) {
+	unmasked := netip.PrefixFrom(netip.MustParseAddr("2001:db8:0:0:dead:beef::"), 48)
+
+	got, err := CalculateSubnet(unmasked, SubnetConfig{Name: "masked", Offset: 1, PrefixLength: 64})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.CIDR.String() != "2001:db8:0:1::/64" {
+		t.Fatalf("expected host bits to be ignored, got %v", got.CIDR)
+	}
+	if !unmasked.Masked().Contains(got.CIDR.Addr()) {
+		t.Fatalf("subnet %v is outside base %v", got.CIDR, unmasked.Masked())
+	}
+}

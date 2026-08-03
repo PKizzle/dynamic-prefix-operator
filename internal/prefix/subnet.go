@@ -78,8 +78,25 @@ func CalculateSubnet(basePrefix netip.Prefix, cfg SubnetConfig) (Subnet, error) 
 		return Subnet{}, fmt.Errorf("subnet prefix length %d exceeds 128", cfg.PrefixLength)
 	}
 
-	// Get the base address as bytes
-	baseAddr := basePrefix.Addr()
+	// Only 2^(prefixLength - baseBits) subnets of this length exist inside the
+	// base prefix. Rejecting anything beyond that keeps the result within the
+	// delegation -- previously it silently wrapped past the end and the
+	// operator went on to advertise addresses it does not own -- and it is
+	// what keeps the arithmetic below inside 128 bits, since FillBytes panics
+	// when the value does not fit the buffer.
+	maxSubnets := new(big.Int).Lsh(big.NewInt(1), uint(cfg.PrefixLength-basePrefix.Bits()))
+	if cfg.Offset < 0 || new(big.Int).SetInt64(cfg.Offset).Cmp(maxSubnets) >= 0 {
+		return Subnet{}, fmt.Errorf(
+			"subnet offset %d is out of range for a /%d inside %s: only %s subnets fit",
+			cfg.Offset, cfg.PrefixLength, basePrefix, maxSubnets,
+		)
+	}
+
+	// Get the base address as bytes. Mask first: a prefix built with
+	// netip.PrefixFrom keeps whatever host bits it was handed (a received RA
+	// is not masked), and carrying those through the addition would push the
+	// result past the end of the delegation.
+	baseAddr := basePrefix.Masked().Addr()
 	baseBytes := baseAddr.As16()
 
 	// Convert to big.Int for arithmetic
