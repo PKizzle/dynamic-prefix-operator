@@ -362,7 +362,7 @@ type syncedDiscovery struct {
 func (d *syncedDiscovery) setResources(resources []*metav1.APIResourceList) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.FakeDiscovery.Resources = resources
+	d.Resources = resources
 }
 
 func (d *syncedDiscovery) ServerGroups() (*metav1.APIGroupList, error) {

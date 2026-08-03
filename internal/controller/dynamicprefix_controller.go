@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -33,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
 	"github.com/pkizzle/dynamic-prefix-operator/internal/prefix"
@@ -59,6 +61,13 @@ type DynamicPrefixReconciler struct {
 	receiversMu sync.RWMutex
 	// receivers maps DynamicPrefix name to its active receiver
 	receivers map[string]prefix.Receiver
+
+	// receiverCtxMu protects receiverCtx.
+	receiverCtxMu sync.RWMutex
+	// receiverCtx is the manager's context, handed over by SetupWithManager.
+	// Receivers outlive the Reconcile call that starts them, so they must not
+	// be tied to a per-request context.
+	receiverCtx context.Context
 }
 
 // NewDynamicPrefixReconciler creates a new reconciler with default configuration
@@ -83,9 +92,16 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Fetch the DynamicPrefix instance
 	var dp dynamicprefixiov1alpha1.DynamicPrefix
 	if err := r.Get(ctx, req.NamespacedName, &dp); err != nil {
-		// Resource deleted - clean up receiver if any
-		r.cleanupReceiver(req.Name)
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		// Only a genuine NotFound means the resource is gone. Tearing the
+		// receiver down on any error would let a transient API-server blip or
+		// a cache miss stop a live DHCPv6-PD/RA receiver, and the requeue would
+		// then have to re-solicit a lease -- disrupting prefix acquisition for
+		// a reason that has nothing to do with the resource.
+		if apierrors.IsNotFound(err) {
+			r.cleanupReceiver(req.Name)
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
 	}
 
 	// Handle deletion
@@ -170,7 +186,7 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Calculate subnets (Mode 2)
-	subnets, err := r.calculateSubnets(currentPrefix.Network, dp.Spec.Subnets)
+	subnets, err := r.calculateSubnets(currentPrefix.Network, dp.Spec.Subnets, dp.Status.Subnets)
 	if err != nil {
 		log.Error(err, "Failed to calculate subnets")
 		r.setCondition(&dp, dynamicprefixiov1alpha1.ConditionTypeDegraded, metav1.ConditionTrue,
@@ -251,7 +267,7 @@ func (r *DynamicPrefixReconciler) getOrCreateReceiver(ctx context.Context, dp *d
 	}
 
 	// Start the receiver
-	if err := receiver.Start(ctx); err != nil {
+	if err := receiver.Start(r.receiverContext(ctx)); err != nil {
 		return nil, fmt.Errorf("failed to start receiver: %w", err)
 	}
 
@@ -276,7 +292,11 @@ func (r *DynamicPrefixReconciler) cleanupReceiver(name string) {
 }
 
 // calculateSubnets calculates subnet CIDRs from the base prefix
-func (r *DynamicPrefixReconciler) calculateSubnets(basePrefix netip.Prefix, specs []dynamicprefixiov1alpha1.SubnetSpec) ([]dynamicprefixiov1alpha1.SubnetStatus, error) {
+func (r *DynamicPrefixReconciler) calculateSubnets(
+	basePrefix netip.Prefix,
+	specs []dynamicprefixiov1alpha1.SubnetSpec,
+	existing []dynamicprefixiov1alpha1.SubnetStatus,
+) ([]dynamicprefixiov1alpha1.SubnetStatus, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
@@ -295,11 +315,22 @@ func (r *DynamicPrefixReconciler) calculateSubnets(basePrefix netip.Prefix, spec
 		return nil, err
 	}
 
+	// BGPSync fills in BGPAdvertisement on these entries. Rebuilding them from
+	// scratch dropped it on every reconcile, and BGPSync could not put it back:
+	// the dependent-change predicate projects subnets to name and CIDR only, so
+	// a BGPAdvertisement-only change never re-triggers it. The field was
+	// therefore permanently blank in status.
+	previous := make(map[string]string, len(existing))
+	for _, e := range existing {
+		previous[e.Name] = e.BGPAdvertisement
+	}
+
 	result := make([]dynamicprefixiov1alpha1.SubnetStatus, len(subnets))
 	for i, s := range subnets {
 		result[i] = dynamicprefixiov1alpha1.SubnetStatus{
-			Name: s.Name,
-			CIDR: s.CIDR.String(),
+			Name:             s.Name,
+			CIDR:             s.CIDR.String(),
+			BGPAdvertisement: previous[s.Name],
 		}
 	}
 
@@ -348,9 +379,19 @@ func (r *DynamicPrefixReconciler) handlePrefixChange(ctx context.Context, dp *dy
 
 	// Add old prefix to history if it exists
 	if dp.Status.CurrentPrefix != "" {
+		// The PrefixAcquired condition last flipped when this prefix arrived,
+		// which is the closest recorded acquisition time. dp.CreationTimestamp
+		// is the CR's own creation, so every history entry used to report the
+		// same wrong instant.
+		acquiredAt := dp.CreationTimestamp
+		if cond := meta.FindStatusCondition(dp.Status.Conditions,
+			dynamicprefixiov1alpha1.ConditionTypePrefixAcquired); cond != nil && !cond.LastTransitionTime.IsZero() {
+			acquiredAt = cond.LastTransitionTime
+		}
+
 		oldEntry := dynamicprefixiov1alpha1.PrefixHistoryEntry{
 			Prefix:       dp.Status.CurrentPrefix,
-			AcquiredAt:   dp.CreationTimestamp,
+			AcquiredAt:   acquiredAt,
 			DeprecatedAt: &now,
 			State:        dynamicprefixiov1alpha1.PrefixStateDraining,
 		}
@@ -429,8 +470,36 @@ func sourceToPrefixSource(s prefix.Source) dynamicprefixiov1alpha1.PrefixSource 
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DynamicPrefixReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Capture the manager's context so receivers can be tied to the manager's
+	// lifetime rather than to a single Reconcile call. A receiver owns
+	// goroutines that outlive the call that created it; handing them the
+	// reconcile context works only because ReconciliationTimeout is left at
+	// zero today, and would silently kill every receiver the moment a timeout
+	// (or any future per-request context) is introduced.
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		r.receiverCtxMu.Lock()
+		r.receiverCtx = ctx
+		r.receiverCtxMu.Unlock()
+		<-ctx.Done()
+		return nil
+	})); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&dynamicprefixiov1alpha1.DynamicPrefix{}).
 		Named("dynamicprefix").
 		Complete(r)
+}
+
+// receiverContext returns the long-lived context receivers should be started
+// with, falling back to the caller's context when the manager has not handed
+// one over yet (unit tests construct the reconciler directly).
+func (r *DynamicPrefixReconciler) receiverContext(ctx context.Context) context.Context {
+	r.receiverCtxMu.RLock()
+	defer r.receiverCtxMu.RUnlock()
+	if r.receiverCtx != nil {
+		return r.receiverCtx
+	}
+	return ctx
 }

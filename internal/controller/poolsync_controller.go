@@ -154,7 +154,11 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	var dp dynamicprefixiov1alpha1.DynamicPrefix
 	if err := r.Get(ctx, types.NamespacedName{Name: dpName}, &dp); err != nil {
 		log.Error(err, "Failed to get DynamicPrefix", "name", dpName)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		// Returning nil here hid API failures from
+		// controller_runtime_reconcile_errors_total and replaced
+		// controller-runtime's exponential backoff with a flat 30s retry, so a
+		// permanently failing sync retried forever, invisibly.
+		return ctrl.Result{}, err
 	}
 
 	// Build pool configurations for current prefix and historical prefixes
@@ -176,7 +180,10 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if updateErr != nil {
 		log.Error(updateErr, "Failed to update pool")
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		// Surfaced so conflicts retry promptly with backoff and rejected
+		// updates (immutable fields, webhooks) become visible in the metrics.
+		recordPoolSyncFailedMetric(backend.name(), dpName, req.String())
+		return ctrl.Result{}, updateErr
 	}
 
 	if updated {
@@ -495,7 +502,13 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 	// Preserve existing blocks that are NOT within managed prefixes.
 	// This includes IPv4 blocks, static IPv6 blocks, and any other blocks
 	// that the operator should not touch.
-	existingBlocks, _, _ := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+	// A swallowed error here reads back as "no blocks", and the write below
+	// replaces spec.blocks wholesale -- destroying exactly the unmanaged
+	// entries this preservation pass exists to protect.
+	existingBlocks, _, err := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+	if err != nil {
+		return false, fmt.Errorf("failed to read spec.blocks: %w", err)
+	}
 	var preservedBlocks []interface{}
 	for _, b := range existingBlocks {
 		block, ok := b.(map[string]interface{})
@@ -538,7 +551,10 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 	}
 
 	// Check if blocks actually changed before updating to avoid feedback loops
-	currentBlocks, _, _ := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+	currentBlocks, _, err := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+	if err != nil {
+		return false, fmt.Errorf("failed to read current spec.blocks: %w", err)
+	}
 	if equality.Semantic.DeepEqual(currentBlocks, blocks) {
 		log.V(2).Info("Pool blocks unchanged, skipping update", "pool", pool.GetName())
 		return false, nil
@@ -561,7 +577,12 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 	log := logf.FromContext(ctx)
 
 	// Preserve existing CIDRs that are not within managed prefixes
-	existingCIDRs, _, _ := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
+	// As with spec.blocks: an ignored error here silently drops the
+	// unmanaged CIDRs that the write below would otherwise preserve.
+	existingCIDRs, _, err := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
+	if err != nil {
+		return false, fmt.Errorf("failed to read spec.externalCIDRs: %w", err)
+	}
 	var preserved []interface{}
 	for _, c := range existingCIDRs {
 		cidrStr, ok := c.(string)
@@ -587,7 +608,10 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 	}
 
 	// Check if CIDRs actually changed before updating to avoid feedback loops
-	currentCIDRs, _, _ := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
+	currentCIDRs, _, err := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
+	if err != nil {
+		return false, fmt.Errorf("failed to read current spec.externalCIDRs: %w", err)
+	}
 	if equality.Semantic.DeepEqual(currentCIDRs, externalCIDRs) {
 		log.V(2).Info("CIDRGroup unchanged, skipping update", "cidrGroup", pool.GetName())
 		return false, nil

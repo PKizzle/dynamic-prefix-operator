@@ -379,6 +379,13 @@ func (r *ServiceSyncReconciler) calculateSuffixIPs(
 	if err != nil {
 		return nil, "", fmt.Errorf("invalid IPv6 suffix %q: %w", suffix, err)
 	}
+	// ParseAddr accepts IPv4 too, and As16() then yields its v4-mapped form,
+	// so "0.0.0.2" produced a plausible but wrong address instead of the error
+	// this message promises. Is4 is true only for genuine IPv4 input --
+	// ::ffff:0:2 is written as IPv6 and stays valid.
+	if suffixAddr.Is4() {
+		return nil, "", fmt.Errorf("invalid IPv6 suffix %q: not an IPv6 address", suffix)
+	}
 	suffixBytes := suffixAddr.As16()
 
 	if dp.Status.CurrentPrefix == "" {

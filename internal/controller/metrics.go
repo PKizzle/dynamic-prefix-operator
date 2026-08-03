@@ -86,3 +86,10 @@ func recordPrefixLeaseExpiryMetric(name string, expiresAt *time.Time) {
 func recordPoolSyncedMetric(backend, dynamicPrefix, pool string) {
 	poolsSynced.WithLabelValues(backend, dynamicPrefix, pool).Set(1)
 }
+
+// recordPoolSyncFailedMetric marks a pool as out of sync. Without it the gauge
+// was only ever set to 1, so it could never report the state its own help text
+// describes and an alert on `== 0` could never fire.
+func recordPoolSyncFailedMetric(backend, dynamicPrefix, pool string) {
+	poolsSynced.WithLabelValues(backend, dynamicPrefix, pool).Set(0)
+}

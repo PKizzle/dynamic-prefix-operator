@@ -410,7 +410,17 @@ func (r *RAReceiver) handleRouterAdvertisement(ra *ndp.RouterAdvertisement) {
 		return
 	}
 
-	prefix := netip.PrefixFrom(bestPrefix.Prefix, int(bestPrefix.PrefixLength))
+	// PrefixFrom neither masks nor validates. A PIO whose length exceeds 128
+	// yields an invalid Prefix whose Bits() is -1, which then slips past the
+	// "subnet shorter than base" guard in CalculateSubnet, and any host bits
+	// present in the advertisement would leak into status and into the
+	// change-detection comparison below.
+	if int(bestPrefix.PrefixLength) > netip.MustParseAddr("::").BitLen() {
+		log.Info("Ignoring Router Advertisement prefix with an out-of-range length",
+			"prefixLength", bestPrefix.PrefixLength)
+		return
+	}
+	prefix := netip.PrefixFrom(bestPrefix.Prefix, int(bestPrefix.PrefixLength)).Masked()
 	log.V(1).Info("Selected prefix", "prefix", prefix, "validLifetime", bestPrefix.ValidLifetime)
 
 	r.updatePrefix(prefix, bestPrefix.ValidLifetime, bestPrefix.PreferredLifetime)

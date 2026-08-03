@@ -1354,10 +1354,13 @@ func TestCalculateSuffixIPs_InvalidInputs(t *testing.T) {
 			expectErr: true,
 		},
 		{
-			name:      "IPv4 address as suffix",
-			dp:        validDP,
-			suffix:    "192.168.1.1",
-			expectErr: false, // netip.ParseAddr accepts IPv4, combinePrefixSuffix will produce garbage but no error
+			name:   "IPv4 address as suffix",
+			dp:     validDP,
+			suffix: "192.168.1.1",
+			// netip.ParseAddr accepts IPv4, and As16() then maps it into the
+			// IPv6 space, so this used to yield a plausible-looking but wrong
+			// address. It is now rejected, as the error message always claimed.
+			expectErr: true,
 		},
 		{
 			name:      "CIDR notation as suffix (not a bare address)",

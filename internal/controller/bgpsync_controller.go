@@ -19,6 +19,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -102,29 +103,38 @@ func (r *BGPSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Track which advertisements we expect to exist
 	expectedAdvertisements := make(map[string]bool)
 
-	// Create or update advertisements for each subnet with BGP enabled
+	// Create or update advertisements for each subnet with BGP enabled.
+	// Failures are collected rather than dropped: returning nil here meant a
+	// failed create, an update conflict or a failed delete was never retried
+	// and never reached controller_runtime_reconcile_errors_total, so an
+	// advertisement could stay missing or stale until the next spec change.
+	// One subnet's failure must still not stop the others, hence the join.
+	var syncErrs []error
 	for _, subnet := range subnetsWithBGP {
 		advName := r.advertisementName(dp.Name, subnet.Name)
 		expectedAdvertisements[advName] = true
 
 		if err := r.reconcileAdvertisement(ctx, &dp, &subnet); err != nil {
 			log.Error(err, "Failed to reconcile BGP advertisement", "subnet", subnet.Name)
-			// Continue with other subnets
+			syncErrs = append(syncErrs, fmt.Errorf("subnet %q: %w", subnet.Name, err))
 		}
 	}
 
 	// Delete orphaned advertisements (subnets that no longer have BGP enabled)
 	if err := r.deleteOrphanedAdvertisements(ctx, &dp, expectedAdvertisements); err != nil {
 		log.Error(err, "Failed to delete orphaned advertisements")
+		syncErrs = append(syncErrs, fmt.Errorf("delete orphaned advertisements: %w", err))
 	}
 
 	// Update DynamicPrefix status with advertisement names
 	if err := r.updateStatus(ctx, &dp, subnetsWithBGP); err != nil {
 		log.Error(err, "Failed to update DynamicPrefix status")
-		return ctrl.Result{}, err
+		syncErrs = append(syncErrs, fmt.Errorf("update status: %w", err))
 	}
 
-	return ctrl.Result{}, nil
+	// Surfacing the failures lets controller-runtime retry them with backoff
+	// and counts them in the reconcile error metric.
+	return ctrl.Result{}, errors.Join(syncErrs...)
 }
 
 // getSubnetsWithBGP returns subnets that have BGP advertisement enabled.
