@@ -62,17 +62,24 @@ func (c *CompositeReceiver) Start(ctx context.Context) error {
 
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
-	// Start primary receiver
+	// Start primary receiver. Both failure paths must cancel: the parent is the
+	// manager context, which lives for the whole process and retains every
+	// child it is given, and a failing interface is retried every 30s -- so
+	// each attempt used to leave another cancelCtx behind for good.
 	if err := c.primary.Start(c.ctx); err != nil {
+		c.cancel()
 		return err
 	}
 
 	// Start fallback receiver
 	if err := c.fallback.Start(c.ctx); err != nil {
 		_ = c.primary.Stop()
+		c.cancel()
 		return err
 	}
 
+	// Fresh stop channel per run; the constructor's is closed by Stop().
+	c.stopCh = make(chan struct{})
 	c.started = true
 
 	// Start event merging goroutine

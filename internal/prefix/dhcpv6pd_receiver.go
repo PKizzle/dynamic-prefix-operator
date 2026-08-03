@@ -82,10 +82,16 @@ func (r *DHCPv6PDReceiver) Start(ctx context.Context) error {
 	}
 
 	r.ctx, r.cancel = context.WithCancel(ctx)
+	// Fresh stop channel per run: Stop() closes this one, so reusing the
+	// constructor's channel made a restart spawn goroutines that exited
+	// immediately and made the following Stop panic on a double close.
+	r.stopCh = make(chan struct{})
 	r.started = true
 
-	// Start the acquisition and renewal loop
-	go r.runLoop()
+	// Hand this generation its own context and stop channel. Reading the
+	// fields from inside the goroutine would race with the next Start,
+	// which replaces both under the lock.
+	go r.runLoop(r.ctx, r.stopCh)
 
 	return nil
 }
@@ -125,8 +131,34 @@ func (r *DHCPv6PDReceiver) Source() Source {
 	return SourceDHCPv6PD
 }
 
+const (
+	// acquireRetryInterval spaces out attempts while no lease is held.
+	acquireRetryInterval = 10 * time.Second
+	// renewRetryInterval spaces out RENEW attempts between T1 and T2. Without
+	// it the loop reruns immediately -- the lease is unchanged, so the T1 test
+	// still passes -- burning a core and opening a socket per iteration for the
+	// whole T1..T2 window, which is typically hours.
+	renewRetryInterval = 30 * time.Second
+)
+
+// waitFor blocks for d, reporting false if the receiver was stopped instead.
+// Every wait in the loop goes through this so a Stop is not held up by a sleep.
+func (r *DHCPv6PDReceiver) waitFor(ctx context.Context, stopCh <-chan struct{}, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-stopCh:
+		return false
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 // runLoop handles prefix acquisition and renewal.
-func (r *DHCPv6PDReceiver) runLoop() {
+func (r *DHCPv6PDReceiver) runLoop(ctx context.Context, stopCh <-chan struct{}) {
 	// Initial acquisition
 	if err := r.acquirePrefix(); err != nil {
 		r.sendError(fmt.Errorf("initial prefix acquisition failed: %w", err))
@@ -134,9 +166,9 @@ func (r *DHCPv6PDReceiver) runLoop() {
 
 	for {
 		select {
-		case <-r.stopCh:
+		case <-stopCh:
 			return
-		case <-r.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
@@ -147,7 +179,9 @@ func (r *DHCPv6PDReceiver) runLoop() {
 
 		if lease == nil {
 			// No lease, try to acquire
-			time.Sleep(10 * time.Second)
+			if !r.waitFor(ctx, stopCh, acquireRetryInterval) {
+				return
+			}
 			if err := r.acquirePrefix(); err != nil {
 				r.sendError(fmt.Errorf("prefix acquisition failed: %w", err))
 			}
@@ -172,7 +206,16 @@ func (r *DHCPv6PDReceiver) runLoop() {
 						r.lease = nil
 						r.mu.Unlock()
 						r.sendEvent(EventTypeExpired, nil)
+						// The lease is gone; the acquisition branch above owns
+						// the retry pacing from here.
+						continue
 					}
+				} else if !r.waitFor(ctx, stopCh, renewRetryInterval) {
+					// Renewal failed before T2, so the lease still stands and
+					// the next iteration would re-enter this branch at once.
+					// Renewals fail exactly when the WAN interface is down,
+					// which is also when those failures are fastest.
+					return
 				}
 			}
 			continue
@@ -185,9 +228,9 @@ func (r *DHCPv6PDReceiver) runLoop() {
 		}
 
 		select {
-		case <-r.stopCh:
+		case <-stopCh:
 			return
-		case <-r.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-time.After(sleepDuration):
 		}

@@ -18,6 +18,7 @@ limitations under the License.
 package prefix
 
 import (
+	"context"
 	"net"
 	"testing"
 	"time"
@@ -212,5 +213,32 @@ func TestDHCPv6PDReceiverStopWithoutStart(t *testing.T) {
 	err := r.Stop()
 	if err != nil {
 		t.Errorf("Stop() returned error: %v", err)
+	}
+}
+
+// Stop() closes stopCh, which used to be created only by the constructor. So a
+// receiver could not be restarted -- the new goroutines saw an already-closed
+// channel and exited immediately, leaving something that reported healthy but
+// never delivered a prefix -- and the second Stop panicked with "close of
+// closed channel". The shared RA pool restarts receivers on exactly this path.
+func TestDHCPv6PDReceiverSurvivesStartStopCycles(t *testing.T) {
+	ctx := context.Background()
+	r := NewDHCPv6PDReceiver("eth0", 56)
+
+	for i := range 3 {
+		if err := r.Start(ctx); err != nil {
+			t.Fatalf("cycle %d: Start() = %v", i, err)
+		}
+		// A restart must install a fresh stop channel, otherwise the loop
+		// goroutine returns at once.
+		select {
+		case <-r.stopCh:
+			t.Fatalf("cycle %d: stop channel is already closed after Start()", i)
+		default:
+		}
+		// Panics on a double close without the fix.
+		if err := r.Stop(); err != nil {
+			t.Fatalf("cycle %d: Stop() = %v", i, err)
+		}
 	}
 }

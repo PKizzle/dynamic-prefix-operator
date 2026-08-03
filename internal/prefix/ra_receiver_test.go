@@ -314,7 +314,7 @@ func TestRAReceiver_sendInitialRouterSolicitationsStopsAfterPrefix(t *testing.T)
 	}
 	r.conn = conn
 
-	r.sendInitialRouterSolicitations(nil)
+	r.sendInitialRouterSolicitations(r.ctx, r.stopCh, nil)
 
 	if got := conn.messageCount(); got != 1 {
 		t.Fatalf("sent %d Router Solicitations, want 1", got)
@@ -331,7 +331,7 @@ func TestRAReceiver_sendInitialRouterSolicitationsUsesMaxAttempts(t *testing.T) 
 	r.routerSolicitationInterval = time.Millisecond
 	r.conn = &fakeNDPConn{}
 
-	r.sendInitialRouterSolicitations(nil)
+	r.sendInitialRouterSolicitations(r.ctx, r.stopCh, nil)
 
 	conn := r.conn.(*fakeNDPConn)
 	if got := conn.messageCount(); got != 3 {

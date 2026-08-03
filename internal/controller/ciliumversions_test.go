@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -349,12 +350,39 @@ func TestCiliumControllerStarter_DetectsCiliumImmediately(t *testing.T) {
 	}
 }
 
+// syncedDiscovery serializes access to the embedded fake's Resources field.
+// FakeDiscovery is a plain struct with an exported slice and no locking, so a
+// test that swaps the resources while the starter is polling races against
+// every read path in DiscoveryInterface, which all reach that same field.
+type syncedDiscovery struct {
+	*fake.FakeDiscovery
+	mu sync.Mutex
+}
+
+func (d *syncedDiscovery) setResources(resources []*metav1.APIResourceList) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.FakeDiscovery.Resources = resources
+}
+
+func (d *syncedDiscovery) ServerGroups() (*metav1.APIGroupList, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.FakeDiscovery.ServerGroups()
+}
+
+func (d *syncedDiscovery) ServerResourcesForGroupVersion(gv string) (*metav1.APIResourceList, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.FakeDiscovery.ServerResourcesForGroupVersion(gv)
+}
+
 func TestCiliumControllerStarter_WaitsForCilium(t *testing.T) {
-	dc := &fake.FakeDiscovery{Fake: &coretesting.Fake{}}
+	dc := &syncedDiscovery{FakeDiscovery: &fake.FakeDiscovery{Fake: &coretesting.Fake{}}}
 	// Start with no Cilium resources
-	dc.Resources = []*metav1.APIResourceList{
+	dc.setResources([]*metav1.APIResourceList{
 		{GroupVersion: "apps/v1", APIResources: []metav1.APIResource{{Name: "deployments", Kind: "Deployment"}}},
-	}
+	})
 
 	var called atomic.Bool
 	var pollCount atomic.Int32
@@ -377,7 +405,7 @@ func TestCiliumControllerStarter_WaitsForCilium(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 			pollCount.Add(1)
 		}
-		dc.Resources = ciliumResources()
+		dc.setResources(ciliumResources())
 	}()
 
 	err := starter.Start(ctx)

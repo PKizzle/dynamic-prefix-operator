@@ -123,10 +123,18 @@ func (r *RAReceiver) Start(ctx context.Context) error {
 
 	r.conn = conn
 	r.ctx, r.cancel = context.WithCancel(ctx)
+	// Fresh stop channel per run. Stop() closes this one, and it was previously
+	// only ever created in the constructor -- so a restart handed the new
+	// goroutines an already-closed channel (they exited at once, leaving a
+	// receiver that looked healthy but delivered nothing) and the next Stop
+	// panicked closing it twice.
+	r.stopCh = make(chan struct{})
 	r.started = true
 
-	go r.receiveLoop()
-	go r.sendInitialRouterSolicitations(ifi.HardwareAddr)
+	// Each generation's goroutines take their own context and stop channel;
+	// reading the fields inside them would race with the next Start.
+	go r.receiveLoop(r.ctx, r.stopCh)
+	go r.sendInitialRouterSolicitations(r.ctx, r.stopCh, ifi.HardwareAddr)
 
 	return nil
 }
@@ -170,18 +178,38 @@ func (r *RAReceiver) Source() Source {
 	return SourceRouterAdvertisement
 }
 
+// raErrorBackoff paces the receive loop after an error that returns without
+// blocking, so a persistently failing socket cannot spin a core.
+const raErrorBackoff = time.Second
+
+// waitAfterError pauses for raErrorBackoff, reporting false if the receiver was
+// stopped while waiting.
+func (r *RAReceiver) waitAfterError(ctx context.Context, stopCh <-chan struct{}) bool {
+	timer := time.NewTimer(raErrorBackoff)
+	defer timer.Stop()
+
+	select {
+	case <-stopCh:
+		return false
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 // receiveLoop continuously reads Router Advertisements from the interface.
-func (r *RAReceiver) receiveLoop() {
+func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}) {
 	log := logf.Log.WithName("ra-receiver")
 	log.V(1).Info("Receive loop started", "interface", r.iface)
 
 	iterationCount := 0
 	for {
 		select {
-		case <-r.stopCh:
+		case <-stopCh:
 			log.V(1).Info("Receive loop stopping (stopCh)")
 			return
-		case <-r.ctx.Done():
+		case <-ctx.Done():
 			log.V(1).Info("Receive loop stopping (ctx done)")
 			return
 		default:
@@ -191,6 +219,13 @@ func (r *RAReceiver) receiveLoop() {
 		if err := r.conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 			log.Error(err, "Failed to set read deadline")
 			r.sendError(fmt.Errorf("failed to set read deadline: %w", err))
+			// A sticky failure here (the interface went down) returns
+			// instantly, so continuing straight away spins a core and emits an
+			// error per iteration. The read below paces itself on its own
+			// one-second deadline; this path has nothing to pace it.
+			if !r.waitAfterError(ctx, stopCh) {
+				return
+			}
 			continue
 		}
 
@@ -207,6 +242,12 @@ func (r *RAReceiver) receiveLoop() {
 			}
 			log.Error(err, "Failed to read NDP message")
 			r.sendError(fmt.Errorf("failed to read NDP message: %w", err))
+			// Not a timeout, so the deadline did not pace this iteration. A
+			// persistent error (ENETDOWN) would otherwise spin until the
+			// receiver is stopped.
+			if !r.waitAfterError(ctx, stopCh) {
+				return
+			}
 			continue
 		}
 
@@ -224,7 +265,7 @@ func (r *RAReceiver) receiveLoop() {
 	}
 }
 
-func (r *RAReceiver) sendInitialRouterSolicitations(hwAddr net.HardwareAddr) {
+func (r *RAReceiver) sendInitialRouterSolicitations(ctx context.Context, stopCh <-chan struct{}, hwAddr net.HardwareAddr) {
 	log := logf.Log.WithName("ra-receiver")
 	maxSolicitations := r.maxRouterSolicitations
 	if maxSolicitations <= 0 {
@@ -247,9 +288,9 @@ func (r *RAReceiver) sendInitialRouterSolicitations(hwAddr net.HardwareAddr) {
 		}
 
 		select {
-		case <-r.stopCh:
+		case <-stopCh:
 			return
-		case <-r.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 		}
@@ -266,12 +307,12 @@ func (r *RAReceiver) sendInitialRouterSolicitations(hwAddr net.HardwareAddr) {
 
 		timer := time.NewTimer(interval)
 		select {
-		case <-r.stopCh:
+		case <-stopCh:
 			if !timer.Stop() {
 				<-timer.C
 			}
 			return
-		case <-r.ctx.Done():
+		case <-ctx.Done():
 			if !timer.Stop() {
 				<-timer.C
 			}

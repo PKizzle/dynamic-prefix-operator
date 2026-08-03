@@ -159,6 +159,17 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
+	// Never rewrite the annotations from an empty calculation. Writing an empty
+	// lbipam.cilium.io/ips withdraws the Service's LoadBalancer IP request, and
+	// an empty current IP leaves a trailing comma in the external-dns target.
+	// Leaving the annotations untouched keeps the Service on its existing
+	// address until the next reconcile produces a real answer.
+	if len(allIPs) == 0 || currentIP == "" {
+		log.Info("Calculated no addresses for Service; leaving annotations unchanged",
+			"service", req.NamespacedName, "currentIP", currentIP, "addresses", len(allIPs))
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	// Collect all prefixes the operator manages (current + historical).
 	// Any IPv6 in the annotation that falls within these prefixes is operator-managed
 	// and will be replaced. Everything else (IPv4, static IPv6) is preserved.
@@ -443,7 +454,10 @@ func (r *ServiceSyncReconciler) calculateAddressRangeIPs(
 		}
 	}
 	if rangeSpec == nil {
-		return "", nil, nil
+		// Must be an error, not an empty result: the caller only falls back to
+		// the Service's current IP when err != nil, so returning ("", nil, nil)
+		// used to propagate an empty IP list all the way to the annotations.
+		return "", nil, fmt.Errorf("address range %q is not defined in DynamicPrefix %q", addressRangeName, dp.Name)
 	}
 
 	// Calculate offset of current IP within its range
@@ -513,7 +527,9 @@ func (r *ServiceSyncReconciler) calculateSubnetIPs(
 		}
 	}
 	if subnetSpec == nil {
-		return "", nil, nil
+		// See calculateAddressRangeIPs: an empty result with a nil error slips
+		// past the caller's fallback and blanks the Service's annotations.
+		return "", nil, fmt.Errorf("subnet %q is not defined in DynamicPrefix %q", subnetName, dp.Name)
 	}
 
 	// Calculate current subnet

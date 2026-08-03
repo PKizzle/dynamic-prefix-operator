@@ -1684,3 +1684,68 @@ func TestCollectManagedPrefixes_InvalidEntries(t *testing.T) {
 		})
 	}
 }
+
+// A Service annotated with a range or subnet name that the DynamicPrefix does
+// not define -- a typo, or an entry removed from the spec while the annotation
+// stayed -- used to yield ("", nil, nil). The nil error slipped past the
+// caller's fallback, so calculateServiceIPs returned no addresses and Reconcile
+// then wrote an empty lbipam.cilium.io/ips, withdrawing the Service's
+// LoadBalancer IP request, and appended an empty external-dns target.
+func TestCalculateServiceIPsErrorsOnUnknownRangeOrSubnet(t *testing.T) {
+	ctx := context.Background()
+
+	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+		ObjectMeta: metav1.ObjectMeta{Name: "wan"},
+		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
+			Transition: &dynamicprefixiov1alpha1.TransitionSpec{
+				Mode:             dynamicprefixiov1alpha1.TransitionModeHA,
+				MaxPrefixHistory: 2,
+			},
+			AddressRanges: []dynamicprefixiov1alpha1.AddressRangeSpec{
+				{Name: "defined-range", Start: "::10", End: "::20"},
+			},
+			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
+				{Name: "defined-subnet", PrefixLength: 64},
+			},
+		},
+		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
+			CurrentPrefix: "2001:db8:abcd:100::/56",
+		},
+	}
+
+	tests := []struct {
+		name       string
+		annotation string
+		value      string
+	}{
+		{name: "unknown address range", annotation: AnnotationServiceAddressRange, value: "typo-range"},
+		{name: "unknown subnet", annotation: AnnotationServiceSubnet, value: "typo-subnet"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &ServiceSyncReconciler{}
+			svc := &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        "app",
+					Namespace:   "default",
+					Annotations: map[string]string{tt.annotation: tt.value},
+				},
+			}
+
+			allIPs, currentIP, err := r.calculateServiceIPs(ctx, dp, svc, "2001:db8:abcd:100::5")
+			if err != nil {
+				t.Fatalf("caller is expected to absorb the error and fall back, got %v", err)
+			}
+
+			// The fallback keeps the Service on the address it already has,
+			// rather than handing Reconcile an empty set to write out.
+			if currentIP != "2001:db8:abcd:100::5" {
+				t.Fatalf("currentIP = %q, want the Service's existing IP", currentIP)
+			}
+			if len(allIPs) != 1 || allIPs[0] != "2001:db8:abcd:100::5" {
+				t.Fatalf("allIPs = %v, want exactly the Service's existing IP", allIPs)
+			}
+		})
+	}
+}
