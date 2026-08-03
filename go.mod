@@ -2,6 +2,8 @@ module github.com/pkizzle/dynamic-prefix-operator
 
 go 1.26.0
 
+toolchain go1.26.5
+
 require (
 	github.com/go-logr/logr v1.4.3
 	github.com/insomniacslk/dhcp v0.0.0-20251020182700-175e84fbb167

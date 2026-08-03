@@ -30,7 +30,10 @@ This changelog follows the fork's published GitHub releases and does not align w
 
 ### Changed
 
+- Migrated event emission to the `events.k8s.io/v1` API (`k8s.io/client-go/tools/events`), replacing the deprecated core/v1 recorder. The operator's ClusterRole now grants `events.k8s.io` in addition to the core group, which controller-runtime's leader election still uses. This requires a Kubernetes API server of 1.19 or newer, which is well below the floor the client libraries already impose.
 - Updated `sigs.k8s.io/controller-runtime` to v0.24.1 and `k8s.io/api`, `k8s.io/apimachinery` and `k8s.io/client-go` to v0.36.3. These move in lockstep: each controller-runtime minor pins the Kubernetes minor it was built against. The envtest assets follow automatically (the Makefile derives both versions from `go.mod`), so the controller suite now runs against a Kubernetes 1.36 API server. Generated CRDs are unchanged.
+
+- Pinned the Go toolchain to 1.26.5 via a `toolchain` directive. CI resolves its Go version from the `go` directive, which names 1.26.0 — a release carrying 20 standard-library advisories that failed the govulncheck job even though the shipped image builds on a patched 1.26.x.
 
 ### Security
 

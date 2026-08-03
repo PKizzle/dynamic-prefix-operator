@@ -32,7 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -121,7 +121,7 @@ var _ = Describe("PoolSync Controller", func() {
 		})
 
 		It("should update pool spec.blocks with subnet CIDR", func() {
-			recorder := record.NewFakeRecorder(4)
+			recorder := events.NewFakeRecorder(4)
 			reconciler := &PoolSyncReconciler{
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),

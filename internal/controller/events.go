@@ -20,7 +20,7 @@ package controller
 import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 )
 
 const (
@@ -32,17 +32,28 @@ const (
 	eventReasonReceiverCreationFailed = "ReceiverCreationFailed"
 )
 
-func emitNormalEvent(recorder record.EventRecorder, object runtime.Object, reason, message string) {
+func emitNormalEvent(recorder events.EventRecorder, object runtime.Object, reason, message string) {
 	emitEvent(recorder, object, corev1.EventTypeNormal, reason, message)
 }
 
-func emitWarningEvent(recorder record.EventRecorder, object runtime.Object, reason, message string) {
+func emitWarningEvent(recorder events.EventRecorder, object runtime.Object, reason, message string) {
 	emitEvent(recorder, object, corev1.EventTypeWarning, reason, message)
 }
 
-func emitEvent(recorder record.EventRecorder, object runtime.Object, eventType, reason, message string) {
+func emitEvent(recorder events.EventRecorder, object runtime.Object, eventType, reason, message string) {
 	if recorder == nil {
 		return
 	}
-	recorder.Event(object, eventType, reason, message)
+	// events.k8s.io/v1 splits the old Reason into `reason` (why) and `action`
+	// (what was done), and requires both. Every reason this operator emits is
+	// already phrased as the action itself -- PrefixReceived, PoolUpdated,
+	// TransitionStarted -- so reusing it keeps the two fields consistent
+	// instead of inventing a second vocabulary that has to be kept in sync.
+	//
+	// `related` is nil: these events concern one object, with no secondary
+	// object to point at.
+	//
+	// The message is passed as the format string with no arguments, matching
+	// the previous Event() call; callers pre-format with fmt.Sprintf.
+	recorder.Eventf(object, nil, eventType, reason, reason, "%s", message)
 }

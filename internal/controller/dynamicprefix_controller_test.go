@@ -26,7 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
@@ -72,7 +72,7 @@ var _ = Describe("DynamicPrefix Controller", func() {
 			Expect(k8sClient.Create(ctx, dp)).Should(Succeed())
 
 			// Create reconciler with injectable mock receiver
-			recorder := record.NewFakeRecorder(4)
+			recorder := events.NewFakeRecorder(4)
 			reconciler := &DynamicPrefixReconciler{
 				Client:    k8sClient,
 				Scheme:    k8sClient.Scheme(),
@@ -171,7 +171,7 @@ var _ = Describe("DynamicPrefix Controller", func() {
 
 			Expect(k8sClient.Create(ctx, dp)).Should(Succeed())
 
-			recorder := record.NewFakeRecorder(4)
+			recorder := events.NewFakeRecorder(4)
 			reconciler := &DynamicPrefixReconciler{
 				Client:    k8sClient,
 				Scheme:    k8sClient.Scheme(),
