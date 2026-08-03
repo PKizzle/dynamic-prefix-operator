@@ -28,6 +28,10 @@ This changelog follows the fork's published GitHub releases and does not align w
 
 - Added a `govulncheck` workflow (push, pull request and weekly) and a Dependabot configuration for Go modules, GitHub Actions and Docker, with Kubernetes libraries grouped so `controller-runtime` and `k8s.io/*` move together.
 
+### Changed
+
+- Updated `sigs.k8s.io/controller-runtime` to v0.24.1 and `k8s.io/api`, `k8s.io/apimachinery` and `k8s.io/client-go` to v0.36.3. These move in lockstep: each controller-runtime minor pins the Kubernetes minor it was built against. The envtest assets follow automatically (the Makefile derives both versions from `go.mod`), so the controller suite now runs against a Kubernetes 1.36 API server. Generated CRDs are unchanged.
+
 ### Security
 
 - Updated `golang.org/x/text` to v0.40.0 and `golang.org/x/net` to v0.57.0, closing vulnerabilities reachable from Router Advertisement parsing — untrusted input from the local link. Also updated `go.opentelemetry.io/otel/sdk` to v1.44.0 and `google.golang.org/grpc` to v1.82.1.

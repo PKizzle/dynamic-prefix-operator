@@ -211,7 +211,12 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
-	eventRecorder := mgr.GetEventRecorderFor("dynamic-prefix-operator")
+	// controller-runtime v0.24 deprecates this in favour of GetEventRecorder,
+	// which returns the new k8s.io/client-go/tools/events recorder. That is a
+	// different interface with different event objects, so switching means
+	// migrating every controller and its tests off record.EventRecorder --
+	// deliberately not bundled into a dependency bump. Still functional.
+	eventRecorder := mgr.GetEventRecorderFor("dynamic-prefix-operator") //nolint:staticcheck // SA1019: see above
 
 	if err := mgr.Add(controller.NewLeaderElectionStatusLogger(
 		setupLog.WithName("leader-election"),

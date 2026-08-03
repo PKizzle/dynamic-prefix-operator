@@ -30,7 +30,11 @@ var (
 	GroupVersion = schema.GroupVersion{Group: "dynamic-prefix.io", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	// Deprecated in controller-runtime v0.24 on the grounds that api packages
+	// should carry minimal dependencies. This is kubebuilder scaffolding and
+	// still the supported way to register the group; replacing it by hand
+	// would diverge from the generated layout for no functional gain.
+	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion} //nolint:staticcheck // SA1019: see above
 
 	// AddToScheme adds the types in this group-version to the given scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
