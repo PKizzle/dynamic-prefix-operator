@@ -167,11 +167,11 @@ jobs:
           ghcr.io/${REPOSITORY_LOWER}:${VERSION}
           \`\`\`
 
-          Nydus-converted multi-arch images are available at:
-
-          \`\`\`
-          ghcr.io/${REPOSITORY_LOWER}:${VERSION}-nydus
-          \`\`\`
+          This tag is a **dual image**: its index carries the standard OCI
+          manifests plus a Nydus manifest per architecture. Ordinary clients
+          (docker, plain containerd) resolve the OCI half exactly as before,
+          while a Nydus-aware snapshotter picks up the accelerated half for
+          lazy, on-demand pulls. There is no separate \`-nydus\` tag anymore.
 
           ## What's Changed
 

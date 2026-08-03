@@ -6,6 +6,19 @@ This changelog follows the fork's published GitHub releases and does not align w
 
 ## Unreleased
 
+## v0.0.10 - 2026-08-03
+
+### Changed
+
+- Release images are now published as a single **dual image**: the version tag's index carries the standard OCI manifests alongside a Nydus manifest per architecture, so ordinary clients (docker, plain containerd) resolve the OCI half exactly as before while a Nydus-aware snapshotter picks up the accelerated half for lazy, on-demand pulls. The separate `-nydus` tag is no longer published.
+- The release pipeline now builds `nydusify` and `nydus-image` from the `PKizzle/nydus` fork instead of downloading upstream's Go tooling, because `--attach-oci-manifest` — the flag that puts both manifests under one tag — exists only in the Rust implementation.
+- Nydus conversion runs in zran (`--oci-ref`) mode, so the Nydus half references the OCI half's gzip layers instead of duplicating them: roughly 3-5% additional registry storage rather than doubling it.
+- Generated GitHub release notes describe the dual image instead of advertising a separate `-nydus` tag.
+
+### Added
+
+- Added the Artifact Hub `repositoryID` to `artifacthub-repo.yml` to enable the verified publisher badge.
+
 ## v0.0.9 - 2026-05-25
 
 ### Added
