@@ -60,13 +60,16 @@ func (p *sharedRAReceiverPool) subscribe(iface string) Receiver {
 
 func (p *sharedRAReceiverPool) unsubscribe(iface string, entry *sharedRAReceiverEntry, sub *sharedRAReceiverSubscription) error {
 	p.mu.Lock()
-	if p.entries[iface] != entry {
-		p.mu.Unlock()
-		return nil
-	}
+	// The entry may already have been replaced in the map: a caller holding a
+	// pointer from an earlier subscribe can re-arm an entry that was stopped
+	// and removed, which spawns a fresh fanOut goroutine and NDP listener.
+	// Returning early for such an entry left both running for the life of the
+	// process. Release it either way; only drop the map slot when this really
+	// is the entry the map still points at, so a newer one is not evicted.
+	current := p.entries[iface] == entry
 
 	shouldStop := entry.removeSubscriber(sub)
-	if shouldStop {
+	if shouldStop && current {
 		delete(p.entries, iface)
 	}
 	p.mu.Unlock()

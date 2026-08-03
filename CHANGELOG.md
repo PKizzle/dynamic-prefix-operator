@@ -11,7 +11,6 @@ This changelog follows the fork's published GitHub releases and does not align w
 - Fixed a crash that took the whole operator down when a DHCPv6-PD server replied with an IA_PREFIX carrying a zero prefix length. The wire format places the lifetimes ahead of the prefix-length byte, so such an option decodes to a valid lifetime with a nil prefix, which was then dereferenced in a goroutine outside controller-runtime's panic recovery. A prefix-length above 128 is now rejected as well, instead of being accepted as a `/0` covering the entire address space.
 - Fixed a panic and a correctness bug in subnet calculation. `SubnetSpec.Offset` has no upper bound, and a large value overflowed the 128-bit address arithmetic, leaving the resource in a permanent panic/requeue loop; smaller out-of-range offsets silently produced subnets outside the delegated prefix, which the operator then advertised despite not owning them. Offsets are now bounded by how many subnets actually fit in the base prefix, and the base prefix is masked before use so host bits cannot push a subnet out of range.
 - Fixed pool synchronization selecting the wrong backend when pools of different kinds share a name. A reconcile request carries no kind, and the API server ignores the namespace when reading a cluster-scoped resource, so a request for a namespaced MetalLB `IPAddressPool` resolved to a same-named cluster-scoped Cilium pool and the MetalLB pool was never synced. Backends are now matched by scope.
-
 - Fixed reconciliation errors being swallowed. PoolSync returned a nil error on every failure path, so failed syncs never reached `controller_runtime_reconcile_errors_total` and retried at a flat 30s instead of backing off; BGPSync logged and discarded advertisement create/update/delete failures, so a conflict was never retried. Both now surface their errors.
 - Fixed the `dynamic_prefix_pools_synced` gauge only ever being set to 1, which meant it could never report the out-of-sync state its help text describes.
 - Fixed pool synchronization silently discarding decode errors on `spec.blocks` and `spec.externalCIDRs`. A field of an unexpected type read back as empty and the subsequent write replaced it wholesale, destroying the unmanaged entries the preservation logic exists to protect.
@@ -21,6 +20,9 @@ This changelog follows the fork's published GitHub releases and does not align w
 - Fixed prefix history recording the DynamicPrefix's creation timestamp as each entry's acquisition time.
 - Fixed an IPv4 `dynamic-prefix.io/suffix` being silently mapped into IPv6 instead of rejected.
 - Fixed Router Advertisement prefixes being used without masking or length validation, so host bits and out-of-range lengths could reach status and subnet calculation.
+- Fixed a shared Router Advertisement receiver entry leaking its fan-out goroutine and NDP socket for the life of the process when a caller re-armed an entry that had already been stopped and removed from the pool.
+- Fixed `AddressCount` underflowing to a near-`MaxUint64` value for a reversed range, and removed a dead loop in `RangeToCIDR` whose result was discarded.
+- Added validation to `AddressRangeSpec.Start`/`.End` and `RouterAdvertisementSpec.Interface`, which were unconstrained while their sibling fields were validated.
 
 ### Added
 

@@ -271,6 +271,11 @@ func (r *DynamicPrefixReconciler) getOrCreateReceiver(ctx context.Context, dp *d
 		return nil, fmt.Errorf("failed to start receiver: %w", err)
 	}
 
+	// The map is only built by NewDynamicPrefixReconciler; a struct-literal
+	// construction would otherwise panic here on the nil-map write.
+	if r.receivers == nil {
+		r.receivers = make(map[string]prefix.Receiver)
+	}
 	r.receivers[dp.Name] = receiver
 	return receiver, nil
 }

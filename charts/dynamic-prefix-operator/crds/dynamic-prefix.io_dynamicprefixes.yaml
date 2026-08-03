@@ -87,6 +87,7 @@ spec:
                       interface:
                         description: Interface is the network interface to monitor
                           for Router Advertisements
+                        minLength: 1
                         type: string
                     type: object
                 type: object
@@ -108,6 +109,8 @@ spec:
                       description: |-
                         End is the end of the range (inclusive), specified as a suffix.
                         For example, "::ffff:ffff:ffff:ffff" means end at prefix + 0xffff:ffff:ffff:ffff.
+                      minLength: 2
+                      pattern: ^[0-9a-fA-F:]+$
                       type: string
                     name:
                       description: Name identifies this address range (used in annotations
@@ -120,6 +123,8 @@ spec:
                       description: |-
                         Start is the start of the range, specified as a suffix to the prefix.
                         For example, "::f000:0:0:0" means start at prefix + 0xf000:0:0:0.
+                      minLength: 2
+                      pattern: ^[0-9a-fA-F:]+$
                       type: string
                   required:
                   - end

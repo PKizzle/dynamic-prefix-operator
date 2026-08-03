@@ -155,12 +155,8 @@ func RangeToCIDR(start, end netip.Addr) netip.Prefix {
 		if startBytes[i] == endBytes[i] {
 			commonBits += 8
 		} else {
-			// Find common bits within this byte
-			xor := startBytes[i] ^ endBytes[i]
-			for xor != 0 {
-				xor >>= 1
-			}
-			// Count leading zeros in the XOR
+			// Count leading zeros in the XOR to find the common bits in this
+			// byte.
 			diff := startBytes[i] ^ endBytes[i]
 			for bit := 7; bit >= 0; bit-- {
 				if (diff & (1 << bit)) != 0 {
@@ -172,8 +168,14 @@ func RangeToCIDR(start, end netip.Addr) netip.Prefix {
 		}
 	}
 
-	// Create prefix with the common bits
-	prefix, _ := start.Prefix(commonBits)
+	// Create prefix with the common bits. commonBits is derived from a 16-byte
+	// comparison, so this cannot fail for an IPv6 address; for anything else
+	// (an IPv4 input) returning the zero Prefix silently would be worse than
+	// saying so.
+	prefix, err := start.Prefix(commonBits)
+	if err != nil {
+		return netip.Prefix{}
+	}
 	return prefix.Masked()
 }
 
@@ -197,5 +199,10 @@ func AddressCount(start, end netip.Addr) uint64 {
 		endLow = (endLow << 8) | uint64(endBytes[i])
 	}
 
+	// A reversed range would underflow into a near-MaxUint64 count, and an
+	// exactly-2^64 range wraps to 0, colliding with the "too large" sentinel.
+	if endLow < startLow {
+		return 0
+	}
 	return endLow - startLow + 1
 }

@@ -78,6 +78,7 @@ type DHCPv6PDSpec struct {
 type RouterAdvertisementSpec struct {
 	// Interface is the network interface to monitor for Router Advertisements
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	Interface string `json:"interface,omitempty"`
 
 	// Enabled controls whether RA monitoring is active
@@ -100,11 +101,15 @@ type AddressRangeSpec struct {
 	// Start is the start of the range, specified as a suffix to the prefix.
 	// For example, "::f000:0:0:0" means start at prefix + 0xf000:0:0:0.
 	// +required
+	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F:]+$`
 	Start string `json:"start"`
 
 	// End is the end of the range (inclusive), specified as a suffix.
 	// For example, "::ffff:ffff:ffff:ffff" means end at prefix + 0xffff:ffff:ffff:ffff.
 	// +required
+	// +kubebuilder:validation:MinLength=2
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F:]+$`
 	End string `json:"end"`
 }
 
