@@ -4,7 +4,7 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
-## Unreleased
+## v0.0.10 - 2026-08-05
 
 ### Fixed
 
@@ -29,19 +29,7 @@ This changelog follows the fork's published GitHub releases and does not align w
 ### Added
 
 - Added a `govulncheck` workflow (push, pull request and weekly) and a Dependabot configuration for Go modules, GitHub Actions and Docker, with Kubernetes libraries grouped so `controller-runtime` and `k8s.io/*` move together.
-
-### Changed
-
-- Migrated event emission to the `events.k8s.io/v1` API (`k8s.io/client-go/tools/events`), replacing the deprecated core/v1 recorder. The operator's ClusterRole now grants `events.k8s.io` in addition to the core group, which controller-runtime's leader election still uses. This requires a Kubernetes API server of 1.19 or newer, which is well below the floor the client libraries already impose.
-- Updated `sigs.k8s.io/controller-runtime` to v0.24.1 and `k8s.io/api`, `k8s.io/apimachinery` and `k8s.io/client-go` to v0.36.3. These move in lockstep: each controller-runtime minor pins the Kubernetes minor it was built against. The envtest assets follow automatically (the Makefile derives both versions from `go.mod`), so the controller suite now runs against a Kubernetes 1.36 API server. Generated CRDs are unchanged.
-
-- Pinned the Go toolchain to 1.26.5 via a `toolchain` directive. CI resolves its Go version from the `go` directive, which names 1.26.0 — a release carrying 20 standard-library advisories that failed the govulncheck job even though the shipped image builds on a patched 1.26.x.
-
-### Security
-
-- Updated `golang.org/x/text` to v0.40.0 and `golang.org/x/net` to v0.57.0, closing vulnerabilities reachable from Router Advertisement parsing — untrusted input from the local link. Also updated `go.opentelemetry.io/otel/sdk` to v1.44.0 and `google.golang.org/grpc` to v1.82.1.
-
-## v0.0.10 - 2026-08-03
+- Added the Artifact Hub `repositoryID` to `artifacthub-repo.yml` to enable the verified publisher badge.
 
 ### Changed
 
@@ -49,10 +37,13 @@ This changelog follows the fork's published GitHub releases and does not align w
 - The release pipeline now builds `nydusify` and `nydus-image` from the `PKizzle/nydus` fork instead of downloading upstream's Go tooling, because `--attach-oci-manifest` — the flag that puts both manifests under one tag — exists only in the Rust implementation.
 - Nydus conversion runs in zran (`--oci-ref`) mode, so the Nydus half references the OCI half's gzip layers instead of duplicating them: roughly 3-5% additional registry storage rather than doubling it.
 - Generated GitHub release notes describe the dual image instead of advertising a separate `-nydus` tag.
+- Migrated event emission to the `events.k8s.io/v1` API (`k8s.io/client-go/tools/events`), replacing the deprecated core/v1 recorder. The operator's ClusterRole now grants `events.k8s.io` in addition to the core group, which controller-runtime's leader election still uses. This requires a Kubernetes API server of 1.19 or newer, which is well below the floor the client libraries already impose.
+- Updated `sigs.k8s.io/controller-runtime` to v0.24.1 and `k8s.io/api`, `k8s.io/apimachinery` and `k8s.io/client-go` to v0.36.3. These move in lockstep: each controller-runtime minor pins the Kubernetes minor it was built against. The envtest assets follow automatically (the Makefile derives both versions from `go.mod`), so the controller suite now runs against a Kubernetes 1.36 API server. Generated CRDs are unchanged.
+- Pinned the Go toolchain to 1.26.5 via a `toolchain` directive. CI resolves its Go version from the `go` directive, which names 1.26.0 — a release carrying 20 standard-library advisories that failed the govulncheck job even though the shipped image builds on a patched 1.26.x.
 
-### Added
+### Security
 
-- Added the Artifact Hub `repositoryID` to `artifacthub-repo.yml` to enable the verified publisher badge.
+- Updated `golang.org/x/text` to v0.40.0 and `golang.org/x/net` to v0.57.0, closing vulnerabilities reachable from Router Advertisement parsing — untrusted input from the local link. Also updated `go.opentelemetry.io/otel/sdk` to v1.44.0 and `google.golang.org/grpc` to v1.82.1.
 
 ## v0.0.9 - 2026-05-25
 
