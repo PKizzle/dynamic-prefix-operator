@@ -509,30 +509,19 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 	if err != nil {
 		return false, fmt.Errorf("failed to read spec.blocks: %w", err)
 	}
-	var preservedBlocks []interface{}
-	for _, b := range existingBlocks {
-		block, ok := b.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if !isManagedBlock(block, managedPrefixes) {
-			preservedBlocks = append(preservedBlocks, block)
-		}
-	}
-	if len(preservedBlocks) > 0 {
-		log.V(1).Info("Preserving unmanaged blocks in pool", "count", len(preservedBlocks))
-	}
 
+	recordValue, recordExists := pool.GetAnnotations()[AnnotationManagedBlocks]
+	record := parseOwnershipRecord(recordValue, recordExists)
+
+	// Build the blocks this pass claims first, so their keys can suppress any
+	// duplicate sitting in the existing list.
 	// CiliumLoadBalancerIPPool spec.blocks is a list of IP blocks
 	// Format can be either:
 	// - spec.blocks[].cidr for CIDR-based allocation
 	// - spec.blocks[].start + spec.blocks[].stop for address range (Cilium uses "stop" not "end")
-	blocks := make([]interface{}, 0, len(preservedBlocks)+len(configs))
-
-	// Add preserved unmanaged blocks first
-	blocks = append(blocks, preservedBlocks...)
-
-	// Add new IPv6 blocks from configs
+	configBlocks := make([]interface{}, 0, len(configs))
+	managedKeys := make([]string, 0, len(configs))
+	configKeys := make(map[string]struct{}, len(configs))
 	for _, config := range configs {
 		var block map[string]interface{}
 		if config.useAddressRange && config.start != "" && config.end != "" {
@@ -547,22 +536,69 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 				"cidr": config.cidr,
 			}
 		}
-		blocks = append(blocks, block)
+		key := blockKey(block)
+		if key != "" {
+			if _, dup := configKeys[key]; dup {
+				continue
+			}
+			configKeys[key] = struct{}{}
+			managedKeys = append(managedKeys, key)
+		}
+		configBlocks = append(configBlocks, block)
 	}
+
+	var preservedBlocks []interface{}
+	for _, b := range existingBlocks {
+		block, ok := b.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if isOwnedBlock(block, record, managedPrefixes) {
+			continue
+		}
+		// A user-pinned block that duplicates one we are about to write would
+		// otherwise appear twice; the claimed copy wins and is recorded as ours.
+		if key := blockKey(block); key != "" {
+			if _, dup := configKeys[key]; dup {
+				continue
+			}
+		}
+		preservedBlocks = append(preservedBlocks, block)
+	}
+	if len(preservedBlocks) > 0 {
+		log.V(1).Info("Preserving unmanaged blocks in pool", "count", len(preservedBlocks))
+	}
+
+	blocks := make([]interface{}, 0, len(preservedBlocks)+len(configBlocks))
+	// Add preserved unmanaged blocks first
+	blocks = append(blocks, preservedBlocks...)
+	blocks = append(blocks, configBlocks...)
 
 	// Check if blocks actually changed before updating to avoid feedback loops
 	currentBlocks, _, err := unstructured.NestedSlice(pool.Object, "spec", "blocks")
 	if err != nil {
 		return false, fmt.Errorf("failed to read current spec.blocks: %w", err)
 	}
-	if equality.Semantic.DeepEqual(currentBlocks, blocks) {
+	managedBlocksStr := formatOwnershipRecord(managedKeys)
+	blocksChanged := !equality.Semantic.DeepEqual(currentBlocks, blocks)
+	recordChanged := recordValue != managedBlocksStr || !recordExists
+
+	// The record must be written even when the block list is byte-identical:
+	// the first pass after an upgrade usually produces the same blocks, and
+	// without persisting the record the next rotation would fall back to the
+	// leaky geometric test all over again.
+	if !blocksChanged && !recordChanged {
 		log.V(2).Info("Pool blocks unchanged, skipping update", "pool", pool.GetName())
 		return false, nil
 	}
 
-	if err := unstructured.SetNestedField(pool.Object, blocks, "spec", "blocks"); err != nil {
-		return false, fmt.Errorf("failed to set spec.blocks: %w", err)
+	if blocksChanged {
+		if err := unstructured.SetNestedField(pool.Object, blocks, "spec", "blocks"); err != nil {
+			return false, fmt.Errorf("failed to set spec.blocks: %w", err)
+		}
 	}
+
+	setPoolAnnotation(pool, AnnotationManagedBlocks, managedBlocksStr)
 
 	// Update last-sync annotation
 	r.setLastSyncAnnotation(pool)
@@ -583,28 +619,38 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 	if err != nil {
 		return false, fmt.Errorf("failed to read spec.externalCIDRs: %w", err)
 	}
+	recordValue, recordExists := pool.GetAnnotations()[AnnotationManagedCIDRs]
+	record := parseOwnershipRecord(recordValue, recordExists)
+
+	managedCIDRs := make([]string, 0, len(configs))
+	configCIDRs := make(map[string]struct{}, len(configs))
+	for _, config := range configs {
+		if _, dup := configCIDRs[config.cidr]; dup {
+			continue
+		}
+		configCIDRs[config.cidr] = struct{}{}
+		managedCIDRs = append(managedCIDRs, config.cidr)
+	}
+
 	var preserved []interface{}
 	for _, c := range existingCIDRs {
 		cidrStr, ok := c.(string)
 		if !ok {
 			continue
 		}
-		p, err := netip.ParsePrefix(cidrStr)
-		if err != nil {
-			// Can't parse - preserve to avoid data loss
-			preserved = append(preserved, c)
+		if isOwnedCIDR(cidrStr, record, managedPrefixes) {
 			continue
 		}
-		if !isPrefixManaged(p, managedPrefixes) {
-			preserved = append(preserved, c)
+		if _, dup := configCIDRs[cidrStr]; dup {
+			continue
 		}
+		preserved = append(preserved, c)
 	}
 
-	externalCIDRs := make([]interface{}, 0, len(preserved)+len(configs))
+	externalCIDRs := make([]interface{}, 0, len(preserved)+len(managedCIDRs))
 	externalCIDRs = append(externalCIDRs, preserved...)
-
-	for _, config := range configs {
-		externalCIDRs = append(externalCIDRs, config.cidr)
+	for _, cidr := range managedCIDRs {
+		externalCIDRs = append(externalCIDRs, cidr)
 	}
 
 	// Check if CIDRs actually changed before updating to avoid feedback loops
@@ -612,10 +658,17 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 	if err != nil {
 		return false, fmt.Errorf("failed to read current spec.externalCIDRs: %w", err)
 	}
-	if equality.Semantic.DeepEqual(currentCIDRs, externalCIDRs) {
+	managedCIDRsStr := formatOwnershipRecord(managedCIDRs)
+	cidrsChanged := !equality.Semantic.DeepEqual(currentCIDRs, externalCIDRs)
+	recordChanged := recordValue != managedCIDRsStr || !recordExists
+
+	// As in updateLoadBalancerIPPool: persist the record even when the CIDR list
+	// is unchanged, otherwise the next rotation falls back to the geometric test.
+	if !cidrsChanged && !recordChanged {
 		log.V(2).Info("CIDRGroup unchanged, skipping update", "cidrGroup", pool.GetName())
 		return false, nil
 	}
+	setPoolAnnotation(pool, AnnotationManagedCIDRs, managedCIDRsStr)
 
 	if err := unstructured.SetNestedField(pool.Object, externalCIDRs, "spec", "externalCIDRs"); err != nil {
 		return false, fmt.Errorf("failed to set spec.externalCIDRs: %w", err)
@@ -629,11 +682,17 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 
 // setLastSyncAnnotation sets the last-sync annotation to the current timestamp.
 func (r *PoolSyncReconciler) setLastSyncAnnotation(pool *unstructured.Unstructured) {
+	setPoolAnnotation(pool, AnnotationLastSync, time.Now().UTC().Format(time.RFC3339))
+}
+
+// setPoolAnnotation sets a single annotation on an unstructured pool object,
+// allocating the map if the object has none.
+func setPoolAnnotation(pool *unstructured.Unstructured, key, value string) {
 	annotations := pool.GetAnnotations()
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[AnnotationLastSync] = time.Now().UTC().Format(time.RFC3339)
+	annotations[key] = value
 	pool.SetAnnotations(annotations)
 }
 

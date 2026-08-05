@@ -340,6 +340,26 @@ Add these annotations to LoadBalancer Services for HA mode:
 | `dynamic-prefix.io/service-subnet` | Subnet for dynamically assigned IP offset calculation |
 | `dynamic-prefix.io/skip-external-dns-update` | Set to `"true"` to skip external-dns target management for this Service |
 
+### Annotations written by the operator
+
+These are ownership records, written and read by the operator. Do not set them by
+hand. Each one lists exactly what the operator put into the neighbouring field on
+its last pass, so the next pass can tell its own entries apart from yours without
+guessing from the address shape.
+
+| Annotation | Written on | Records |
+|------------|-----------|---------|
+| `dynamic-prefix.io/managed-ips` | Services | The addresses last written to `lbipam.cilium.io/ips` |
+| `dynamic-prefix.io/managed-targets` | Services | The address last written to `external-dns.alpha.kubernetes.io/target` |
+| `dynamic-prefix.io/managed-blocks` | Pools | The blocks last written to `spec.blocks` |
+| `dynamic-prefix.io/managed-cidrs` | CIDR groups | The CIDRs last written to `spec.externalCIDRs` |
+| `dynamic-prefix.io/last-sync` | Both | Timestamp of the last change the operator made |
+
+Deleting one is safe but not free: the operator falls back to matching against the
+prefixes currently in `status`, which cannot recognise an entry whose prefix has
+already aged out of the history window. It will then preserve that entry forever
+rather than replacing it. The record is rewritten on the next reconcile.
+
 ## Supported Resources
 
 - **CiliumLoadBalancerIPPool** — for Cilium LB-IPAM (`spec.blocks` with start/stop)

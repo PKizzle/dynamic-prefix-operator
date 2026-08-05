@@ -170,16 +170,20 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
-	// Collect all prefixes the operator manages (current + historical).
-	// Any IPv6 in the annotation that falls within these prefixes is operator-managed
-	// and will be replaced. Everything else (IPv4, static IPv6) is preserved.
+	// Collect all prefixes the operator manages (current + historical). These are
+	// only used as a fallback for objects that predate the ownership record; see
+	// ownership.go for why geometry alone cannot answer "is this entry mine?".
 	managedPrefixes := r.collectManagedPrefixes(&dp)
 
-	existingIPs := annotations[AnnotationCiliumIPs]
-	preservedIPs := extractUnmanagedIPs(existingIPs, managedPrefixes)
+	ipsRecordValue, ipsRecordExists := annotations[AnnotationManagedIPs]
+	ipsRecord := parseOwnershipRecord(ipsRecordValue, ipsRecordExists)
 
-	// Build final IP list: preserved (IPv4 + static IPv6) first, then calculated IPv6
-	finalIPs := append(preservedIPs, allIPs...)
+	existingIPs := annotations[AnnotationCiliumIPs]
+	preservedIPs := preserveUnownedIPs(existingIPs, ipsRecord, managedPrefixes)
+
+	// Build final IP list: preserved (IPv4 + static IPv6) first, then calculated IPv6.
+	// Dedupe in case a user has pinned an address the operator also manages.
+	finalIPs := dedupePreservingOrder(append(preservedIPs, allIPs...))
 
 	// Update Service annotations
 	updated := false
@@ -195,6 +199,17 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		updated = true
 	}
 
+	// Record what we just claimed, in the same Update as the field it describes,
+	// so the record and lbipam.cilium.io/ips cannot diverge. This is written even
+	// when the IP list itself is unchanged: on the first pass after an upgrade the
+	// list often already matches, and without the record the next rotation would
+	// fall back to the leaky prefix test.
+	managedIPsStr := formatOwnershipRecord(allIPs)
+	if annotations[AnnotationManagedIPs] != managedIPsStr {
+		newAnnotations[AnnotationManagedIPs] = managedIPsStr
+		updated = true
+	}
+
 	// Set external-dns target unless the Service has opted out via
 	// dynamic-prefix.io/skip-external-dns-update: "true".
 	skipExternalDNS := annotations[AnnotationSkipExternalDNSUpdate] == "true"
@@ -206,12 +221,21 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// This supports dual-stack NAT setups where IPv4 is a hostname (e.g.,
 		// "example.com") pointing to the router's public IPv4 via NAT, while IPv6
 		// uses direct per-service addresses that change with prefix rotation.
+		targetRecordValue, targetRecordExists := annotations[AnnotationManagedTargets]
+		targetRecord := parseOwnershipRecord(targetRecordValue, targetRecordExists)
+
 		existingTarget := annotations[AnnotationExternalDNSTarget]
-		preservedTargets := extractUnmanagedIPs(existingTarget, managedPrefixes)
-		finalTargets := append(preservedTargets, currentIP)
+		preservedTargets := preserveUnownedIPs(existingTarget, targetRecord, managedPrefixes)
+		finalTargets := dedupePreservingOrder(append(preservedTargets, currentIP))
 		finalTargetStr = strings.Join(finalTargets, ",")
 		if annotations[AnnotationExternalDNSTarget] != finalTargetStr {
 			newAnnotations[AnnotationExternalDNSTarget] = finalTargetStr
+			updated = true
+		}
+
+		managedTargetStr := formatOwnershipRecord([]string{currentIP})
+		if annotations[AnnotationManagedTargets] != managedTargetStr {
+			newAnnotations[AnnotationManagedTargets] = managedTargetStr
 			updated = true
 		}
 	} else {
@@ -242,9 +266,46 @@ func (r *ServiceSyncReconciler) collectManagedPrefixes(dp *dynamicprefixiov1alph
 	return collectManagedPrefixes(dp)
 }
 
+// preserveUnownedIPs returns the entries of a comma-separated IP annotation that
+// the operator must leave alone.
+//
+// When an ownership record is present it is authoritative: an entry is the
+// operator's if and only if the operator recorded writing it last time. No prefix
+// arithmetic is involved, so an address cannot be disowned merely because its
+// prefix has aged out of the history window -- which is the bug this replaces.
+//
+// When no record is present the object predates this mechanism, so fall back to
+// the legacy prefix test. That test over-preserves (it leaks one entry per
+// rotation) but never deletes a user's address, which is the right way to be
+// wrong while the record is being established. The caller writes the record on
+// the same pass, so this fallback applies at most once per object.
+func preserveUnownedIPs(ipsAnnotation string, record ownershipRecord, managedPrefixes []netip.Prefix) []string {
+	if !record.present {
+		return extractUnmanagedIPs(ipsAnnotation, managedPrefixes)
+	}
+	if ipsAnnotation == "" {
+		return nil
+	}
+	var preserved []string
+	for _, raw := range strings.Split(ipsAnnotation, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if !record.owns(raw) {
+			preserved = append(preserved, raw)
+		}
+	}
+	return preserved
+}
+
 // extractUnmanagedIPs parses a comma-separated IP list and returns all IPs
 // that are NOT managed by the operator. An IP is considered managed if it is
 // an IPv6 address that falls within any of the given managed prefixes.
+//
+// Deprecated for ownership decisions: this is the legacy geometric test, kept
+// only as the first-pass fallback in preserveUnownedIPs. It cannot recognise an
+// address whose prefix has left Status.History. See ownership.go.
 // All IPv4 addresses and IPv6 addresses outside the managed prefixes are
 // preserved. This supports:
 // - Multiple static IPv4 addresses
