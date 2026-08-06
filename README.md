@@ -311,6 +311,19 @@ annotations:
 
 > **DNS Spec Limitation**: The operator preserves hostnames in the target annotation, but external-dns will discard them when both a hostname (CNAME) and IP addresses (A/AAAA) are present. Per RFC 1034, CNAME records cannot coexist with other record types on the same DNS name. External-DNS logs this as a conflict and keeps only the A/AAAA records. For dual-stack NAT setups (IPv4 via hostname, IPv6 via direct addresses), use a separate tool like ddns-updater to manage the A record, and configure external-dns with `--managed-record-types=AAAA` to manage only IPv6.
 
+> **Zone-apex records are not managed by external-dns under `--txt-suffix`**: external-dns
+> derives the name of its ownership TXT record by splitting the first label off the record
+> name, so for a zone apex the registry record lands *outside* the zone
+> (`example.com` → `example-<suffix>.com`). External-dns then never adopts the apex record,
+> and it is left untouched however often the prefix rotates — silently, since subdomains in
+> the same zone are managed correctly and nothing reports an error. This is a limitation of
+> the external-dns TXT registry, not of the target annotation this operator writes: the
+> operator's contract ends at handing external-dns the right target, so it deliberately does
+> not grow DNS-provider credentials and clients to work around it. If you need an apex
+> AAAA that follows the prefix, point a dedicated updater at it (many DDNS clients can
+> combine a detected prefix with a fixed interface identifier), or use a `--txt-prefix`
+> ending in a dot so the registry record stays inside the zone.
+
 ### Annotations for HA Mode Services
 
 | Annotation | Description |
@@ -351,14 +364,43 @@ guessing from the address shape.
 |------------|-----------|---------|
 | `dynamic-prefix.io/managed-ips` | Services | The addresses last written to `lbipam.cilium.io/ips` |
 | `dynamic-prefix.io/managed-targets` | Services | The address last written to `external-dns.alpha.kubernetes.io/target` |
-| `dynamic-prefix.io/managed-blocks` | Pools | The blocks last written to `spec.blocks` |
+| `dynamic-prefix.io/managed-blocks` | Cilium pools | The blocks last written to `spec.blocks` |
 | `dynamic-prefix.io/managed-cidrs` | CIDR groups | The CIDRs last written to `spec.externalCIDRs` |
+| `dynamic-prefix.io/managed-addresses` | MetalLB pools | The entries last written to `spec.addresses` |
 | `dynamic-prefix.io/last-sync` | Both | Timestamp of the last change the operator made |
 
 Deleting one is safe but not free: the operator falls back to matching against the
 prefixes currently in `status`, which cannot recognise an entry whose prefix has
 already aged out of the history window. It will then preserve that entry forever
 rather than replacing it. The record is rewritten on the next reconcile.
+
+Removing `dynamic-prefix.io/name` releases the object: on the next reconcile the
+operator removes the entries named in its records, deletes the records, and stops
+managing it. Entries it never recorded are left untouched.
+
+## Restricting which prefixes are accepted
+
+A delegated prefix is global unicast by definition, and by default anything
+outside `2000::/3` is rejected:
+
+```yaml
+spec:
+  acquisition:
+    prefixFilter:
+      requireGlobalUnicast: true   # default
+```
+
+This matters because a link usually advertises more than one prefix. If a Router
+Advertisement arrives carrying no global prefix — during upstream renegotiation,
+or on a link where a unique-local prefix is advertised alongside — accepting the
+unique-local one looks exactly like a delegation change: every derived address
+moves into a range that is not routable off-link, and the real prefix ages out of
+`status.history` as though it had been retired.
+
+A rejected prefix is not destructive. `status.currentPrefix` keeps the last good
+value, the resource reports `PrefixAcquired=False` with reason `PrefixRejected`,
+and a warning event explains why. Set the field to `false` only when the prefix
+being tracked is deliberately not global unicast.
 
 ## Supported Resources
 

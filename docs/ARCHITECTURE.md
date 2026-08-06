@@ -106,7 +106,8 @@ The operator monitors Router Advertisements using [mdlayher/ndp](https://github.
 **What it monitors:**
 - ICMPv6 Router Advertisements (Type 134)
 - Prefix Information Options (PIO)
-- Filters for Global Unicast Addresses (GUA) over ULA
+- Accepts only Global Unicast prefixes (2000::/3) unless
+  `spec.acquisition.prefixFilter.requireGlobalUnicast` is set to false
 - Tracks valid and preferred lifetimes
 
 **Why RA monitoring:**
@@ -251,8 +252,8 @@ The operator rotates only the managed IPv6 addresses. IPv4 addresses and static 
 1. Operator starts, reads DynamicPrefix CR
 2. Creates RA monitor for specified interface
 3. Monitors for Router Advertisements
-4. Extracts prefix from PIOs (prefers GUA over ULA)
-5. Updates DynamicPrefix status.currentPrefix
+4. Extracts prefix from PIOs, rejecting non-global-unicast ones by default
+5. Validates the prefix, then updates DynamicPrefix status.currentPrefix
 6. Calculates address ranges per spec
 7. Updates status.addressRanges
 ```
