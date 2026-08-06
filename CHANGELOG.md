@@ -4,7 +4,7 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
-## Unreleased
+## v0.0.11 - 2026-08-06
 
 ### Added
 
