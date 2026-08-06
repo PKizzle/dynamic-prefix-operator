@@ -41,8 +41,8 @@ import (
 // address shape rather than on a record would claim and then delete it, breaking
 // stable internal addressing. It must survive every rotation untouched.
 const (
-	testStaticIPv4 = "192.168.178.238"
-	testStaticULA  = "fdb3:e6dc:eb35::ffff:0:2"
+	testStaticIPv4 = "192.0.2.238"
+	testStaticULA  = "fd00:db8:abcd::ffff:0:2"
 	testSuffix     = "::ffff:0:2"
 )
 
@@ -51,14 +51,14 @@ const (
 // entries, oldest first. Everything older has been evicted, which is precisely
 // the moment the old geometric ownership test lost track of its own addresses.
 func rotatePrefix(dp *dynamicprefixiov1alpha1.DynamicPrefix, gen, maxHistory int) {
-	dp.Status.CurrentPrefix = fmt.Sprintf("2003:107:c700:%x00::/64", gen)
+	dp.Status.CurrentPrefix = fmt.Sprintf("2001:db8:abcd:%x00::/64", gen)
 	dp.Status.History = nil
 	for i := gen - maxHistory; i < gen; i++ {
 		if i < 0 {
 			continue
 		}
 		dp.Status.History = append(dp.Status.History, dynamicprefixiov1alpha1.PrefixHistoryEntry{
-			Prefix:     fmt.Sprintf("2003:107:c700:%x00::/64", i),
+			Prefix:     fmt.Sprintf("2001:db8:abcd:%x00::/64", i),
 			AcquiredAt: metav1.Now(),
 			State:      dynamicprefixiov1alpha1.PrefixStateDraining,
 		})
@@ -146,8 +146,8 @@ func reconcileRotations(t *testing.T, rotations, maxHistory int, stripRecord boo
 }
 
 // TestOwnershipRecordKeepsRequestedIPsBounded is the regression test for the leak
-// that silently grew lbipam.cilium.io/ips to 108 entries on a live cluster and
-// starved Cilium's L2 announcer. With maxPrefixHistory=2 the operator should
+// that grew lbipam.cilium.io/ips without bound until the load balancer's layer-2
+// announcements were saturated. With maxPrefixHistory=2 the operator should
 // request exactly the user's two static addresses plus current+2 historical
 // addresses, no matter how many times the ISP prefix rotates.
 func TestOwnershipRecordKeepsRequestedIPsBounded(t *testing.T) {
@@ -186,7 +186,7 @@ func TestOwnershipRecordKeepsRequestedIPsBounded(t *testing.T) {
 				if entry == testStaticIPv4 || entry == testStaticULA {
 					continue
 				}
-				if !strings.HasPrefix(entry, "2003:107:c700:") {
+				if !strings.HasPrefix(entry, "2001:db8:abcd:") {
 					t.Errorf("unexpected entry %q", entry)
 					continue
 				}
@@ -218,10 +218,10 @@ func TestLegacyPrefixTestLeaksWithoutRecord(t *testing.T) {
 
 // genAddr returns the address the operator derives for generation gen, in the
 // canonical form netip produces. Building the string by hand is not enough:
-// generation 0 yields 2003:107:c700:000:0:ffff:0:2, which canonicalises to
-// 2003:107:c700::ffff:0:2, and a literal comparison would spuriously fail.
+// generation 0 yields 2001:db8:abcd:000:0:ffff:0:2, which canonicalises to
+// 2001:db8:abcd::ffff:0:2, and a literal comparison would spuriously fail.
 func genAddr(gen int) string {
-	return netip.MustParseAddr(fmt.Sprintf("2003:107:c700:%x00:0:ffff:0:2", gen)).String()
+	return netip.MustParseAddr(fmt.Sprintf("2001:db8:abcd:%x00:0:ffff:0:2", gen)).String()
 }
 
 // livePrefixes returns the addresses derivable from the current generation plus
@@ -330,7 +330,7 @@ func newCiliumPool(name string, blocks []interface{}) *unstructured.Unstructured
 }
 
 // TestPoolBlocksStayBoundedAcrossRotations is the pool-side twin of the Service
-// regression test. This is the site that reached 109 blocks in production.
+// regression test.
 func TestPoolBlocksStayBoundedAcrossRotations(t *testing.T) {
 	for _, maxHistory := range []int{1, 2, 3} {
 		t.Run(fmt.Sprintf("maxHistory_%d", maxHistory), func(t *testing.T) {
@@ -341,8 +341,8 @@ func TestPoolBlocksStayBoundedAcrossRotations(t *testing.T) {
 			// A static ULA block the user owns; it shares the reserved host
 			// suffix with the operator's own ranges.
 			staticBlock := map[string]interface{}{
-				"start": "fdb3:e6dc:eb35::ffff:0:1",
-				"stop":  "fdb3:e6dc:eb35::ffff:0:ffff",
+				"start": "fd00:db8:abcd::ffff:0:1",
+				"stop":  "fd00:db8:abcd::ffff:0:ffff",
 			}
 			pool := newCiliumPool("default-ipv6", []interface{}{staticBlock})
 
@@ -404,7 +404,7 @@ func TestCIDRGroupStaysBoundedAcrossRotations(t *testing.T) {
 	scheme := newPoolBackendTestScheme(t)
 	scheme.AddKnownTypeWithName(DefaultCiliumCIDRGroupGVK, &unstructured.Unstructured{})
 
-	const staticCIDR = "fdb3:e6dc:eb35::/48"
+	const staticCIDR = "fd00:db8:abcd::/48"
 	group := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": APIVersion(DefaultCiliumCIDRGroupGVK),
@@ -468,7 +468,7 @@ func poolStateForGeneration(gen, maxHistory int) ([]poolConfiguration, []netip.P
 		if i < 0 {
 			continue
 		}
-		cidr := fmt.Sprintf("2003:107:c700:%x00::/64", i)
+		cidr := fmt.Sprintf("2001:db8:abcd:%x00::/64", i)
 		configs = append(configs, poolConfiguration{cidr: cidr})
 		managed = append(managed, netip.MustParsePrefix(cidr))
 	}

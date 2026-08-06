@@ -86,6 +86,8 @@ rules:
   resources:
   - ippools
   verbs:
+  - create
+  - delete
   - get
   - list
   - patch

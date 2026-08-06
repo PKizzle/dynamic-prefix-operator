@@ -840,7 +840,7 @@ func TestIsIPv4Block_MalformedInput(t *testing.T) {
 	}
 }
 
-func TestIsPrefixManaged_EdgeCases(t *testing.T) {
+func TestIsPrefixSubsetOfManaged_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name     string
 		prefix   string
@@ -872,10 +872,20 @@ func TestIsPrefixManaged_EdgeCases(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "parent prefix containing managed child",
+			// A user pinning the whole delegation while the operator manages a
+			// subnet of it is ordinary. Claiming the supernet would delete that
+			// pin on the no-record fallback path -- once per object, silently,
+			// on the first reconcile after an upgrade.
+			name:     "parent prefix containing a managed child is NOT ours",
 			prefix:   "2001:db8::/32",
 			managed:  []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/48")},
-			expected: true, // overlap: managed.Addr() is in prefix
+			expected: false,
+		},
+		{
+			name:     "sibling prefix sharing a parent is not ours",
+			prefix:   "2001:db8:2::/48",
+			managed:  []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/48")},
+			expected: false,
 		},
 		{
 			name:     "completely disjoint",
@@ -888,9 +898,9 @@ func TestIsPrefixManaged_EdgeCases(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := netip.MustParsePrefix(tt.prefix)
-			result := isPrefixManaged(p, tt.managed)
+			result := isPrefixSubsetOfManaged(p, tt.managed)
 			if result != tt.expected {
-				t.Errorf("isPrefixManaged(%s) = %v, want %v", tt.prefix, result, tt.expected)
+				t.Errorf("isPrefixSubsetOfManaged(%s) = %v, want %v", tt.prefix, result, tt.expected)
 			}
 		})
 	}
@@ -975,22 +985,23 @@ func TestGetPoolDiscriminatesBackendsByScope(t *testing.T) {
 				},
 			}
 
-			pool, backend, err := reconciler.getPool(ctx, tt.key)
+			matches, err := reconciler.getPools(ctx, tt.key)
 			if err != nil {
-				t.Fatalf("getPool() unexpected error: %v", err)
+				t.Fatalf("getPools() unexpected error: %v", err)
 			}
-			if backend == nil {
-				t.Fatal("getPool() returned no backend")
+			if len(matches) != 1 {
+				t.Fatalf("getPools() returned %d matches, want 1", len(matches))
 			}
+			pool, backend := matches[0].pool, matches[0].backend
 			if backend.name() != tt.wantBackend {
-				t.Fatalf("getPool() backend = %q, want %q", backend.name(), tt.wantBackend)
+				t.Fatalf("getPools() backend = %q, want %q", backend.name(), tt.wantBackend)
 			}
 			if pool.GetNamespace() != tt.key.Namespace {
-				t.Fatalf("getPool() returned an object in namespace %q, want %q",
+				t.Fatalf("getPools() returned an object in namespace %q, want %q",
 					pool.GetNamespace(), tt.key.Namespace)
 			}
 			if strings.Join(probed, ",") != strings.Join(tt.wantProbed, ",") {
-				t.Fatalf("getPool() probed kinds %v, want %v", probed, tt.wantProbed)
+				t.Fatalf("getPools() probed kinds %v, want %v", probed, tt.wantProbed)
 			}
 		})
 	}

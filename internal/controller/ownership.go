@@ -36,22 +36,22 @@ import (
 // prefix falls out of the history window, the address the operator itself wrote
 // for it stops matching any managed prefix and is reclassified as a user's static
 // address -- and preserved forever. One entry leaked per object per rotation,
-// without bound. In a live cluster that reached 109 pool blocks and 108 requested
-// IPs on a single Service, which starved Cilium's L2 announcer and black-holed
-// IPv6 for most Services while DNS still looked perfect.
+// without bound, until the accumulated entries were enough to saturate the
+// load-balancer implementation's layer-2 announcements: IPv6 connectivity then
+// failed for most Services while DNS and every other layer still looked healthy.
 //
 // Geometry cannot answer the question, because after eviction there is nothing
 // left in the object to distinguish "an address I wrote three rotations ago" from
 // "an address the user pinned". So the operator records what it wrote instead.
 // Each reconcile diffs against that record, which is exact, needs no prefix math,
 // and cannot be confused by an address that merely looks operator-shaped. That
-// last point is not hypothetical: the ULA addresses users pin for stable internal
-// access (fdb3:...::ffff:0:2) share the reserved host-suffix range with the
+// last point is not hypothetical: a unique-local address pinned for stable
+// internal reachability commonly shares the reserved host-suffix range with the
 // operator's own addresses, so any structural heuristic would have to special-case
-// them or silently delete them.
+// it or silently delete it.
 //
 // The record is written in the same Update call as the field it describes, so the
-// two cannot diverge. When it is absent -- a Service the new code has not touched
+// two cannot diverge. When it is absent -- an object this code has not touched
 // yet -- callers fall back to the legacy prefix test, which preserves too much
 // rather than too little. The leak stops from the first reconcile onward; entries
 // leaked before the upgrade are not retroactively adopted and need a one-time
@@ -74,6 +74,10 @@ const (
 	// AnnotationManagedBlocks records the pool blocks the operator last wrote into
 	// spec.blocks, as canonical keys (see blockKey).
 	AnnotationManagedBlocks = "dynamic-prefix.io/managed-blocks"
+
+	// AnnotationManagedAddresses records the entries the operator last wrote into
+	// spec.addresses on a MetalLB IPAddressPool.
+	AnnotationManagedAddresses = "dynamic-prefix.io/managed-addresses"
 
 	// AnnotationManagedCIDRs records the CIDRs the operator last wrote into
 	// spec.externalCIDRs on a CiliumCIDRGroup.
@@ -99,7 +103,7 @@ func parseOwnershipRecord(value string, exists bool) ownershipRecord {
 	}
 	for _, raw := range strings.Split(value, ",") {
 		if item := strings.TrimSpace(raw); item != "" {
-			rec.entries[item] = struct{}{}
+			rec.entries[canonicalEntry(item)] = struct{}{}
 		}
 	}
 	return rec
@@ -107,8 +111,27 @@ func parseOwnershipRecord(value string, exists bool) ownershipRecord {
 
 // owns reports whether the operator recorded this entry on its previous pass.
 func (r ownershipRecord) owns(entry string) bool {
-	_, ok := r.entries[entry]
+	_, ok := r.entries[canonicalEntry(entry)]
 	return ok
+}
+
+// canonicalEntry normalises an entry so ownership is decided by what an address
+// *is*, not by how it happened to be spelled.
+//
+// Everything the operator writes already comes from netip's String(), so records
+// round-trip its own writes regardless. Users are not so constrained: an address
+// pinned as 2001:0DB8::0001 is the same address as 2001:db8::1, and comparing the
+// two as raw strings both fails to recognise a pin and lets the same address be
+// requested twice. Entries that are not addresses or prefixes -- external-dns
+// targets may be hostnames -- pass through untouched.
+func canonicalEntry(entry string) string {
+	if addr, err := netip.ParseAddr(entry); err == nil {
+		return addr.String()
+	}
+	if p, err := netip.ParsePrefix(entry); err == nil {
+		return p.String()
+	}
+	return entry
 }
 
 // formatOwnershipRecord serialises the entries the operator is writing now. The
@@ -123,15 +146,18 @@ func formatOwnershipRecord(entries []string) string {
 // as owned, which keeps them preserved.
 func blockKey(block map[string]interface{}) string {
 	if cidr, ok := block["cidr"].(string); ok && cidr != "" {
-		return "cidr=" + cidr
+		return "cidr=" + canonicalEntry(cidr)
 	}
-	start, hasStart := block["start"].(string)
-	stop, hasStop := block["stop"].(string)
-	if hasStart && start != "" {
-		if hasStop && stop != "" {
-			return "range=" + start + "-" + stop
+	// An absent stop and an empty stop describe the same block, so they must key
+	// the same way; otherwise the operator writes one shape, reads back the other,
+	// and fails to recognise its own entry.
+	start, _ := block["start"].(string)
+	stop, _ := block["stop"].(string)
+	if start != "" {
+		if stop != "" {
+			return "range=" + canonicalEntry(start) + "-" + canonicalEntry(stop)
 		}
-		return "range=" + start
+		return "range=" + canonicalEntry(start)
 	}
 	return ""
 }
@@ -160,23 +186,92 @@ func isOwnedCIDR(cidr string, record ownershipRecord, managedPrefixes []netip.Pr
 			// Unparseable entries are never ours; preserve to avoid data loss.
 			return false
 		}
-		return isPrefixManaged(p, managedPrefixes)
+		return isPrefixSubsetOfManaged(p, managedPrefixes)
 	}
 	return record.owns(cidr)
 }
 
-// dedupePreservingOrder drops repeat entries while keeping first-seen order. The
-// operator's calculated entries are appended to preserved ones, and a user who
-// pins an address the operator also manages would otherwise produce a duplicate
-// that Cilium rejects.
+// isPrefixSubsetOfManaged reports whether a prefix lies entirely inside one of the
+// managed prefixes.
+//
+// Containment must be tested in one direction only. A test that also matched when
+// the *entry* contains a managed prefix claims a user's supernet -- pinning the
+// whole delegation while the operator manages a subnet of it is an ordinary thing
+// to do -- and the fallback path then deletes it. That fires on the first pass
+// after an upgrade, on every object that has no ownership record yet, which is the
+// worst possible moment for a silent deletion.
+func isPrefixSubsetOfManaged(p netip.Prefix, managedPrefixes []netip.Prefix) bool {
+	for _, mp := range managedPrefixes {
+		if p.Bits() >= mp.Bits() && mp.Contains(p.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasOwnershipRecord reports whether an object still carries anything the
+// operator wrote.
+//
+// Watch predicates use this alongside the dynamic-prefix.io/name check. Matching
+// only on that annotation means its removal is invisible: the object stops
+// passing the filter, so no event is delivered and the entries the operator had
+// written stay behind forever -- including an external-dns target that stops
+// resolving at the next rotation. Matching on the records too keeps the object
+// watched exactly long enough to hand it back.
+func hasOwnershipRecord(annotations map[string]string) bool {
+	for _, key := range []string{
+		AnnotationManagedIPs,
+		AnnotationManagedTargets,
+		AnnotationManagedBlocks,
+		AnnotationManagedCIDRs,
+		AnnotationManagedAddresses,
+	} {
+		if _, ok := annotations[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// excludePinned returns the entries the operator may claim: everything it wants
+// to write, minus anything the user already had there.
+//
+// Claiming a user's pin is not harmless. The record grants the operator the right
+// to remove an entry once it stops generating it, so an address that happens to
+// coincide with a managed one today would be deleted a few rotations from now --
+// turning a deliberate pin into a delayed failure with no trace of what removed
+// it. The pinned copy is kept in the field either way; it just is not ours.
+func excludePinned(candidates, pinned []string) []string {
+	if len(pinned) == 0 {
+		return candidates
+	}
+	pinnedKeys := make(map[string]struct{}, len(pinned))
+	for _, p := range pinned {
+		pinnedKeys[canonicalEntry(strings.TrimSpace(p))] = struct{}{}
+	}
+	out := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if _, ok := pinnedKeys[canonicalEntry(strings.TrimSpace(c))]; ok {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// dedupePreservingOrder drops repeat entries while keeping first-seen order,
+// comparing entries by identity rather than spelling. The operator's calculated
+// entries are appended to preserved ones, and a user who pins an address the
+// operator also manages would otherwise produce a duplicate that Cilium rejects.
 func dedupePreservingOrder(items []string) []string {
 	seen := make(map[string]struct{}, len(items))
 	out := make([]string, 0, len(items))
 	for _, item := range items {
-		if _, ok := seen[item]; ok {
+		key := canonicalEntry(item)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[item] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, item)
 	}
 	return out

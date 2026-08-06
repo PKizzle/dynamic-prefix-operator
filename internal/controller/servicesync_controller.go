@@ -108,6 +108,12 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	dpName, hasDP := annotations[AnnotationName]
 	if !hasDP {
+		// De-annotated. Anything the operator wrote is still sitting in the
+		// Service, and the addresses in it stop resolving once the prefix rotates,
+		// so hand the fields back rather than walking away from them.
+		if hasOwnershipRecord(annotations) {
+			return r.releaseService(ctx, &svc)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -181,8 +187,13 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	existingIPs := annotations[AnnotationCiliumIPs]
 	preservedIPs := preserveUnownedIPs(existingIPs, ipsRecord, managedPrefixes)
 
+	// An address already present and unowned is the user's, even where it matches
+	// one this pass would write. Keep their copy and drop it from what the operator
+	// claims: recording it would let a later rotation, once the address stops being
+	// generated, recognise the pin as the operator's and delete it.
+	claimedIPs := excludePinned(allIPs, preservedIPs)
+
 	// Build final IP list: preserved (IPv4 + static IPv6) first, then calculated IPv6.
-	// Dedupe in case a user has pinned an address the operator also manages.
 	finalIPs := dedupePreservingOrder(append(preservedIPs, allIPs...))
 
 	// Update Service annotations
@@ -204,7 +215,7 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// when the IP list itself is unchanged: on the first pass after an upgrade the
 	// list often already matches, and without the record the next rotation would
 	// fall back to the leaky prefix test.
-	managedIPsStr := formatOwnershipRecord(allIPs)
+	managedIPsStr := formatOwnershipRecord(claimedIPs)
 	if annotations[AnnotationManagedIPs] != managedIPsStr {
 		newAnnotations[AnnotationManagedIPs] = managedIPsStr
 		updated = true
@@ -233,12 +244,35 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			updated = true
 		}
 
-		managedTargetStr := formatOwnershipRecord([]string{currentIP})
+		managedTargetStr := formatOwnershipRecord(excludePinned([]string{currentIP}, preservedTargets))
 		if annotations[AnnotationManagedTargets] != managedTargetStr {
 			newAnnotations[AnnotationManagedTargets] = managedTargetStr
 			updated = true
 		}
 	} else {
+		// Opting out has to hand the field back, not merely stop touching it.
+		// Walking away would leave the last address the operator wrote sitting in
+		// the target, and that address stops resolving at the next rotation -- so
+		// the opt-out would quietly turn into a broken DNS record rather than a
+		// field the user now controls.
+		targetRecordValue, targetRecordExists := annotations[AnnotationManagedTargets]
+		if targetRecordExists {
+			targetRecord := parseOwnershipRecord(targetRecordValue, true)
+			released := preserveUnownedIPs(annotations[AnnotationExternalDNSTarget], targetRecord, managedPrefixes)
+			releasedStr := strings.Join(released, ",")
+			if annotations[AnnotationExternalDNSTarget] != releasedStr {
+				if releasedStr == "" {
+					delete(newAnnotations, AnnotationExternalDNSTarget)
+				} else {
+					newAnnotations[AnnotationExternalDNSTarget] = releasedStr
+				}
+				updated = true
+			}
+			delete(newAnnotations, AnnotationManagedTargets)
+			updated = true
+			log.Info("Released external-dns target on opt-out", "service", req.NamespacedName,
+				"remainingTarget", releasedStr)
+		}
 		log.V(1).Info("Skipping external-dns target update (opted out via annotation)", "service", req.NamespacedName)
 	}
 
@@ -255,6 +289,62 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			"preservedCount", len(preservedIPs), "managedCount", len(allIPs))
 	}
 
+	return ctrl.Result{}, nil
+}
+
+// releaseService strips the entries the operator wrote from a Service that is no
+// longer opted in, and removes the records describing them.
+//
+// Only recorded entries are touched. Everything else in those annotations was put
+// there by the user and stays exactly as it is, including addresses that merely
+// resemble the operator's.
+func (r *ServiceSyncReconciler) releaseService(ctx context.Context, svc *corev1.Service) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	annotations := svc.GetAnnotations()
+
+	newAnnotations := make(map[string]string, len(annotations))
+	for k, v := range annotations {
+		newAnnotations[k] = v
+	}
+
+	// No DynamicPrefix to consult any more, so there are no managed prefixes to
+	// fall back on: the records are the only evidence of what belonged to the
+	// operator, which is exactly the case they were introduced for.
+	changed := false
+	release := func(fieldKey, recordKey string) {
+		recordValue, exists := annotations[recordKey]
+		if !exists {
+			return
+		}
+		record := parseOwnershipRecord(recordValue, true)
+		remaining := preserveUnownedIPs(annotations[fieldKey], record, nil)
+		remainingStr := strings.Join(remaining, ",")
+		if remainingStr == "" {
+			delete(newAnnotations, fieldKey)
+		} else {
+			newAnnotations[fieldKey] = remainingStr
+		}
+		delete(newAnnotations, recordKey)
+		changed = true
+	}
+
+	release(AnnotationCiliumIPs, AnnotationManagedIPs)
+	release(AnnotationExternalDNSTarget, AnnotationManagedTargets)
+	if changed {
+		delete(newAnnotations, AnnotationLastSync)
+	}
+
+	if !changed {
+		return ctrl.Result{}, nil
+	}
+
+	svc.SetAnnotations(newAnnotations)
+	if err := r.Update(ctx, svc); err != nil {
+		log.Error(err, "Failed to release Service annotations")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	log.Info("Released Service annotations after removal of the dynamic-prefix.io/name annotation",
+		"service", client.ObjectKeyFromObject(svc))
 	return ctrl.Result{}, nil
 }
 
@@ -422,11 +512,80 @@ func (r *ServiceSyncReconciler) calculateServiceIPs(
 			return []string{currentServiceIP}, currentServiceIP, nil
 		}
 	} else {
-		// No specific range/subnet, use current IP
-		return []string{currentServiceIP}, currentServiceIP, nil
+		// No range or subnet named, so the address itself is the only thing to go
+		// on. Returning it unchanged is what made this mode unable to rotate: the
+		// assigned address still sits in the prefix that has just been superseded,
+		// so the operator would keep requesting the old address and the Service
+		// would never ask for one in the new prefix -- waiting on an assignment
+		// that only arrives once something else moves first.
+		//
+		// Infer the host part from the assigned address instead and graft it onto
+		// the current and historical prefixes, which is exactly what suffix mode
+		// does once it knows the suffix.
+		currentPrefixIP, allIPs = r.calculateInferredSuffixIPs(dp, currentAddr, maxHistory)
+		if currentPrefixIP == "" {
+			// The address is not inside any prefix the operator manages -- a
+			// statically pinned address, most likely. Grafting its host bits onto
+			// the delegated prefix would invent an address nobody asked for, so
+			// leave it exactly as it is.
+			return []string{currentServiceIP}, currentServiceIP, nil
+		}
 	}
 
 	return allIPs, currentPrefixIP, nil
+}
+
+// calculateInferredSuffixIPs derives the host part of an already-assigned address
+// and rebuilds it against the current and historical prefixes.
+//
+// Returns ("", nil) when the address does not belong to any managed prefix, which
+// is the caller's signal to leave the Service alone.
+func (r *ServiceSyncReconciler) calculateInferredSuffixIPs(
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	currentAddr netip.Addr,
+	maxHistory int,
+) (string, []string) {
+	currentPrefix, err := netip.ParsePrefix(dp.Status.CurrentPrefix)
+	if err != nil {
+		return "", nil
+	}
+
+	// Only claim the address if it sits in a prefix the operator is responsible
+	// for; the current prefix or one still within the history window.
+	inManaged := currentPrefix.Contains(currentAddr)
+	if !inManaged {
+		for i, entry := range dp.Status.History {
+			if i >= maxHistory {
+				break
+			}
+			if p, err := netip.ParsePrefix(entry.Prefix); err == nil && p.Contains(currentAddr) {
+				inManaged = true
+				break
+			}
+		}
+	}
+	if !inManaged {
+		return "", nil
+	}
+
+	// combinePrefixSuffix takes the high bits from the prefix and the low bits
+	// from the supplied address, so the assigned address doubles as the suffix.
+	suffixBytes := currentAddr.As16()
+	currentIP := combinePrefixSuffix(currentPrefix, suffixBytes)
+	allIPs := []string{currentIP.String()}
+
+	for i, entry := range dp.Status.History {
+		if i >= maxHistory {
+			break
+		}
+		histPrefix, err := netip.ParsePrefix(entry.Prefix)
+		if err != nil {
+			continue
+		}
+		allIPs = append(allIPs, combinePrefixSuffix(histPrefix, suffixBytes).String())
+	}
+
+	return currentIP.String(), allIPs
 }
 
 // calculateSuffixIPs calculates IPv6 addresses by combining a static suffix with
@@ -706,8 +865,13 @@ func (r *ServiceSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		if annotations == nil {
 			return false
 		}
-		_, ok = annotations[AnnotationName]
-		return ok
+		if _, ok := annotations[AnnotationName]; ok {
+			return true
+		}
+		// Keep watching a Service that still carries operator-written entries even
+		// after it was de-annotated, so the reconciler gets one more chance to
+		// hand them back rather than abandoning them.
+		return hasOwnershipRecord(annotations)
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).

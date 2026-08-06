@@ -90,12 +90,17 @@ rules:
       - update
       - watch
 
-  # Calico IPPool permissions
+  # Calico IPPool permissions. create/delete are needed on top of the usual verbs:
+  # spec.cidr holds exactly one prefix, so a draining prefix has to live in a
+  # separate IPPool that the operator creates when the delegation rotates and
+  # removes once that prefix leaves the history window.
   - apiGroups:
       - projectcalico.org
     resources:
       - ippools
     verbs:
+      - create
+      - delete
       - get
       - list
       - patch

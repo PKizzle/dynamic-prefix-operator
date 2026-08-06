@@ -19,14 +19,20 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"net/netip"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/pkizzle/dynamic-prefix-operator/internal/prefix"
@@ -93,11 +99,22 @@ func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReco
 		return false, fmt.Errorf("failed to read spec.addresses: %w", err)
 	}
 
+	// spec.addresses is shared with the user exactly like the Cilium fields are,
+	// so it needs the same ownership record. Deciding by address geometry alone
+	// loses track of an entry the moment its prefix ages out of history, after
+	// which the entry is preserved as though the user had written it and a fresh
+	// one is appended alongside -- one leaked address per rotation, forever.
+	recordValue, recordExists := pool.GetAnnotations()[AnnotationManagedAddresses]
+	record := parseOwnershipRecord(recordValue, recordExists)
+
 	preserved := make([]string, 0, len(existingAddresses))
+	preservedKeys := make(map[string]struct{}, len(existingAddresses))
 	for _, address := range existingAddresses {
-		if !isManagedAddressEntry(address, managedPrefixes) {
-			preserved = append(preserved, address)
+		if isOwnedAddressEntry(address, record, managedPrefixes) {
+			continue
 		}
+		preserved = append(preserved, address)
+		preservedKeys[canonicalAddressEntry(address)] = struct{}{}
 	}
 	if len(preserved) > 0 {
 		logger.V(1).Info("Preserving unmanaged MetalLB addresses", "count", len(preserved))
@@ -105,29 +122,73 @@ func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReco
 
 	addresses := make([]string, 0, len(preserved)+len(configs))
 	addresses = append(addresses, preserved...)
+	managedAddresses := make([]string, 0, len(configs))
+	seen := make(map[string]struct{}, len(configs))
 	for _, config := range configs {
+		entry := config.cidr
 		if config.useAddressRange && config.start != "" && config.end != "" {
-			addresses = append(addresses, config.start+"-"+config.end)
+			entry = config.start + "-" + config.end
+		}
+		if entry == "" {
 			continue
 		}
-		addresses = append(addresses, config.cidr)
+		key := canonicalAddressEntry(entry)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		// Leave a user's pre-existing pin as theirs rather than claiming it.
+		if _, pinned := preservedKeys[key]; pinned {
+			continue
+		}
+		addresses = append(addresses, entry)
+		managedAddresses = append(managedAddresses, entry)
 	}
 
 	currentAddresses, _, err := unstructured.NestedStringSlice(pool.Object, "spec", "addresses")
 	if err != nil {
 		return false, fmt.Errorf("failed to read current spec.addresses: %w", err)
 	}
-	if equality.Semantic.DeepEqual(currentAddresses, addresses) {
+	managedAddressesStr := formatOwnershipRecord(managedAddresses)
+	addressesChanged := !equality.Semantic.DeepEqual(currentAddresses, addresses)
+	recordChanged := recordValue != managedAddressesStr || !recordExists
+
+	// Persist the record even when the address list is byte-identical, or the
+	// first pass after an upgrade leaves nothing behind and the next rotation
+	// falls back to the geometric test again.
+	if !addressesChanged && !recordChanged {
 		logger.V(2).Info("MetalLB IPAddressPool addresses unchanged, skipping update", "pool", pool.GetName())
 		return false, nil
 	}
 
-	if err := unstructured.SetNestedStringSlice(pool.Object, addresses, "spec", "addresses"); err != nil {
-		return false, fmt.Errorf("failed to set spec.addresses: %w", err)
+	if addressesChanged {
+		if err := unstructured.SetNestedStringSlice(pool.Object, addresses, "spec", "addresses"); err != nil {
+			return false, fmt.Errorf("failed to set spec.addresses: %w", err)
+		}
 	}
 
+	setPoolAnnotation(pool, AnnotationManagedAddresses, managedAddressesStr)
 	r.setLastSyncAnnotation(pool)
 	return true, r.Update(ctx, pool)
+}
+
+// canonicalAddressEntry normalises a MetalLB address entry so ownership survives
+// a difference in spelling. Entries are either "start-end" or a CIDR/address.
+func canonicalAddressEntry(entry string) string {
+	entry = strings.TrimSpace(entry)
+	if startStr, endStr, ok := strings.Cut(entry, "-"); ok {
+		return canonicalEntry(strings.TrimSpace(startStr)) + "-" + canonicalEntry(strings.TrimSpace(endStr))
+	}
+	return canonicalEntry(entry)
+}
+
+// isOwnedAddressEntry reports whether a MetalLB address entry is the operator's,
+// with the same record-first, geometry-as-fallback rule the other backends use.
+func isOwnedAddressEntry(entry string, record ownershipRecord, managedPrefixes []netip.Prefix) bool {
+	if !record.present {
+		return isManagedAddressEntry(entry, managedPrefixes)
+	}
+	return record.owns(canonicalAddressEntry(entry))
 }
 
 type calicoIPPoolBackend struct {
@@ -141,6 +202,20 @@ func (b calicoIPPoolBackend) gvk() schema.GroupVersionKind {
 
 // Calico IPPool is cluster-scoped.
 func (b calicoIPPoolBackend) namespaced() bool { return false }
+
+// update points the primary IPPool at the current prefix and keeps one sibling
+// IPPool per historical prefix.
+//
+// spec.cidr is a single scalar, so unlike every other backend Calico has nowhere
+// to hold a prefix that is draining: writing the new prefix removes the old one in
+// the same operation, and anything still using an address from it loses
+// connectivity the moment the delegation rotates. Since the field cannot express
+// more than one prefix, the drain window is expressed as separate objects instead.
+//
+// Siblings are owned wholesale rather than through an ownership record: the record
+// mechanism exists for fields shared with the user, whereas these objects are
+// entirely the operator's, so labelling them and deleting the ones that no longer
+// correspond to a live prefix is both simpler and unambiguous.
 func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
 	logger := log.FromContext(ctx)
 
@@ -149,6 +224,12 @@ func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, 
 	}
 
 	cidr, err := calicoCIDRForConfig(configs[0])
+	if err != nil {
+		return false, err
+	}
+
+	// configs[0] is the current prefix; the rest are draining history.
+	siblingsChanged, err := b.syncDrainingSiblings(ctx, r, pool, configs[1:])
 	if err != nil {
 		return false, err
 	}
@@ -165,7 +246,7 @@ func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, 
 	}
 	if currentCIDR == cidr {
 		logger.V(2).Info("Calico IPPool CIDR unchanged, skipping update", "pool", pool.GetName())
-		return false, nil
+		return siblingsChanged, nil
 	}
 
 	if err := unstructured.SetNestedField(pool.Object, cidr, "spec", "cidr"); err != nil {
@@ -174,6 +255,128 @@ func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, 
 
 	r.setLastSyncAnnotation(pool)
 	return true, r.Update(ctx, pool)
+}
+
+// LabelCalicoParentPool marks a Calico IPPool as a draining sibling created for a
+// historical prefix, and names the primary pool it belongs to.
+const LabelCalicoParentPool = "dynamic-prefix.io/parent-pool"
+
+// syncDrainingSiblings creates or updates one IPPool per draining prefix and
+// removes the ones whose prefix has left the history window.
+//
+// Reports whether anything changed, so a reconcile that only had siblings to
+// adjust is still recorded as an update.
+func (b calicoIPPoolBackend) syncDrainingSiblings(
+	ctx context.Context,
+	r *PoolSyncReconciler,
+	parent *unstructured.Unstructured,
+	drainingConfigs []poolConfiguration,
+) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	expected := make(map[string]string, len(drainingConfigs))
+	for _, config := range drainingConfigs {
+		cidr, err := calicoCIDRForConfig(config)
+		if err != nil {
+			// A historical prefix that cannot be expressed as an exact CIDR is not
+			// worth failing the whole sync over; the current prefix still applies.
+			logger.V(1).Info("Skipping draining Calico sibling", "pool", parent.GetName(), "reason", err.Error())
+			continue
+		}
+		expected[siblingPoolName(parent.GetName(), cidr)] = cidr
+	}
+
+	changed := false
+
+	// Reconcile the siblings that should exist.
+	for name, cidr := range expected {
+		sibling := &unstructured.Unstructured{}
+		sibling.SetGroupVersionKind(b.resourceGVK)
+		err := r.Get(ctx, types.NamespacedName{Name: name}, sibling)
+		switch {
+		case err == nil:
+			existing, _, readErr := unstructured.NestedString(sibling.Object, "spec", "cidr")
+			if readErr != nil {
+				return changed, fmt.Errorf("failed to read sibling spec.cidr: %w", readErr)
+			}
+			if existing == cidr {
+				continue
+			}
+			if err := unstructured.SetNestedField(sibling.Object, cidr, "spec", "cidr"); err != nil {
+				return changed, fmt.Errorf("failed to set sibling spec.cidr: %w", err)
+			}
+			if err := r.Update(ctx, sibling); err != nil {
+				return changed, fmt.Errorf("failed to update draining Calico IPPool %s: %w", name, err)
+			}
+			changed = true
+		case apierrors.IsNotFound(err):
+			sibling = newCalicoSibling(b.resourceGVK, parent, name, cidr)
+			if err := r.Create(ctx, sibling); err != nil {
+				return changed, fmt.Errorf("failed to create draining Calico IPPool %s: %w", name, err)
+			}
+			logger.Info("Created draining Calico IPPool", "pool", name, "cidr", cidr, "parent", parent.GetName())
+			changed = true
+		default:
+			return changed, fmt.Errorf("failed to read draining Calico IPPool %s: %w", name, err)
+		}
+	}
+
+	// Remove siblings whose prefix has aged out.
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(ListGVK(b.resourceGVK))
+	if err := r.List(ctx, list, client.MatchingLabels{
+		LabelManagedBy:        LabelManagedByValue,
+		LabelCalicoParentPool: parent.GetName(),
+	}); err != nil {
+		return changed, fmt.Errorf("failed to list draining Calico IPPools: %w", err)
+	}
+	for i := range list.Items {
+		item := &list.Items[i]
+		if _, keep := expected[item.GetName()]; keep {
+			continue
+		}
+		if err := r.Delete(ctx, item); err != nil && !apierrors.IsNotFound(err) {
+			return changed, fmt.Errorf("failed to delete drained Calico IPPool %s: %w", item.GetName(), err)
+		}
+		logger.Info("Deleted drained Calico IPPool", "pool", item.GetName(), "parent", parent.GetName())
+		changed = true
+	}
+
+	return changed, nil
+}
+
+// siblingPoolName derives a stable, DNS-safe name for a draining sibling. The
+// CIDR is hashed rather than embedded because a prefix contains characters a
+// resource name cannot carry.
+func siblingPoolName(parent, cidr string) string {
+	sum := sha256.Sum256([]byte(cidr))
+	return fmt.Sprintf("%s-%s", parent, hex.EncodeToString(sum[:])[:8])
+}
+
+func newCalicoSibling(gvk schema.GroupVersionKind, parent *unstructured.Unstructured, name, cidr string) *unstructured.Unstructured {
+	sibling := &unstructured.Unstructured{}
+	sibling.SetGroupVersionKind(gvk)
+	sibling.SetName(name)
+	sibling.SetLabels(map[string]string{
+		LabelManagedBy:         LabelManagedByValue,
+		LabelCalicoParentPool:  parent.GetName(),
+		LabelDynamicPrefixName: parent.GetAnnotations()[AnnotationName],
+	})
+	sibling.SetAnnotations(map[string]string{
+		AnnotationLastSync: time.Now().UTC().Format(time.RFC3339),
+	})
+	spec := map[string]interface{}{"cidr": cidr}
+	// Mirror the parent's allowedUses so the draining prefix keeps serving the
+	// same purpose while connections on it wind down.
+	if allowedUses, found, err := unstructured.NestedStringSlice(parent.Object, "spec", "allowedUses"); err == nil && found {
+		uses := make([]interface{}, 0, len(allowedUses))
+		for _, u := range allowedUses {
+			uses = append(uses, u)
+		}
+		spec["allowedUses"] = uses
+	}
+	sibling.Object["spec"] = spec
+	return sibling
 }
 
 func (r *PoolSyncReconciler) poolBackends() []poolBackend {
@@ -283,14 +486,14 @@ func isManagedAddressEntry(entry string, managedPrefixes []netip.Prefix) bool {
 		if start.Is4() || end.Is4() || start.Is4() != end.Is4() {
 			return false
 		}
-		return addressRangeOverlapsManaged(start, end, managedPrefixes)
+		return addressRangeWithinManaged(start, end, managedPrefixes)
 	}
 
 	if p, err := netip.ParsePrefix(entry); err == nil {
 		if p.Addr().Is4() {
 			return false
 		}
-		return isPrefixManaged(p, managedPrefixes)
+		return isPrefixSubsetOfManaged(p, managedPrefixes)
 	}
 
 	addr, err := netip.ParseAddr(entry)
@@ -300,7 +503,14 @@ func isManagedAddressEntry(entry string, managedPrefixes []netip.Prefix) bool {
 	return addrInManagedPrefixes(addr, managedPrefixes)
 }
 
-func addressRangeOverlapsManaged(start, end netip.Addr, managedPrefixes []netip.Prefix) bool {
+// addressRangeWithinManaged reports whether an address range lies entirely inside
+// a single managed prefix.
+//
+// Containment, not overlap. A range that merely overlaps also spans addresses the
+// operator does not manage, so claiming it would delete a user's range that
+// happens to straddle a managed prefix -- and on the no-record fallback path that
+// deletion is silent and permanent.
+func addressRangeWithinManaged(start, end netip.Addr, managedPrefixes []netip.Prefix) bool {
 	if start.Compare(end) > 0 {
 		start, end = end, start
 	}
@@ -316,15 +526,11 @@ func addressRangeOverlapsManaged(start, end netip.Addr, managedPrefixes []netip.
 			continue
 		}
 
-		if addressesOverlap(start, end, managedStart, managedEnd) {
+		if start.Compare(managedStart) >= 0 && end.Compare(managedEnd) <= 0 {
 			return true
 		}
 	}
 	return false
-}
-
-func addressesOverlap(startA, endA, startB, endB netip.Addr) bool {
-	return startA.Compare(endB) <= 0 && startB.Compare(endA) <= 0
 }
 
 func addrInManagedPrefixes(addr netip.Addr, managedPrefixes []netip.Prefix) bool {

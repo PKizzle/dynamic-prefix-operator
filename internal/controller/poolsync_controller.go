@@ -19,6 +19,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"time"
@@ -119,19 +120,48 @@ func (r *PoolSyncReconciler) cidrGroupGVK() schema.GroupVersionKind {
 // +kubebuilder:rbac:groups=cilium.io,resources=ciliumloadbalancerippools,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=cilium.io,resources=ciliumcidrgroups,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=metallb.io,resources=ipaddresspools,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=projectcalico.org,resources=ippools,verbs=get;list;watch;update;patch
+// Calico needs create/delete on top of the usual verbs: its spec.cidr holds a
+// single prefix, so a draining prefix has to live in a separate IPPool object that
+// the operator creates and removes as the history window moves.
+// +kubebuilder:rbac:groups=projectcalico.org,resources=ippools,verbs=get;list;watch;update;patch;create;delete
 
 // Reconcile handles pool synchronization for annotated backend resources.
+//
+// A reconcile.Request carries only a name, so every backend of matching scope is
+// synced rather than just the first one found. Several backends are cluster-scoped,
+// and stopping at the first match meant a pool whose name it shared with another
+// kind was never reconciled at all -- invisibly, because the other Get succeeded.
 func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
-	pool, backend, err := r.getPool(ctx, req.NamespacedName)
+	pools, err := r.getPools(ctx, req.NamespacedName)
 	if err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if pool == nil || backend == nil {
+	if len(pools) == 0 {
 		return ctrl.Result{}, nil
 	}
+
+	var errs []error
+	var result ctrl.Result
+	for _, match := range pools {
+		res, err := r.syncPool(ctx, req, match.pool, match.backend)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		// Keep the soonest requeue any backend asked for.
+		if res.RequeueAfter > 0 && (result.RequeueAfter == 0 || res.RequeueAfter < result.RequeueAfter) {
+			result.RequeueAfter = res.RequeueAfter
+		}
+	}
+	if len(errs) > 0 {
+		return ctrl.Result{}, errors.Join(errs...)
+	}
+	return result, nil
+}
+
+// syncPool reconciles one pool object against its DynamicPrefix.
+func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, pool *unstructured.Unstructured, backend poolBackend) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 
 	// Get annotations
 	annotations := pool.GetAnnotations()
@@ -144,7 +174,12 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	addressRangeName, hasAddressRange := annotations[AnnotationAddressRange]
 
 	if !hasName {
-		// No dynamic-prefix.io/name annotation, nothing to do
+		// De-annotated. The operator's entries are still in the pool and the
+		// addresses in them stop being routable at the next rotation, so release
+		// them instead of leaving them to rot.
+		if hasOwnershipRecord(annotations) {
+			return ctrl.Result{}, r.releasePool(ctx, pool)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -197,16 +232,119 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{}, nil
 }
 
-// getPool tries each configured backend GVK until the requested object is found.
+// releasePool strips the entries the operator wrote from a pool that is no longer
+// opted in, and removes the records describing them.
+//
+// The records are the only evidence of what was the operator's -- there is no
+// DynamicPrefix left to consult -- so anything not named in them was the user's
+// and is left untouched.
+func (r *PoolSyncReconciler) releasePool(ctx context.Context, pool *unstructured.Unstructured) error {
+	log := logf.FromContext(ctx)
+	annotations := pool.GetAnnotations()
+	changed := false
+
+	if recordValue, ok := annotations[AnnotationManagedBlocks]; ok {
+		record := parseOwnershipRecord(recordValue, true)
+		existing, _, err := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+		if err != nil {
+			return fmt.Errorf("failed to read spec.blocks: %w", err)
+		}
+		kept := make([]interface{}, 0, len(existing))
+		for _, b := range existing {
+			block, ok := b.(map[string]interface{})
+			if !ok {
+				kept = append(kept, b)
+				continue
+			}
+			if key := blockKey(block); key != "" && record.owns(key) {
+				continue
+			}
+			kept = append(kept, b)
+		}
+		if err := unstructured.SetNestedField(pool.Object, kept, "spec", "blocks"); err != nil {
+			return fmt.Errorf("failed to set spec.blocks: %w", err)
+		}
+		changed = true
+	}
+
+	if recordValue, ok := annotations[AnnotationManagedCIDRs]; ok {
+		record := parseOwnershipRecord(recordValue, true)
+		existing, _, err := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
+		if err != nil {
+			return fmt.Errorf("failed to read spec.externalCIDRs: %w", err)
+		}
+		kept := make([]interface{}, 0, len(existing))
+		for _, c := range existing {
+			if s, ok := c.(string); ok && record.owns(s) {
+				continue
+			}
+			kept = append(kept, c)
+		}
+		if err := unstructured.SetNestedField(pool.Object, kept, "spec", "externalCIDRs"); err != nil {
+			return fmt.Errorf("failed to set spec.externalCIDRs: %w", err)
+		}
+		changed = true
+	}
+
+	if recordValue, ok := annotations[AnnotationManagedAddresses]; ok {
+		record := parseOwnershipRecord(recordValue, true)
+		existing, _, err := unstructured.NestedStringSlice(pool.Object, "spec", "addresses")
+		if err != nil {
+			return fmt.Errorf("failed to read spec.addresses: %w", err)
+		}
+		kept := make([]string, 0, len(existing))
+		for _, a := range existing {
+			if record.owns(canonicalAddressEntry(a)) {
+				continue
+			}
+			kept = append(kept, a)
+		}
+		if err := unstructured.SetNestedStringSlice(pool.Object, kept, "spec", "addresses"); err != nil {
+			return fmt.Errorf("failed to set spec.addresses: %w", err)
+		}
+		changed = true
+	}
+
+	if !changed {
+		return nil
+	}
+
+	updated := pool.GetAnnotations()
+	for _, key := range []string{
+		AnnotationManagedBlocks, AnnotationManagedCIDRs, AnnotationManagedAddresses, AnnotationLastSync,
+	} {
+		delete(updated, key)
+	}
+	pool.SetAnnotations(updated)
+
+	if err := r.Update(ctx, pool); err != nil {
+		return fmt.Errorf("failed to release pool %s: %w", pool.GetName(), err)
+	}
+	log.Info("Released pool entries after removal of the dynamic-prefix.io/name annotation", "pool", pool.GetName())
+	return nil
+}
+
+// poolMatch pairs a fetched pool object with the backend that understands it.
+type poolMatch struct {
+	pool    *unstructured.Unstructured
+	backend poolBackend
+}
+
+// getPools returns every backend object that exists under the requested name.
 //
 // Only backends whose scope matches the request are probed. A reconcile.Request
 // carries no GVK, and the API server drops the namespace when reading a
 // cluster-scoped resource, so probing every backend would let a request for a
 // namespaced pool (MetalLB's IPAddressPool) match a same-named cluster-scoped
-// one (Cilium's CiliumLoadBalancerIPPool). That returned the wrong object, and
-// the namespaced pool was then never synced -- silently, because the wrong Get
-// succeeded.
-func (r *PoolSyncReconciler) getPool(ctx context.Context, name types.NamespacedName) (*unstructured.Unstructured, poolBackend, error) {
+// one (Cilium's CiliumLoadBalancerIPPool).
+//
+// Within a scope the name is still ambiguous: several backends are cluster-scoped,
+// and nothing stops a CiliumLoadBalancerIPPool and a CiliumCIDRGroup from sharing
+// a name. Returning the first match meant whichever kind lost the discovery-order
+// race was never reconciled, with no error to show for it. All matches are
+// returned instead, and each is synced independently.
+func (r *PoolSyncReconciler) getPools(ctx context.Context, name types.NamespacedName) ([]poolMatch, error) {
+	var matches []poolMatch
 	var lastErr error
 	wantNamespaced := name.Namespace != ""
 	for _, backend := range r.poolBackends() {
@@ -221,9 +359,12 @@ func (r *PoolSyncReconciler) getPool(ctx context.Context, name types.NamespacedN
 			}
 			continue
 		}
-		return pool, backend, nil
+		matches = append(matches, poolMatch{pool: pool, backend: backend})
 	}
-	return nil, nil, lastErr
+	if len(matches) == 0 {
+		return nil, lastErr
+	}
+	return matches, nil
 }
 
 // buildPoolConfigurations builds pool configurations for current prefix and historical prefixes.
@@ -520,7 +661,6 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 	// - spec.blocks[].cidr for CIDR-based allocation
 	// - spec.blocks[].start + spec.blocks[].stop for address range (Cilium uses "stop" not "end")
 	configBlocks := make([]interface{}, 0, len(configs))
-	managedKeys := make([]string, 0, len(configs))
 	configKeys := make(map[string]struct{}, len(configs))
 	for _, config := range configs {
 		var block map[string]interface{}
@@ -537,17 +677,24 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 			}
 		}
 		key := blockKey(block)
-		if key != "" {
-			if _, dup := configKeys[key]; dup {
-				continue
-			}
-			configKeys[key] = struct{}{}
-			managedKeys = append(managedKeys, key)
+		if key == "" {
+			// Refuse to write what cannot be recorded. An unkeyable block could
+			// never be recognised as the operator's on a later pass, so it would
+			// be preserved as a user's entry and a fresh copy appended every
+			// reconcile -- reintroducing precisely the unbounded growth the
+			// ownership record exists to stop.
+			log.Error(nil, "Skipping pool block with no usable identity", "pool", pool.GetName(), "block", block)
+			continue
 		}
+		if _, dup := configKeys[key]; dup {
+			continue
+		}
+		configKeys[key] = struct{}{}
 		configBlocks = append(configBlocks, block)
 	}
 
 	var preservedBlocks []interface{}
+	preservedKeys := make(map[string]struct{}, len(existingBlocks))
 	for _, b := range existingBlocks {
 		block, ok := b.(map[string]interface{})
 		if !ok {
@@ -556,23 +703,31 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 		if isOwnedBlock(block, record, managedPrefixes) {
 			continue
 		}
-		// A user-pinned block that duplicates one we are about to write would
-		// otherwise appear twice; the claimed copy wins and is recorded as ours.
-		if key := blockKey(block); key != "" {
-			if _, dup := configKeys[key]; dup {
-				continue
-			}
-		}
 		preservedBlocks = append(preservedBlocks, block)
+		if key := blockKey(block); key != "" {
+			preservedKeys[key] = struct{}{}
+		}
 	}
 	if len(preservedBlocks) > 0 {
 		log.V(1).Info("Preserving unmanaged blocks in pool", "count", len(preservedBlocks))
 	}
 
+	// Anything already present and unowned belongs to the user, even where it
+	// coincides with a block this pass would write. Keep their copy, skip ours,
+	// and leave it out of the record -- claiming it would hand the operator the
+	// right to delete it once the prefix rotates out of range, turning a pin into
+	// a time bomb.
 	blocks := make([]interface{}, 0, len(preservedBlocks)+len(configBlocks))
-	// Add preserved unmanaged blocks first
 	blocks = append(blocks, preservedBlocks...)
-	blocks = append(blocks, configBlocks...)
+	managedKeys := make([]string, 0, len(configBlocks))
+	for _, b := range configBlocks {
+		key := blockKey(b.(map[string]interface{}))
+		if _, pinned := preservedKeys[key]; pinned {
+			continue
+		}
+		blocks = append(blocks, b)
+		managedKeys = append(managedKeys, key)
+	}
 
 	// Check if blocks actually changed before updating to avoid feedback loops
 	currentBlocks, _, err := unstructured.NestedSlice(pool.Object, "spec", "blocks")
@@ -622,17 +777,22 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 	recordValue, recordExists := pool.GetAnnotations()[AnnotationManagedCIDRs]
 	record := parseOwnershipRecord(recordValue, recordExists)
 
-	managedCIDRs := make([]string, 0, len(configs))
-	configCIDRs := make(map[string]struct{}, len(configs))
+	configCIDRs := make([]string, 0, len(configs))
+	seenConfig := make(map[string]struct{}, len(configs))
 	for _, config := range configs {
-		if _, dup := configCIDRs[config.cidr]; dup {
+		key := canonicalEntry(config.cidr)
+		if key == "" {
 			continue
 		}
-		configCIDRs[config.cidr] = struct{}{}
-		managedCIDRs = append(managedCIDRs, config.cidr)
+		if _, dup := seenConfig[key]; dup {
+			continue
+		}
+		seenConfig[key] = struct{}{}
+		configCIDRs = append(configCIDRs, config.cidr)
 	}
 
 	var preserved []interface{}
+	preservedKeys := make(map[string]struct{}, len(existingCIDRs))
 	for _, c := range existingCIDRs {
 		cidrStr, ok := c.(string)
 		if !ok {
@@ -641,16 +801,22 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 		if isOwnedCIDR(cidrStr, record, managedPrefixes) {
 			continue
 		}
-		if _, dup := configCIDRs[cidrStr]; dup {
-			continue
-		}
 		preserved = append(preserved, c)
+		preservedKeys[canonicalEntry(cidrStr)] = struct{}{}
 	}
 
-	externalCIDRs := make([]interface{}, 0, len(preserved)+len(managedCIDRs))
+	// A CIDR the user already pinned stays theirs even where it coincides with one
+	// this pass would write; see updateLoadBalancerIPPool for why claiming it would
+	// make the pin deletable later.
+	externalCIDRs := make([]interface{}, 0, len(preserved)+len(configCIDRs))
 	externalCIDRs = append(externalCIDRs, preserved...)
-	for _, cidr := range managedCIDRs {
+	managedCIDRs := make([]string, 0, len(configCIDRs))
+	for _, cidr := range configCIDRs {
+		if _, pinned := preservedKeys[canonicalEntry(cidr)]; pinned {
+			continue
+		}
 		externalCIDRs = append(externalCIDRs, cidr)
+		managedCIDRs = append(managedCIDRs, cidr)
 	}
 
 	// Check if CIDRs actually changed before updating to avoid feedback loops
@@ -734,31 +900,32 @@ func isManagedBlock(block map[string]interface{}, managedPrefixes []netip.Prefix
 			if p.Addr().Is4() {
 				return false
 			}
-			return isPrefixManaged(p, managedPrefixes)
+			return isPrefixSubsetOfManaged(p, managedPrefixes)
 		}
 	}
-	// Check start field (for start/stop blocks)
+	// Check start field (for start/stop blocks). Both ends must land inside the
+	// same managed prefix: a range that merely starts inside one and runs past its
+	// end covers addresses the operator does not manage, so claiming it would
+	// delete a user's range on the fallback path.
 	if start, ok := block["start"].(string); ok {
 		a, err := netip.ParseAddr(start)
 		if err == nil {
 			if a.Is4() {
 				return false
 			}
+			end := a
+			if stop, ok := block["stop"].(string); ok && stop != "" {
+				parsed, err := netip.ParseAddr(stop)
+				if err != nil || parsed.Is4() {
+					return false
+				}
+				end = parsed
+			}
 			for _, mp := range managedPrefixes {
-				if mp.Contains(a) {
+				if mp.Contains(a) && mp.Contains(end) {
 					return true
 				}
 			}
-		}
-	}
-	return false
-}
-
-// isPrefixManaged returns true if a prefix overlaps with any of the managed prefixes.
-func isPrefixManaged(p netip.Prefix, managedPrefixes []netip.Prefix) bool {
-	for _, mp := range managedPrefixes {
-		if mp.Contains(p.Addr()) || p.Contains(mp.Addr()) {
-			return true
 		}
 	}
 	return false
@@ -794,8 +961,13 @@ func (r *PoolSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		if annotations == nil {
 			return false
 		}
-		_, ok := annotations[AnnotationName]
-		return ok
+		if _, ok := annotations[AnnotationName]; ok {
+			return true
+		}
+		// Also match pools that still hold operator-written entries, so removing
+		// the name annotation delivers one final event to release them instead of
+		// silently stranding them.
+		return hasOwnershipRecord(annotations)
 	})
 
 	// Build controller
