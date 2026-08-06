@@ -299,7 +299,7 @@ var _ = Describe("ServiceSync Controller", func() {
 			}, svc)).To(Succeed())
 
 			annotations := svc.GetAnnotations()
-			annotations[AnnotationSkipExternalDNSUpdate] = "true"
+			annotations[AnnotationSkipExternalDNSUpdate] = AnnotationValueTrue
 			annotations[AnnotationExternalDNSTarget] = "my-custom-target.example.com"
 			svc.SetAnnotations(annotations)
 			Expect(k8sClient.Update(ctx, svc)).To(Succeed())

@@ -128,7 +128,7 @@ func TestProcessIAPDReplyMasksHostBits(t *testing.T) {
 	iaid := [4]byte{4, 4, 4, 4}
 	// A /56 whose low bits are set well past the prefix length: the 4th group's
 	// low 8 bits (0x00ff) and the interface identifier both sit outside the /56.
-	dirty := decodeIAPrefix(t, iaPrefixBytes(1800, 3600, 56, net.ParseIP("2001:db8:1:20ff::1")))
+	dirty := decodeIAPrefix(t, iaPrefixBytes(900, 3600, 56, net.ParseIP("2001:db8:1:20ff::1")))
 
 	r := NewDHCPv6PDReceiver("eth0", 56)
 	if err := r.processIAPDReply(replyWithPrefixes(iaid, dirty), iaid, nil); err != nil {
@@ -147,7 +147,7 @@ func TestProcessIAPDReplyMasksHostBits(t *testing.T) {
 
 func TestProcessIAPDReplyRejectsULAWhenGUARequired(t *testing.T) {
 	iaid := [4]byte{5, 5, 5, 5}
-	ula := decodeIAPrefix(t, iaPrefixBytes(1800, 3600, 56, net.ParseIP("fd00::")))
+	ula := decodeIAPrefix(t, iaPrefixBytes(1800, 7200, 56, net.ParseIP("fd00::")))
 
 	r := NewDHCPv6PDReceiver("eth0", 56) // defaults to requiring global unicast
 	if err := r.processIAPDReply(replyWithPrefixes(iaid, ula), iaid, nil); err == nil {

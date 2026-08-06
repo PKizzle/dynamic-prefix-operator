@@ -426,7 +426,7 @@ func TestExternalDNSTargetReleasedOnOptOut(t *testing.T) {
 	// A hostname the user put there must survive the handover.
 	annotations := svc.GetAnnotations()
 	annotations[AnnotationExternalDNSTarget] = "example.com," + annotations[AnnotationExternalDNSTarget]
-	annotations[AnnotationSkipExternalDNSUpdate] = "true"
+	annotations[AnnotationSkipExternalDNSUpdate] = AnnotationValueTrue
 	svc.SetAnnotations(annotations)
 	if err := r.Update(ctx, &svc); err != nil {
 		t.Fatalf("opt out: %v", err)

@@ -71,6 +71,9 @@ const (
 	// Only has effect in HA mode (the external-dns target annotation is only managed in HA mode).
 	AnnotationSkipExternalDNSUpdate = "dynamic-prefix.io/skip-external-dns-update"
 
+	// AnnotationValueTrue is the opt-in value for boolean annotations.
+	AnnotationValueTrue = "true"
+
 	// serviceDynamicPrefixIndex indexes Services by the DynamicPrefix they reference.
 	serviceDynamicPrefixIndex = "metadata.annotations.dynamic-prefix.io/name"
 )
@@ -223,7 +226,7 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	// Set external-dns target unless the Service has opted out via
 	// dynamic-prefix.io/skip-external-dns-update: "true".
-	skipExternalDNS := annotations[AnnotationSkipExternalDNSUpdate] == "true"
+	skipExternalDNS := annotations[AnnotationSkipExternalDNSUpdate] == AnnotationValueTrue
 
 	var finalTargetStr string
 	if !skipExternalDNS {
@@ -266,8 +269,9 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				} else {
 					newAnnotations[AnnotationExternalDNSTarget] = releasedStr
 				}
-				updated = true
 			}
+			// Dropping the record is itself a change, so this covers the target
+			// rewrite above as well.
 			delete(newAnnotations, AnnotationManagedTargets)
 			updated = true
 			log.Info("Released external-dns target on opt-out", "service", req.NamespacedName,
