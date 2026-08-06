@@ -76,6 +76,30 @@ spec:
                     required:
                     - interface
                     type: object
+                  prefixFilter:
+                    description: |-
+                      PrefixFilter constrains which acquired prefixes are accepted, independent of
+                      the acquisition source.
+                    properties:
+                      requireGlobalUnicast:
+                        default: true
+                        description: |-
+                          RequireGlobalUnicast rejects any acquired prefix outside 2000::/3, notably
+                          unique-local (fc00::/7) and link-local (fe80::/10).
+
+                          A delegated prefix is global unicast by definition, so this defaults to true.
+                          It matters because a link can advertise several prefixes: if a Router
+                          Advertisement carries no global prefix -- during upstream renegotiation, or on
+                          a link where a unique-local prefix is advertised alongside -- a receiver that
+                          merely prefers global unicast will accept the unique-local one and rotate it
+                          in as though the delegation had changed. Every address the operator derives
+                          then moves into a range that is not routable off-link, and the displaced
+                          prefix ages out of history as if it were genuinely retired.
+
+                          Set to false only when the prefix being tracked is deliberately not global
+                          unicast, which is unusual outside test environments.
+                        type: boolean
+                    type: object
                   routerAdvertisement:
                     description: RouterAdvertisement configures Router Advertisement
                       monitoring as fallback

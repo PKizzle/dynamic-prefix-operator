@@ -70,11 +70,22 @@ type RAReceiver struct {
 	listen                     ndpListenFunc
 	maxRouterSolicitations     int
 	routerSolicitationInterval time.Duration
+	requireGlobalUnicast       bool
 }
 
-// NewRAReceiver creates a new Router Advertisement receiver for the given interface.
+// NewRAReceiver creates a new Router Advertisement receiver for the given
+// interface, accepting only global-unicast prefixes. Use NewRAReceiverWithPolicy
+// to track a prefix that is deliberately not global unicast.
 func NewRAReceiver(iface string) *RAReceiver {
+	return NewRAReceiverWithPolicy(iface, true)
+}
+
+// NewRAReceiverWithPolicy creates a Router Advertisement receiver with an explicit
+// acceptance policy. The policy is fixed for the receiver's lifetime, which is why
+// receivers are pooled per interface *and* policy.
+func NewRAReceiverWithPolicy(iface string, requireGlobalUnicast bool) *RAReceiver {
 	return &RAReceiver{
+		requireGlobalUnicast:       requireGlobalUnicast,
 		iface:                      iface,
 		events:                     make(chan Event, 10),
 		stopCh:                     make(chan struct{}),
@@ -396,6 +407,18 @@ func (r *RAReceiver) handleRouterAdvertisement(ra *ndp.RouterAdvertisement) {
 				bestPrefix = pi
 			}
 		} else if isULA(addr) {
+			// Preferring a global prefix is not the same as requiring one. A link
+			// often advertises a unique-local prefix alongside the global one, and
+			// an advertisement that momentarily carries only the unique-local one
+			// would otherwise be accepted as though the delegation had changed --
+			// moving every derived address off-link and pushing the real prefix out
+			// of history as if it had been retired. Skip it unless the tracked
+			// prefix is deliberately not global unicast.
+			if r.requireGlobalUnicast {
+				log.V(1).Info("Ignoring unique-local prefix: requireGlobalUnicast is set",
+					"prefix", pi.Prefix)
+				continue
+			}
 			log.V(1).Info("Prefix is ULA", "prefix", pi.Prefix)
 			if bestPrefix == nil {
 				bestPrefix = pi

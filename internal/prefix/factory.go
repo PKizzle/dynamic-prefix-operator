@@ -34,16 +34,26 @@ type ReceiverFactory interface {
 type DefaultReceiverFactory struct {
 	mu            sync.Mutex
 	raReceivers   *sharedRAReceiverPool
-	newRAReceiver func(iface string) Receiver
+	newRAReceiver newReceiverFunc
 }
 
 // NewReceiverFactory creates a new DefaultReceiverFactory.
 func NewReceiverFactory() *DefaultReceiverFactory {
 	return &DefaultReceiverFactory{
-		newRAReceiver: func(iface string) Receiver {
-			return NewRAReceiver(iface)
+		newRAReceiver: func(iface string, requireGlobalUnicast bool) Receiver {
+			return NewRAReceiverWithPolicy(iface, requireGlobalUnicast)
 		},
 	}
+}
+
+// requireGlobalUnicastFromSpec resolves the acceptance policy. An absent filter,
+// or an absent field within it, means true, so specs written before the field
+// existed keep the safe behaviour without being edited.
+func requireGlobalUnicastFromSpec(spec dynamicprefixiov1alpha1.AcquisitionSpec) bool {
+	if spec.PrefixFilter == nil || spec.PrefixFilter.RequireGlobalUnicast == nil {
+		return true
+	}
+	return *spec.PrefixFilter.RequireGlobalUnicast
 }
 
 // CreateReceiver creates a Receiver based on the AcquisitionSpec.
@@ -55,23 +65,25 @@ func (f *DefaultReceiverFactory) CreateReceiver(spec dynamicprefixiov1alpha1.Acq
 	hasDHCPv6 := spec.DHCPv6PD != nil
 	hasRA := spec.RouterAdvertisement != nil && spec.RouterAdvertisement.Enabled
 
+	requireGUA := requireGlobalUnicastFromSpec(spec)
+
 	switch {
 	case hasDHCPv6 && hasRA:
 		// Both configured - use composite receiver
 		return f.createCompositeReceiver(spec)
 	case hasDHCPv6:
 		// Only DHCPv6-PD configured
-		return f.createDHCPv6PDReceiver(spec.DHCPv6PD)
+		return f.createDHCPv6PDReceiver(spec.DHCPv6PD, requireGUA)
 	case hasRA:
 		// Only RA configured
-		return f.createRAReceiver(spec.RouterAdvertisement)
+		return f.createRAReceiver(spec.RouterAdvertisement, requireGUA)
 	default:
 		return nil, fmt.Errorf("no acquisition method configured")
 	}
 }
 
 // createDHCPv6PDReceiver creates a DHCPv6-PD receiver from the spec.
-func (f *DefaultReceiverFactory) createDHCPv6PDReceiver(spec *dynamicprefixiov1alpha1.DHCPv6PDSpec) (*DHCPv6PDReceiver, error) {
+func (f *DefaultReceiverFactory) createDHCPv6PDReceiver(spec *dynamicprefixiov1alpha1.DHCPv6PDSpec, requireGlobalUnicast bool) (*DHCPv6PDReceiver, error) {
 	if spec.Interface == "" {
 		return nil, fmt.Errorf("DHCPv6-PD interface is required")
 	}
@@ -81,26 +93,28 @@ func (f *DefaultReceiverFactory) createDHCPv6PDReceiver(spec *dynamicprefixiov1a
 		prefixLength = *spec.RequestedPrefixLength
 	}
 
-	return NewDHCPv6PDReceiver(spec.Interface, prefixLength), nil
+	return NewDHCPv6PDReceiverWithPolicy(spec.Interface, prefixLength, requireGlobalUnicast), nil
 }
 
 // createRAReceiver creates a Router Advertisement receiver from the spec.
-func (f *DefaultReceiverFactory) createRAReceiver(spec *dynamicprefixiov1alpha1.RouterAdvertisementSpec) (Receiver, error) {
+func (f *DefaultReceiverFactory) createRAReceiver(spec *dynamicprefixiov1alpha1.RouterAdvertisementSpec, requireGlobalUnicast bool) (Receiver, error) {
 	if spec.Interface == "" {
 		return nil, fmt.Errorf("router advertisement interface is required")
 	}
 
-	return f.sharedRAPool().subscribe(spec.Interface), nil
+	return f.sharedRAPool().subscribe(spec.Interface, requireGlobalUnicast), nil
 }
 
 // createCompositeReceiver creates a composite receiver with DHCPv6-PD as primary and RA as fallback.
 func (f *DefaultReceiverFactory) createCompositeReceiver(spec dynamicprefixiov1alpha1.AcquisitionSpec) (*CompositeReceiver, error) {
-	primary, err := f.createDHCPv6PDReceiver(spec.DHCPv6PD)
+	requireGUA := requireGlobalUnicastFromSpec(spec)
+
+	primary, err := f.createDHCPv6PDReceiver(spec.DHCPv6PD, requireGUA)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create primary DHCPv6-PD receiver: %w", err)
 	}
 
-	fallback, err := f.createRAReceiver(spec.RouterAdvertisement)
+	fallback, err := f.createRAReceiver(spec.RouterAdvertisement, requireGUA)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fallback RA receiver: %w", err)
 	}
@@ -113,8 +127,8 @@ func (f *DefaultReceiverFactory) sharedRAPool() *sharedRAReceiverPool {
 	defer f.mu.Unlock()
 
 	if f.newRAReceiver == nil {
-		f.newRAReceiver = func(iface string) Receiver {
-			return NewRAReceiver(iface)
+		f.newRAReceiver = func(iface string, requireGlobalUnicast bool) Receiver {
+			return NewRAReceiverWithPolicy(iface, requireGlobalUnicast)
 		}
 	}
 	if f.raReceivers == nil {

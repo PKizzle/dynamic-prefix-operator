@@ -30,7 +30,12 @@ const (
 	eventReasonTransitionStarted      = "TransitionStarted"
 	eventReasonTransitionCompleted    = "TransitionCompleted"
 	eventReasonReceiverCreationFailed = "ReceiverCreationFailed"
+	eventReasonPrefixRejected         = "PrefixRejected"
 )
+
+// reasonPrefixRejected is the status-condition reason matching
+// eventReasonPrefixRejected.
+const reasonPrefixRejected = "PrefixRejected"
 
 func emitNormalEvent(recorder events.EventRecorder, object runtime.Object, reason, message string) {
 	emitEvent(recorder, object, corev1.EventTypeNormal, reason, message)

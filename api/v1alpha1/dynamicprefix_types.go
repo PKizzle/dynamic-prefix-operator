@@ -58,6 +58,32 @@ type AcquisitionSpec struct {
 	// RouterAdvertisement configures Router Advertisement monitoring as fallback
 	// +optional
 	RouterAdvertisement *RouterAdvertisementSpec `json:"routerAdvertisement,omitempty"`
+
+	// PrefixFilter constrains which acquired prefixes are accepted, independent of
+	// the acquisition source.
+	// +optional
+	PrefixFilter *PrefixFilterSpec `json:"prefixFilter,omitempty"`
+}
+
+// PrefixFilterSpec constrains which acquired prefixes the operator will accept.
+type PrefixFilterSpec struct {
+	// RequireGlobalUnicast rejects any acquired prefix outside 2000::/3, notably
+	// unique-local (fc00::/7) and link-local (fe80::/10).
+	//
+	// A delegated prefix is global unicast by definition, so this defaults to true.
+	// It matters because a link can advertise several prefixes: if a Router
+	// Advertisement carries no global prefix -- during upstream renegotiation, or on
+	// a link where a unique-local prefix is advertised alongside -- a receiver that
+	// merely prefers global unicast will accept the unique-local one and rotate it
+	// in as though the delegation had changed. Every address the operator derives
+	// then moves into a range that is not routable off-link, and the displaced
+	// prefix ages out of history as if it were genuinely retired.
+	//
+	// Set to false only when the prefix being tracked is deliberately not global
+	// unicast, which is unusual outside test environments.
+	// +optional
+	// +kubebuilder:default=true
+	RequireGlobalUnicast *bool `json:"requireGlobalUnicast,omitempty"`
 }
 
 // DHCPv6PDSpec configures the DHCPv6 Prefix Delegation client
@@ -329,6 +355,17 @@ type DynamicPrefix struct {
 	// Status defines the observed state of DynamicPrefix
 	// +optional
 	Status DynamicPrefixStatus `json:"status,omitempty"`
+}
+
+// RequireGlobalUnicast reports whether acquired prefixes must be global unicast.
+// An absent filter, or an absent field within it, means true: resources created
+// before the field existed get the safe behaviour without needing to be edited.
+func (dp *DynamicPrefix) RequireGlobalUnicast() bool {
+	filter := dp.Spec.Acquisition.PrefixFilter
+	if filter == nil || filter.RequireGlobalUnicast == nil {
+		return true
+	}
+	return *filter.RequireGlobalUnicast
 }
 
 // +kubebuilder:object:root=true

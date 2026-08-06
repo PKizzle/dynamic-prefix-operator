@@ -21,7 +21,7 @@ import (
 	"sync"
 )
 
-type newReceiverFunc func(iface string) Receiver
+type newReceiverFunc func(iface string, requireGlobalUnicast bool) Receiver
 
 type sharedRAReceiverPool struct {
 	mu          sync.Mutex
@@ -36,29 +36,44 @@ func newSharedRAReceiverPool(newReceiver newReceiverFunc) *sharedRAReceiverPool 
 	}
 }
 
-func (p *sharedRAReceiverPool) subscribe(iface string) Receiver {
+// poolKey identifies a shareable receiver. Receivers are shared per interface,
+// but the acceptance policy is baked into the receiver, so two DynamicPrefixes
+// watching the same interface with different policies must not share one: the
+// stricter subscriber would otherwise see prefixes it rejects. Keying on both
+// gives them separate receivers, which is correct and rare enough not to matter.
+func poolKey(iface string, requireGlobalUnicast bool) string {
+	if requireGlobalUnicast {
+		return iface + "|gua"
+	}
+	return iface + "|any"
+}
+
+func (p *sharedRAReceiverPool) subscribe(iface string, requireGlobalUnicast bool) Receiver {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	entry := p.entries[iface]
+	key := poolKey(iface, requireGlobalUnicast)
+	entry := p.entries[key]
 	if entry == nil {
 		entry = &sharedRAReceiverEntry{
 			iface:       iface,
-			receiver:    p.newReceiver(iface),
+			key:         key,
+			receiver:    p.newReceiver(iface, requireGlobalUnicast),
 			subscribers: make(map[*sharedRAReceiverSubscription]struct{}),
 		}
-		p.entries[iface] = entry
+		p.entries[key] = entry
 	}
 
 	return &sharedRAReceiverSubscription{
 		pool:   p,
 		entry:  entry,
 		iface:  iface,
+		key:    key,
 		events: make(chan Event, 10),
 	}
 }
 
-func (p *sharedRAReceiverPool) unsubscribe(iface string, entry *sharedRAReceiverEntry, sub *sharedRAReceiverSubscription) error {
+func (p *sharedRAReceiverPool) unsubscribe(key string, entry *sharedRAReceiverEntry, sub *sharedRAReceiverSubscription) error {
 	p.mu.Lock()
 	// The entry may already have been replaced in the map: a caller holding a
 	// pointer from an earlier subscribe can re-arm an entry that was stopped
@@ -66,11 +81,11 @@ func (p *sharedRAReceiverPool) unsubscribe(iface string, entry *sharedRAReceiver
 	// Returning early for such an entry left both running for the life of the
 	// process. Release it either way; only drop the map slot when this really
 	// is the entry the map still points at, so a newer one is not evicted.
-	current := p.entries[iface] == entry
+	current := p.entries[key] == entry
 
 	shouldStop := entry.removeSubscriber(sub)
 	if shouldStop && current {
-		delete(p.entries, iface)
+		delete(p.entries, key)
 	}
 	p.mu.Unlock()
 
@@ -83,6 +98,7 @@ func (p *sharedRAReceiverPool) unsubscribe(iface string, entry *sharedRAReceiver
 type sharedRAReceiverEntry struct {
 	mu          sync.RWMutex
 	iface       string
+	key         string
 	receiver    Receiver
 	subscribers map[*sharedRAReceiverSubscription]struct{}
 	started     bool
@@ -183,6 +199,7 @@ type sharedRAReceiverSubscription struct {
 	pool    *sharedRAReceiverPool
 	entry   *sharedRAReceiverEntry
 	iface   string
+	key     string
 	events  chan Event
 	started bool
 }
@@ -214,7 +231,7 @@ func (s *sharedRAReceiverSubscription) Stop() error {
 	s.started = false
 	s.mu.Unlock()
 
-	return s.pool.unsubscribe(s.iface, s.entry, s)
+	return s.pool.unsubscribe(s.key, s.entry, s)
 }
 
 func (s *sharedRAReceiverSubscription) Events() <-chan Event {

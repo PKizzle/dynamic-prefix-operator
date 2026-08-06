@@ -44,6 +44,7 @@ type DHCPv6PDReceiver struct {
 	started               bool
 	ctx                   context.Context
 	cancel                context.CancelFunc
+	requireGlobalUnicast  bool
 }
 
 // dhcpv6Lease contains DHCPv6-PD lease information.
@@ -61,12 +62,19 @@ type dhcpv6Lease struct {
 // NewDHCPv6PDReceiver creates a new DHCPv6-PD receiver for the given interface.
 // The requestedPrefixLength is a hint to the server (typically 48-64).
 func NewDHCPv6PDReceiver(iface string, requestedPrefixLength int) *DHCPv6PDReceiver {
+	return NewDHCPv6PDReceiverWithPolicy(iface, requestedPrefixLength, true)
+}
+
+// NewDHCPv6PDReceiverWithPolicy creates a DHCPv6-PD client with an explicit
+// acceptance policy for the delegated prefix.
+func NewDHCPv6PDReceiverWithPolicy(iface string, requestedPrefixLength int, requireGlobalUnicast bool) *DHCPv6PDReceiver {
 	if requestedPrefixLength == 0 {
 		requestedPrefixLength = 56 // Common default
 	}
 	return &DHCPv6PDReceiver{
 		iface:                 iface,
 		requestedPrefixLength: requestedPrefixLength,
+		requireGlobalUnicast:  requireGlobalUnicast,
 		events:                make(chan Event, 10),
 		stopCh:                make(chan struct{}),
 	}
@@ -517,7 +525,17 @@ func (r *DHCPv6PDReceiver) processIAPDReply(reply *dhcpv6.Message, expectedIAID 
 	if bits != net.IPv6len*8 || ones == 0 {
 		return fmt.Errorf("invalid prefix length in IA_PD")
 	}
-	prefix := netip.PrefixFrom(addr, ones)
+	// Mask before use. The server is not obliged to send a prefix with its host
+	// bits cleared, and unmasked bits would flow into status, into the
+	// change-detection comparison, and into every address derived from the
+	// prefix. The Router Advertisement path has always masked; this one did not.
+	prefix := netip.PrefixFrom(addr, ones).Masked()
+
+	// Delegated prefixes carry no address-class guarantee on the wire, so apply
+	// the same acceptance rule the RA path uses rather than trusting the server.
+	if err := ValidateDelegatedPrefix(prefix, r.requireGlobalUnicast); err != nil {
+		return fmt.Errorf("rejecting delegated prefix from IA_PD: %w", err)
+	}
 
 	// Calculate T1/T2 from IA_PD or use defaults
 	t1 := iaPD.T1

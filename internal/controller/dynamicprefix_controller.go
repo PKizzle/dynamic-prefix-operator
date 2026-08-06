@@ -155,6 +155,27 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
+	// Gate every acquired prefix before it can reach status, history, subnet math
+	// or any pool. The receivers apply the same rule, but a receiver is created
+	// once and shared per interface, so one built under an earlier policy can
+	// still be feeding prefixes acquired under the old rules; this is the single
+	// choke point every source passes through.
+	//
+	// Rejecting is deliberately non-destructive: status keeps the last good
+	// prefix, so nothing derived from it is disturbed while the upstream sorts
+	// itself out.
+	if err := prefix.ValidateDelegatedPrefix(currentPrefix.Network, dp.RequireGlobalUnicast()); err != nil {
+		log.Info("Rejecting acquired prefix", "prefix", currentPrefix.Network, "reason", err.Error())
+		r.setCondition(&dp, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired, metav1.ConditionFalse,
+			reasonPrefixRejected, fmt.Sprintf("Rejected acquired prefix %s: %v", currentPrefix.Network, err))
+		emitWarningEvent(r.Recorder, &dp, eventReasonPrefixRejected,
+			fmt.Sprintf("Rejected acquired prefix %s: %v", currentPrefix.Network, err))
+		if err := r.updateStatusIfChanged(ctx, &dp, originalStatus); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	// Update status with current prefix
 	oldPrefix := dp.Status.CurrentPrefix
 	prefixChanged := oldPrefix != currentPrefix.Network.String()
