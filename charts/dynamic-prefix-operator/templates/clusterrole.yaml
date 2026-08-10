@@ -129,25 +129,13 @@ rules:
     resources:
       - daemonsets
     verbs:
-      - get
       - list
-      - watch
 
-  # Leader election permissions
-  {{- if .Values.config.leaderElection.enabled }}
-  - apiGroups:
-      - coordination.k8s.io
-    resources:
-      - leases
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  {{- end }}
+  # Leader election deliberately does NOT appear here. The lease lives in the
+  # release namespace, so it is granted by the namespaced Role in role.yaml --
+  # a cluster-wide grant would let this ServiceAccount delete or overwrite any
+  # Lease in the cluster, including the node heartbeats in kube-node-lease and
+  # the control-plane leader locks in kube-system.
 
   # Events permissions. Both groups are required: the operator emits through
   # events.k8s.io/v1, while controller-runtime's leader election still records

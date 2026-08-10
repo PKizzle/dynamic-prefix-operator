@@ -1,0 +1,37 @@
+{{- if and .Values.rbac.create .Values.config.leaderElection.enabled -}}
+# Leader election is namespaced on purpose. The lease the operator competes for
+# lives in the release namespace, so nothing here needs to reach across the
+# cluster: a ClusterRole carrying these verbs would let this ServiceAccount
+# delete or overwrite the node heartbeats in kube-node-lease and the
+# control-plane leader locks in kube-system.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "dynamic-prefix-operator.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "dynamic-prefix-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+
+  # controller-runtime records leader-election transitions as Events in the
+  # namespace holding the lease.
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+{{- end }}

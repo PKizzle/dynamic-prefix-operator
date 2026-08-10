@@ -353,6 +353,7 @@ Add these annotations to LoadBalancer Services for HA mode:
 | `dynamic-prefix.io/service-subnet` | Subnet for dynamically assigned IP offset calculation |
 | `dynamic-prefix.io/skip-external-dns-update` | Set to `"true"` to skip external-dns target management for this Service |
 | `dynamic-prefix.io/skip-l2-nudge` | Set to `"true"` to disable the [L2 announcer nudge](#cilium-l2-announcer-nudge) for this Service |
+| `dynamic-prefix.io/force-l2-nudge` | Set to `"true"` to apply the [L2 announcer nudge](#cilium-l2-announcer-nudge) even when version detection concluded this Cilium no longer needs it. `skip-l2-nudge` wins if both are set |
 
 ### Cilium L2 announcer nudge
 
@@ -380,20 +381,35 @@ branch, but **not in `v1.20.0`** — it merged roughly 2½ hours after that rele
 operator treats **`v1.20.1` and newer** as fixed; a single threshold covers the 1.21 line too, since
 `1.21.0-pre.0` sorts above `1.20.1`.
 
-**Every uncertain case nudges.** An unreadable tag, a digest-only image pin, an unfamiliar fork, a
-missing DaemonSet or absent RBAC all fall back to nudging. The two directions are not symmetric: a
-wrong "already fixed" silently stops announcing rotated addresses — and that failure looks perfectly
-healthy from every other angle, since pool, annotation, Service status and datapath frontends are all
-correct — whereas a wrong "still broken" costs one annotation write per change to a Service's address
-set. The verdict is re-checked every five minutes, so upgrading Cilium underneath a running operator
-is picked up without a restart.
+**Every uncertain case nudges.** The two directions are not symmetric: a wrong "already fixed"
+silently stops announcing rotated addresses — and that failure looks perfectly healthy from every
+other angle, since pool, annotation, Service status and datapath frontends are all correct — whereas
+a wrong "still broken" costs one annotation write per change to a Service's address set. So a tag is
+only believed when all of the following hold, and anything else nudges:
 
-Set `dynamic-prefix.io/skip-l2-nudge: "true"` on a Service to suppress the nudge regardless of the
-detected version — an escape hatch for a fork whose tag misreports, or a cluster not using Cilium L2
-announcements at all.
+- the image repository names Cilium (a sidecar's tag never decides the verdict);
+- the tag is a complete `MAJOR.MINOR.PATCH` version — a date-stamped nightly (`cilium:20260810`) or a
+  bare build number is rejected rather than read as an enormous version that clears the threshold;
+- it is read from the container Cilium's own chart names `cilium-agent`;
+- exactly one DaemonSet is identifiable as the agent (a second one outside `kube-system` is ignored;
+  two inside it are ambiguous);
+- the DaemonSet rollout has finished — during an upgrade the un-upgraded nodes still run the buggy
+  announcer, so the template alone is not evidence.
 
-This requires read-only `get`/`list`/`watch` on `apps/daemonsets`, which the chart grants. Denying it
-is safe: the version simply cannot be determined and the operator nudges unconditionally.
+A missing DaemonSet, a digest-only pin, an unreadable tag and absent RBAC all fall back to nudging
+too. The verdict is re-checked every five minutes, so upgrading Cilium underneath a running operator
+is picked up without a restart, and each change of verdict is logged at info level.
+
+Two per-Service escape hatches cover the cases detection gets wrong:
+
+- `dynamic-prefix.io/skip-l2-nudge: "true"` suppresses the nudge regardless of the detected version —
+  for a cluster not using Cilium L2 announcements at all.
+- `dynamic-prefix.io/force-l2-nudge: "true"` applies it regardless — the recovery when a fork or
+  repackaging reports a version that makes detection stand down too early. `skip` wins if both are
+  set.
+
+This requires read-only `list` on `apps/daemonsets`, which the chart grants. Denying it is safe: the
+version simply cannot be determined and the operator nudges unconditionally.
 
 ### Annotations written by the operator
 

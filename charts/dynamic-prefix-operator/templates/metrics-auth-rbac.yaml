@@ -1,0 +1,41 @@
+{{- if and .Values.rbac.create .Values.config.metrics.enabled .Values.config.metrics.secure -}}
+# Authorization for the metrics endpoint. With --metrics-secure the operator
+# authenticates each scrape and asks the API server whether that identity may
+# read metrics, which requires it to be able to create TokenReviews and
+# SubjectAccessReviews. Both are non-persisting, request-scoped subresources:
+# they answer a question and store nothing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "dynamic-prefix-operator.fullname" . }}-metrics-auth
+  labels:
+    {{- include "dynamic-prefix-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "dynamic-prefix-operator.fullname" . }}-metrics-auth
+  labels:
+    {{- include "dynamic-prefix-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "dynamic-prefix-operator.fullname" . }}-metrics-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "dynamic-prefix-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

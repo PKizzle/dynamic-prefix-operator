@@ -18,6 +18,15 @@ spec:
       interval: {{ .Values.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
       path: /metrics
+      {{- if .Values.config.metrics.secure }}
+      # The endpoint is HTTPS and authenticated: Prometheus presents its own
+      # ServiceAccount token, and the operator's metrics-auth ClusterRole must be
+      # bound to that ServiceAccount for the scrape to be authorized.
+      scheme: https
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        insecureSkipVerify: true
+      {{- end }}
       {{- with .Values.serviceMonitor.metricRelabelings }}
       metricRelabelings:
         {{- toYaml . | nindent 8 }}

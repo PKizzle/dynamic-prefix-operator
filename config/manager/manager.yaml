@@ -50,6 +50,12 @@ spec:
       #             operator: In
       #             values:
       #               - linux
+      # Router Advertisements arrive on the host's interfaces, so the operator has
+      # to share the host network namespace to see them at all. Without this the
+      # manifest installs cleanly and then never acquires a prefix -- which is why
+      # it is here rather than left as something to patch in afterwards.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
       securityContext:
         # NOTE: This operator requires root and NET_RAW capability for raw socket access
         # needed by RA monitoring (ICMPv6) and DHCPv6-PD client functionality.

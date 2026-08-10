@@ -9,7 +9,10 @@ image:
   # -- Image pull policy
   pullPolicy: IfNotPresent
   # -- Overrides the image tag (default is the chart appVersion)
-  tag: "main"
+  # Left empty on purpose: a floating default such as "main" would pin every
+  # install to a continuously overwritten tag rather than to the release the
+  # chart was published for.
+  tag: ""
 
 # -- Image pull secrets for private registries
 imagePullSecrets: []
@@ -41,8 +44,12 @@ podLabels: {}
 podSecurityContext:
   runAsNonRoot: false
   runAsUser: 0
+  # RuntimeDefault, not Unconfined: this process holds NET_RAW, optionally runs
+  # in the host network namespace, and parses ICMPv6 and DHCPv6 straight off the
+  # wire. The default profile permits everything the raw sockets need -- the
+  # kustomize install has always used it.
   seccompProfile:
-    type: Unconfined
+    type: RuntimeDefault
 
 # -- Container security context
 # NOTE: NET_RAW is required for the operator to function.
@@ -99,7 +106,12 @@ config:
     # -- Enable metrics endpoint
     enabled: true
     # -- Metrics bind address
-    bindAddress: ":8080"
+    bindAddress: ":8443"
+    # -- Serve metrics over HTTPS and require the caller to authenticate, with
+    # access decided by TokenReview/SubjectAccessReview. Turning this off exposes
+    # unauthenticated plaintext metrics -- and with hostNetwork enabled that
+    # listener is on the node's own address.
+    secure: true
 
   # -- Health probe configuration
   health:

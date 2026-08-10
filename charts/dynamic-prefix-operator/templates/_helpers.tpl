@@ -70,6 +70,15 @@ Create the image reference
 {{- end }}
 
 {{/*
+Metrics port, taken from the configured bind address so the Service, the
+container port and the ServiceMonitor cannot disagree with what the binary
+actually listens on.
+*/}}
+{{- define "dynamic-prefix-operator.metricsPort" -}}
+{{- (splitList ":" .Values.config.metrics.bindAddress | last) | default "8443" }}
+{{- end }}
+
+{{/*
 Generate watch configuration as JSON for ConfigMap
 */}}
 {{- define "dynamic-prefix-operator.watchConfig" -}}

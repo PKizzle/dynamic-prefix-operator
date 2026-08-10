@@ -85,6 +85,17 @@ const (
 	// fixed the underlying bug, or that do not use Cilium L2 announcements at all.
 	AnnotationSkipL2Nudge = "dynamic-prefix.io/skip-l2-nudge"
 
+	// AnnotationForceL2Nudge when set to "true" on a Service applies the L2
+	// announcer nudge whatever version detection concluded.
+	//
+	// Detection can only be wrong in one direction that matters -- deciding a
+	// Cilium is fixed when it is not -- and that mistake is silent: addresses
+	// simply stop answering NDP after a rotation. This annotation is the recovery
+	// for it on a fork or repackaging whose tag misreports, without waiting for
+	// the operator to learn about that image. AnnotationSkipL2Nudge wins if both
+	// are set, so an explicit opt-out is never overridden.
+	AnnotationForceL2Nudge = "dynamic-prefix.io/force-l2-nudge"
+
 	// AnnotationValueTrue is the opt-in value for boolean annotations.
 	AnnotationValueTrue = "true"
 
@@ -100,14 +111,14 @@ type ServiceSyncReconciler struct {
 	Scheme *runtime.Scheme
 
 	// l2Nudge decides whether the running Cilium still needs the L2 announcer
-	// nudge. Populated by SetupWithManager; a nil detector nudges unconditionally,
+	// nudge. Populated by SetupWithManager; a nil decider nudges unconditionally,
 	// which is the safe direction and keeps tests that construct the reconciler
 	// directly working unchanged.
-	l2Nudge *l2NudgeDetector
+	l2Nudge l2NudgeDecider
 }
 
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=list
 
 // Reconcile handles Service synchronization for HA mode prefix transitions.
 func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -345,9 +356,11 @@ func (r *ServiceSyncReconciler) nudgeL2Announcer(ctx context.Context, svc *corev
 		return ctrl.Result{}, nil
 	}
 
-	if needed, reason := r.l2Nudge.Needed(ctx); !needed {
-		log.V(1).Info("Skipping L2 announcer nudge", "service", client.ObjectKeyFromObject(svc), "reason", reason)
-		return ctrl.Result{}, nil
+	if annotations[AnnotationForceL2Nudge] != AnnotationValueTrue && r.l2Nudge != nil {
+		if needed, reason := r.l2Nudge.Needed(ctx); !needed {
+			log.V(1).Info("Skipping L2 announcer nudge", "service", client.ObjectKeyFromObject(svc), "reason", reason)
+			return ctrl.Result{}, nil
+		}
 	}
 
 	assigned := assignedLoadBalancerIPs(svc)
@@ -375,8 +388,11 @@ func (r *ServiceSyncReconciler) nudgeL2Announcer(ctx context.Context, svc *corev
 	svc.SetAnnotations(newAnnotations)
 
 	if err := r.Update(ctx, svc); err != nil {
-		log.Error(err, "Failed to nudge Cilium L2 announcer")
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		// Returned rather than swallowed: a conflict here means another writer
+		// touched the Service and the nudge has to be recomputed against the new
+		// state, and a persistent failure has to reach the error metric instead
+		// of retrying flat forever.
+		return ctrl.Result{}, fmt.Errorf("failed to nudge Cilium L2 announcer: %w", err)
 	}
 	log.Info("Nudged Cilium L2 announcer to re-read assigned addresses",
 		"service", client.ObjectKeyFromObject(svc), "addresses", assigned)
@@ -458,6 +474,11 @@ func (r *ServiceSyncReconciler) releaseService(ctx context.Context, svc *corev1.
 	release(AnnotationExternalDNSTarget, AnnotationManagedTargets)
 	if changed {
 		delete(newAnnotations, AnnotationLastSync)
+		// The nudge fingerprint describes addresses the operator no longer
+		// maintains, and nothing reads it once the records are gone. Leaving it
+		// behind would strand an operator-written annotation on an object that
+		// has otherwise been handed back.
+		delete(newAnnotations, AnnotationL2Nudge)
 	}
 
 	if !changed {

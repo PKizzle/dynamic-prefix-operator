@@ -19,16 +19,34 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+// stubL2NudgeDecider pins a verdict so the write path can be tested without a
+// DaemonSet. The production decider is exercised separately above.
+type stubL2NudgeDecider struct {
+	needed bool
+	calls  int
+}
+
+func (s *stubL2NudgeDecider) Needed(context.Context) (bool, string) {
+	s.calls++
+	return s.needed, "stub verdict"
+}
 
 func TestParseCiliumImageVersion(t *testing.T) {
 	tests := []struct {
@@ -77,6 +95,34 @@ func TestParseCiliumImageVersion(t *testing.T) {
 			image:   "quay.io/cilium/cilium:latest",
 			wantErr: true,
 		},
+		{
+			// The lenient semver parser reads this as 20260810.0.0, which clears
+			// the threshold and silently disables the nudge.
+			name:    "date-stamped nightly is not a version",
+			image:   "registry.internal/cilium/cilium:20260810",
+			wantErr: true,
+		},
+		{
+			name:    "bare build number is not a version",
+			image:   "registry.internal/cilium/cilium:2",
+			wantErr: true,
+		},
+		{
+			name:    "major.minor alone is ambiguous",
+			image:   "quay.io/cilium/cilium:v1.20",
+			wantErr: true,
+		},
+		{
+			// A sidecar's tag must never be compared against a Cilium threshold.
+			name:    "repository does not name Cilium",
+			image:   "registry.internal/vendor/service-mesh-agent:v1.23.4",
+			wantErr: true,
+		},
+		{
+			name:  "enterprise fork keeps its prerelease suffix",
+			image: "quay.io/isovalent/cilium:v1.21.0-cee.1",
+			want:  "1.21.0-cee.1",
+		},
 	}
 
 	for _, tt := range tests {
@@ -102,29 +148,43 @@ func TestParseCiliumImageVersion(t *testing.T) {
 // rule that every uncertain case resolves to "nudge". Getting that direction
 // wrong would silently stop announcing rotated addresses.
 func TestL2NudgeDetector_Needed(t *testing.T) {
-	daemonSet := func(image string) *appsv1.DaemonSet {
+	// rolledOut is the steady state: every node runs the current template. A
+	// DaemonSet built without it is mid-rollout as far as the detector cares.
+	rolledOut := appsv1.DaemonSetStatus{
+		DesiredNumberScheduled: 3,
+		UpdatedNumberScheduled: 3,
+		NumberReady:            3,
+	}
+
+	daemonSetIn := func(namespace, name string, containers []corev1.Container, status appsv1.DaemonSetStatus) *appsv1.DaemonSet {
 		return &appsv1.DaemonSet{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "cilium",
-				Namespace: "kube-system",
+				Name:      name,
+				Namespace: namespace,
 				Labels:    map[string]string{"k8s-app": "cilium"},
 			},
 			Spec: appsv1.DaemonSetSpec{
 				Template: corev1.PodTemplateSpec{
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{Name: "config", Image: "quay.io/cilium/cilium:v0.0.1"},
-							{Name: ciliumAgentContainer, Image: image},
-						},
-					},
+					Spec: corev1.PodSpec{Containers: containers},
 				},
 			},
+			Status: status,
 		}
+	}
+	agentContainers := func(image string) []corev1.Container {
+		return []corev1.Container{
+			{Name: "config", Image: "quay.io/cilium/cilium:v0.0.1"},
+			{Name: ciliumAgentContainer, Image: image},
+		}
+	}
+	daemonSet := func(image string) *appsv1.DaemonSet {
+		return daemonSetIn("kube-system", "cilium", agentContainers(image), rolledOut)
 	}
 
 	tests := []struct {
 		name       string
 		daemonSet  *appsv1.DaemonSet
+		extra      *appsv1.DaemonSet
 		wantNeeded bool
 	}{
 		{
@@ -167,6 +227,62 @@ func TestL2NudgeDetector_Needed(t *testing.T) {
 			daemonSet:  nil,
 			wantNeeded: true,
 		},
+		{
+			name:       "a date-stamped nightly must not read as a huge version",
+			daemonSet:  daemonSet("registry.internal/cilium/cilium:20260810"),
+			wantNeeded: true,
+		},
+		{
+			name: "an unfamiliar agent container name falls back to nudging",
+			daemonSet: daemonSetIn("kube-system", "cilium", []corev1.Container{
+				{Name: "agent", Image: "quay.io/cilium/cilium:v1.21.0"},
+			}, rolledOut),
+			wantNeeded: true,
+		},
+		{
+			name: "a sidecar's version must not decide the verdict",
+			daemonSet: daemonSetIn("kube-system", "cilium", []corev1.Container{
+				{Name: "istio-proxy", Image: "docker.io/istio/proxyv2:v1.23.4"},
+			}, rolledOut),
+			wantNeeded: true,
+		},
+		{
+			name:       "a DaemonSet with no containers falls back to nudging",
+			daemonSet:  daemonSetIn("kube-system", "cilium", nil, rolledOut),
+			wantNeeded: true,
+		},
+		{
+			name: "an in-flight rollout is not yet fixed",
+			daemonSet: daemonSetIn("kube-system", "cilium", agentContainers("quay.io/cilium/cilium:v1.21.0"),
+				appsv1.DaemonSetStatus{DesiredNumberScheduled: 3, UpdatedNumberScheduled: 1, NumberReady: 3}),
+			wantNeeded: true,
+		},
+		{
+			name: "unavailable pods may still run the old announcer",
+			daemonSet: daemonSetIn("kube-system", "cilium", agentContainers("quay.io/cilium/cilium:v1.21.0"),
+				appsv1.DaemonSetStatus{DesiredNumberScheduled: 3, UpdatedNumberScheduled: 3, NumberUnavailable: 1}),
+			wantNeeded: true,
+		},
+		{
+			name: "an unreported rollout status is not trusted",
+			daemonSet: daemonSetIn("kube-system", "cilium", agentContainers("quay.io/cilium/cilium:v1.21.0"),
+				appsv1.DaemonSetStatus{}),
+			wantNeeded: true,
+		},
+		{
+			// A stale DaemonSet elsewhere must not decide for the cluster; the
+			// one in kube-system is the agent.
+			name:       "a second labelled DaemonSet outside kube-system is ignored",
+			daemonSet:  daemonSet("quay.io/cilium/cilium:v1.21.0"),
+			extra:      daemonSetIn("staging", "cilium", agentContainers("quay.io/cilium/cilium:v1.20.0"), rolledOut),
+			wantNeeded: false,
+		},
+		{
+			name:       "two labelled DaemonSets in kube-system are ambiguous",
+			daemonSet:  daemonSet("quay.io/cilium/cilium:v1.21.0"),
+			extra:      daemonSetIn("kube-system", "cilium-old", agentContainers("quay.io/cilium/cilium:v1.21.0"), rolledOut),
+			wantNeeded: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -177,6 +293,9 @@ func TestL2NudgeDetector_Needed(t *testing.T) {
 			builder := fake.NewClientBuilder().WithScheme(scheme)
 			if tt.daemonSet != nil {
 				builder = builder.WithObjects(tt.daemonSet)
+			}
+			if tt.extra != nil {
+				builder = builder.WithObjects(tt.extra)
 			}
 			detector := newL2NudgeDetector(builder.Build())
 
@@ -198,6 +317,117 @@ func TestL2NudgeDetector_NilDetectorNudges(t *testing.T) {
 	needed, reason := detector.Needed(context.Background())
 	if !needed {
 		t.Errorf("nil detector said the nudge is unnecessary (%s)", reason)
+	}
+}
+
+// TestNudgeL2Announcer_VersionGate connects the verdict to the write path. Every
+// other test in this file stops at the verdict, and the reconciler's own tests
+// leave the decider nil -- so without this one, "a fixed Cilium is not nudged"
+// is asserted nowhere.
+func TestNudgeL2Announcer_VersionGate(t *testing.T) {
+	const assigned = "2001:db8::1"
+
+	service := func(annotations map[string]string) *corev1.Service {
+		return &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default", Annotations: annotations},
+			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
+			Status: corev1.ServiceStatus{
+				LoadBalancer: corev1.LoadBalancerStatus{
+					Ingress: []corev1.LoadBalancerIngress{{IP: assigned}},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name        string
+		decider     l2NudgeDecider
+		annotations map[string]string
+		wantNudge   bool
+		wantCalls   int
+	}{
+		{
+			name:      "a Cilium that still needs the nudge gets one",
+			decider:   &stubL2NudgeDecider{needed: true},
+			wantNudge: true,
+			wantCalls: 1,
+		},
+		{
+			name:      "a fixed Cilium is left alone",
+			decider:   &stubL2NudgeDecider{needed: false},
+			wantNudge: false,
+			wantCalls: 1,
+		},
+		{
+			name:      "no decider nudges, because uncertainty is cheap in that direction",
+			decider:   nil,
+			wantNudge: true,
+		},
+		{
+			name:        "the force annotation overrides a fixed verdict without consulting it",
+			decider:     &stubL2NudgeDecider{needed: false},
+			annotations: map[string]string{AnnotationForceL2Nudge: AnnotationValueTrue},
+			wantNudge:   true,
+			wantCalls:   0,
+		},
+		{
+			name:        "an explicit opt-out wins over the force annotation",
+			decider:     &stubL2NudgeDecider{needed: true},
+			annotations: map[string]string{AnnotationSkipL2Nudge: AnnotationValueTrue, AnnotationForceL2Nudge: AnnotationValueTrue},
+			wantNudge:   false,
+			wantCalls:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			_ = clientgoscheme.AddToScheme(scheme)
+
+			svc := service(tt.annotations)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
+			r := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme, l2Nudge: tt.decider}
+
+			if _, err := r.nudgeL2Announcer(context.Background(), svc, assigned); err != nil {
+				t.Fatalf("nudgeL2Announcer() error = %v", err)
+			}
+
+			var got corev1.Service
+			if err := fakeClient.Get(context.Background(),
+				types.NamespacedName{Name: "web", Namespace: "default"}, &got); err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			_, nudged := got.Annotations[AnnotationL2Nudge]
+			if nudged != tt.wantNudge {
+				t.Errorf("nudge annotation present = %v, want %v", nudged, tt.wantNudge)
+			}
+			if stub, ok := tt.decider.(*stubL2NudgeDecider); ok && stub.calls != tt.wantCalls {
+				t.Errorf("decider consulted %d times, want %d", stub.calls, tt.wantCalls)
+			}
+		})
+	}
+}
+
+// TestL2NudgeDetector_ListErrorNudges covers the path the documentation leans on
+// hardest: RBAC for apps/daemonsets is optional, so being refused the read must
+// resolve to nudging rather than to standing down.
+func TestL2NudgeDetector_ListErrorNudges(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+
+	forbidden := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "daemonsets"},
+					"", errors.New("no RBAC for daemonsets"))
+			},
+		}).
+		Build()
+
+	needed, reason := newL2NudgeDetector(forbidden).Needed(context.Background())
+	if !needed {
+		t.Errorf("a refused DaemonSet read said the nudge is unnecessary (%s)", reason)
 	}
 }
 

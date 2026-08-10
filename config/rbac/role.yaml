@@ -27,9 +27,7 @@ rules:
   resources:
   - daemonsets
   verbs:
-  - get
   - list
-  - watch
 - apiGroups:
   - cilium.io
   resources:

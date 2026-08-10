@@ -50,7 +50,7 @@ spec:
             {{- end }}
             {{- if .Values.config.metrics.enabled }}
             - --metrics-bind-address={{ .Values.config.metrics.bindAddress }}
-            - --metrics-secure=false
+            - --metrics-secure={{ .Values.config.metrics.secure }}
             {{- else }}
             - --metrics-bind-address=0
             {{- end }}
@@ -68,7 +68,7 @@ spec:
           ports:
             {{- if .Values.config.metrics.enabled }}
             - name: metrics
-              containerPort: 8080
+              containerPort: {{ include "dynamic-prefix-operator.metricsPort" . }}
               protocol: TCP
             {{- end }}
             - name: health
