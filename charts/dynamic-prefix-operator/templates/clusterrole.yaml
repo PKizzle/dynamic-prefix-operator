@@ -119,6 +119,20 @@ rules:
       - update
       - watch
 
+  # Cilium agent DaemonSet, read-only. Used solely to read the agent's image tag
+  # and decide whether this Cilium still needs the L2 announcer nudge; see the
+  # "Cilium L2 announcer nudge" section of the README. Without this rule the
+  # version cannot be determined and the operator nudges unconditionally, which
+  # is correct but redundant on a Cilium that no longer needs it.
+  - apiGroups:
+      - apps
+    resources:
+      - daemonsets
+    verbs:
+      - get
+      - list
+      - watch
+
   # Leader election permissions
   {{- if .Values.config.leaderElection.enabled }}
   - apiGroups:

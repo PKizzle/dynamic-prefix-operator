@@ -4,6 +4,16 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## v0.0.13 - 2026-08-10
+
+### Added
+
+- The L2 announcer nudge added in v0.0.12 now applies itself only where it is needed, instead of on every cluster. The operator reads the tag of the Cilium agent DaemonSet's image (`k8s-app=cilium`) and nudges only on a release predating [cilium/cilium#47579](https://github.com/cilium/cilium/pull/47579); `v1.20.1` and newer are treated as fixed, a threshold that covers the 1.21 line too because `1.21.0-pre.0` sorts above `1.20.1`. Upgrading Cilium therefore switches the workaround off by itself, within five minutes and without editing any Service. Previously it had to be disabled by hand, per Service, via `dynamic-prefix.io/skip-l2-nudge` — which remains as an escape hatch for a fork whose tag misreports, or a cluster not using L2 announcements.
+
+  Detection resolves every uncertain case to "nudge": an unreadable tag, a digest-only image pin, an unfamiliar fork, a missing DaemonSet and absent RBAC all fall back to the workaround. The failure directions are not symmetric — a wrong "already fixed" silently stops announcing rotated addresses and looks healthy from every other angle, while a wrong "still broken" costs one annotation write per change to a Service's address set. The verdict expires every five minutes so a Cilium upgraded underneath a running operator is noticed without a restart.
+
+  This needs read-only `get`/`list`/`watch` on `apps/daemonsets`, added to the chart's ClusterRole. Existing installations must upgrade the chart, not just the image; without the rule the version cannot be read and the operator keeps nudging unconditionally, which is correct but redundant.
+
 ## v0.0.12 - 2026-08-10
 
 ### Added

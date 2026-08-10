@@ -98,9 +98,16 @@ const (
 type ServiceSyncReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// l2Nudge decides whether the running Cilium still needs the L2 announcer
+	// nudge. Populated by SetupWithManager; a nil detector nudges unconditionally,
+	// which is the safe direction and keeps tests that construct the reconciler
+	// directly working unchanged.
+	l2Nudge *l2NudgeDetector
 }
 
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch
 
 // Reconcile handles Service synchronization for HA mode prefix transitions.
 func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -335,6 +342,11 @@ func (r *ServiceSyncReconciler) nudgeL2Announcer(ctx context.Context, svc *corev
 
 	annotations := svc.GetAnnotations()
 	if annotations[AnnotationSkipL2Nudge] == AnnotationValueTrue {
+		return ctrl.Result{}, nil
+	}
+
+	if needed, reason := r.l2Nudge.Needed(ctx); !needed {
+		log.V(1).Info("Skipping L2 announcer nudge", "service", client.ObjectKeyFromObject(svc), "reason", reason)
 		return ctrl.Result{}, nil
 	}
 
@@ -965,6 +977,11 @@ func (r *ServiceSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Service{}, serviceDynamicPrefixIndex, indexServiceByDynamicPrefix); err != nil {
 		return fmt.Errorf("failed to index Services by DynamicPrefix annotation: %w", err)
 	}
+
+	// Read the agent DaemonSet uncached: it is consulted once every few minutes,
+	// and going through the manager's cache would start an informer over every
+	// DaemonSet in the cluster to answer it.
+	r.l2Nudge = newL2NudgeDetector(mgr.GetAPIReader())
 
 	// Create predicate for LoadBalancer Services with dynamic-prefix.io/name annotation
 	hasAnnotation := predicate.NewPredicateFuncs(func(obj client.Object) bool {

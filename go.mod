@@ -5,6 +5,7 @@ go 1.26.0
 toolchain go1.26.5
 
 require (
+	github.com/Masterminds/semver/v3 v3.4.0
 	github.com/go-logr/logr v1.4.3
 	github.com/insomniacslk/dhcp v0.0.0-20251020182700-175e84fbb167
 	github.com/mdlayher/ndp v1.1.0
@@ -20,7 +21,6 @@ require (
 
 require (
 	cel.dev/expr v0.25.1 // indirect
-	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect

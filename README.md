@@ -368,15 +368,32 @@ it — never when a frontend appears. The operator therefore writes
 `status.loadBalancer.ingress`, which supplies the missing event. The value is a fingerprint of the
 assigned address set, so the write happens once per change rather than on every reconcile.
 
-Set `dynamic-prefix.io/skip-l2-nudge: "true"` to disable it for a Service — appropriate on a Cilium
-release where the bug is fixed, or where Cilium L2 announcements are not used at all.
+**This is automatic — you should not normally need to configure it.** The operator reads the tag of
+the Cilium agent DaemonSet's image (`k8s-app=cilium`) and nudges only on a release that predates the
+fix. Upgrade Cilium and the nudge stops on its own, within five minutes and without touching a
+single Service.
 
 **Upstream status.** Cilium fixed this in
 [PR #47579](https://github.com/cilium/cilium/pull/47579) (merged 2026-07-29), which makes the
 announcer re-evaluate services on frontend changes. The fix is in `v1.21.0-pre.0` and on the `v1.20`
-branch, but **not in `v1.20.0`** — it merged roughly 2½ hours after that release was built. It is
-expected in `v1.20.1`. On any release carrying the fix the nudge is redundant and can be switched
-off; it is kept here for clusters still on an affected version.
+branch, but **not in `v1.20.0`** — it merged roughly 2½ hours after that release was built. The
+operator treats **`v1.20.1` and newer** as fixed; a single threshold covers the 1.21 line too, since
+`1.21.0-pre.0` sorts above `1.20.1`.
+
+**Every uncertain case nudges.** An unreadable tag, a digest-only image pin, an unfamiliar fork, a
+missing DaemonSet or absent RBAC all fall back to nudging. The two directions are not symmetric: a
+wrong "already fixed" silently stops announcing rotated addresses — and that failure looks perfectly
+healthy from every other angle, since pool, annotation, Service status and datapath frontends are all
+correct — whereas a wrong "still broken" costs one annotation write per change to a Service's address
+set. The verdict is re-checked every five minutes, so upgrading Cilium underneath a running operator
+is picked up without a restart.
+
+Set `dynamic-prefix.io/skip-l2-nudge: "true"` on a Service to suppress the nudge regardless of the
+detected version — an escape hatch for a fork whose tag misreports, or a cluster not using Cilium L2
+announcements at all.
+
+This requires read-only `get`/`list`/`watch` on `apps/daemonsets`, which the chart grants. Denying it
+is safe: the version simply cannot be determined and the operator nudges unconditionally.
 
 ### Annotations written by the operator
 

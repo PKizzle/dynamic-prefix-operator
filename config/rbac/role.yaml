@@ -23,6 +23,14 @@ rules:
   - create
   - patch
 - apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - cilium.io
   resources:
   - ciliumbgpadvertisements
