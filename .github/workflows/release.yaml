@@ -61,6 +61,7 @@ jobs:
 
           # Generate Chart.yaml from template
           sed -e "s/{{IS_PRERELEASE}}/$IS_PRE/g" \
+              -e "s/{{VERSION}}/$VERSION/g" \
               -e "s/^version: .*/version: $VERSION/" \
               -e "s/^appVersion: .*/appVersion: \"$VERSION\"/" \
               $TEMPLATE_FILE > $CHART_FILE
@@ -83,6 +84,52 @@ jobs:
 
           # Build the full manifest
           kustomize build config/default > install.yaml
+
+      # The image is built by a separate workflow triggered by the same tag push,
+      # and it takes considerably longer than this one: the multi-arch build and
+      # the nydus attach run after the plain manifest is pushed. Publishing the
+      # chart first advertises a release whose image does not exist yet, which
+      # fails Artifact Hub's scan ("image not found") and gives anyone installing
+      # immediately an ImagePullBackOff. Wait for the tag to be pullable.
+      #
+      # The tag first appears when the multi-arch manifest is created, well
+      # before the nydus attach replaces it in place, so this does not wait for
+      # the whole dual-image pipeline.
+      - name: Wait for the release image to be published
+        env:
+          IMAGE_REPOSITORY: ${{ steps.repository.outputs.lowercase }}
+          IMAGE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          deadline=$(( SECONDS + 45 * 60 ))
+          attempt=0
+
+          while (( SECONDS < deadline )); do
+            attempt=$(( attempt + 1 ))
+
+            token="$(curl -fsS "https://ghcr.io/token?scope=repository:${IMAGE_REPOSITORY}:pull" \
+              | jq -r '.token')"
+            status="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${token}" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+              -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/${IMAGE_REPOSITORY}/manifests/${IMAGE_TAG}")"
+
+            if [[ "${status}" == "200" ]]; then
+              echo "ghcr.io/${IMAGE_REPOSITORY}:${IMAGE_TAG} is available after ${attempt} attempt(s)."
+              exit 0
+            fi
+
+            echo "Attempt ${attempt}: manifest returned HTTP ${status}; waiting for the image build."
+            sleep 30
+          done
+
+          echo "::error::ghcr.io/${IMAGE_REPOSITORY}:${IMAGE_TAG} did not appear within 45 minutes."
+          echo "::error::Refusing to publish a chart that references an image the registry does not have."
+          exit 1
 
       - name: Package Helm chart
         run: |

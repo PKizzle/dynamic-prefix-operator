@@ -31,6 +31,13 @@ annotations:
   artifacthub.io/operator: "true"
   artifacthub.io/operatorCapabilities: Basic Install
   artifacthub.io/prerelease: "{{IS_PRERELEASE}}"
+  # Declared rather than inferred, so Artifact Hub scans the image this chart
+  # actually deploys. The release workflow waits for this tag to be pullable
+  # before publishing the chart -- a chart that names an image the registry does
+  # not have yet fails scanning with "image not found".
+  artifacthub.io/images: |
+    - name: manager
+      image: ghcr.io/pkizzle/dynamic-prefix-operator:{{VERSION}}
   artifacthub.io/crds: |
     - kind: DynamicPrefix
       version: v1alpha1
