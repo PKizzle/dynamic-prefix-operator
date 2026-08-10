@@ -18,8 +18,9 @@ limitations under the License.
 package prefix
 
 import (
-	"k8s.io/utils/ptr"
 	"testing"
+
+	"k8s.io/utils/ptr"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
 )

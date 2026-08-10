@@ -24,7 +24,6 @@ import (
 	"net/netip"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -382,6 +381,63 @@ func (r *PoolSyncReconciler) getMaxHistory(dp *dynamicprefixiov1alpha1.DynamicPr
 	return 2 // Default
 }
 
+// buildModeConfigs builds the configurations for one named address range or
+// subnet: the current prefix first, then one per historical prefix.
+//
+// Address-range mode and subnet mode differ only in which spec they look up and
+// which calculation they run, so they share this. Written out twice, the two
+// copies were an invitation for a fix to land in one of them -- which is how
+// MetalLB came to spend a release with a defect the other backends had already
+// had fixed.
+func buildModeConfigs[S any](
+	ctx context.Context,
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	kind, name string,
+	maxHistory int,
+	findSpec func(*dynamicprefixiov1alpha1.DynamicPrefix, string) *S,
+	findInStatus func(*dynamicprefixiov1alpha1.DynamicPrefix, string) *poolConfiguration,
+	calculate func(basePrefix string, spec *S) (poolConfiguration, error),
+) ([]poolConfiguration, error) {
+	log := logf.FromContext(ctx)
+	var configs []poolConfiguration
+
+	spec := findSpec(dp, name)
+
+	// Prefer what status already resolved; fall back to calculating it.
+	currentConfig := findInStatus(dp, name)
+	if currentConfig == nil {
+		if spec == nil {
+			return nil, fmt.Errorf("%s %q not found in status or spec", kind, name)
+		}
+		calculated, err := calculate(dp.Status.CurrentPrefix, spec)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calculate %s for current prefix: %w", kind, err)
+		}
+		currentConfig = &calculated
+	}
+	configs = append(configs, *currentConfig)
+
+	if spec == nil {
+		return configs, nil
+	}
+
+	for i, histEntry := range dp.Status.History {
+		if i >= maxHistory {
+			break
+		}
+		histConfig, err := calculate(histEntry.Prefix, spec)
+		if err != nil {
+			// One unusable historical prefix must not cost the current one.
+			log.V(1).Info("Failed to calculate configuration for historical prefix",
+				"kind", kind, "prefix", histEntry.Prefix, "error", err.Error())
+			continue
+		}
+		configs = append(configs, histConfig)
+	}
+
+	return configs, nil
+}
+
 // buildAddressRangeConfigs builds configurations for address range mode.
 func (r *PoolSyncReconciler) buildAddressRangeConfigs(
 	ctx context.Context,
@@ -389,43 +445,8 @@ func (r *PoolSyncReconciler) buildAddressRangeConfigs(
 	addressRangeName string,
 	maxHistory int,
 ) ([]poolConfiguration, error) {
-	log := logf.FromContext(ctx)
-	var configs []poolConfiguration
-
-	// Find the address range spec
-	rangeSpec := r.findAddressRangeSpec(dp, addressRangeName)
-
-	// Get current config from status or calculate from spec
-	currentConfig := r.findAddressRangeInStatus(dp, addressRangeName)
-	if currentConfig == nil {
-		if rangeSpec == nil {
-			return nil, fmt.Errorf("address range %q not found in status or spec", addressRangeName)
-		}
-		calculated, err := r.calculateAddressRangeConfig(dp.Status.CurrentPrefix, rangeSpec)
-		if err != nil {
-			return nil, fmt.Errorf("failed to calculate address range for current prefix: %w", err)
-		}
-		currentConfig = &calculated
-	}
-	configs = append(configs, *currentConfig)
-
-	// Calculate for historical prefixes
-	if rangeSpec != nil {
-		for i, histEntry := range dp.Status.History {
-			if i >= maxHistory {
-				break
-			}
-			histConfig, err := r.calculateAddressRangeConfig(histEntry.Prefix, rangeSpec)
-			if err != nil {
-				log.V(1).Info("Failed to calculate address range for historical prefix",
-					"prefix", histEntry.Prefix, "error", err.Error())
-				continue
-			}
-			configs = append(configs, histConfig)
-		}
-	}
-
-	return configs, nil
+	return buildModeConfigs(ctx, dp, "address range", addressRangeName, maxHistory,
+		r.findAddressRangeSpec, r.findAddressRangeInStatus, r.calculateAddressRangeConfig)
 }
 
 // buildSubnetConfigs builds configurations for subnet mode.
@@ -435,43 +456,8 @@ func (r *PoolSyncReconciler) buildSubnetConfigs(
 	subnetName string,
 	maxHistory int,
 ) ([]poolConfiguration, error) {
-	log := logf.FromContext(ctx)
-	var configs []poolConfiguration
-
-	// Find the subnet spec
-	subnetSpec := r.findSubnetSpec(dp, subnetName)
-
-	// Get current config from status or calculate from spec
-	currentConfig := r.findSubnetInStatus(dp, subnetName)
-	if currentConfig == nil {
-		if subnetSpec == nil {
-			return nil, fmt.Errorf("subnet %q not found in status or spec", subnetName)
-		}
-		calculated, err := r.calculateSubnetConfig(dp.Status.CurrentPrefix, subnetSpec)
-		if err != nil {
-			return nil, fmt.Errorf("failed to calculate subnet for current prefix: %w", err)
-		}
-		currentConfig = &calculated
-	}
-	configs = append(configs, *currentConfig)
-
-	// Calculate for historical prefixes
-	if subnetSpec != nil {
-		for i, histEntry := range dp.Status.History {
-			if i >= maxHistory {
-				break
-			}
-			histConfig, err := r.calculateSubnetConfig(histEntry.Prefix, subnetSpec)
-			if err != nil {
-				log.V(1).Info("Failed to calculate subnet for historical prefix",
-					"prefix", histEntry.Prefix, "error", err.Error())
-				continue
-			}
-			configs = append(configs, histConfig)
-		}
-	}
-
-	return configs, nil
+	return buildModeConfigs(ctx, dp, "subnet", subnetName, maxHistory,
+		r.findSubnetSpec, r.findSubnetInStatus, r.calculateSubnetConfig)
 }
 
 // buildRawPrefixConfigs builds configurations using raw prefixes (no address range or subnet).
@@ -619,212 +605,59 @@ func (r *PoolSyncReconciler) calculateSubnetConfig(
 // Existing blocks that are not within the operator's managed prefixes (IPv4 blocks,
 // static IPv6 blocks from other prefixes) are preserved.
 func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
-	log := logf.FromContext(ctx)
+	record := parseOwnershipRecord(recordFor(pool, AnnotationManagedBlocks))
 
-	// Preserve existing blocks that are NOT within managed prefixes.
-	// This includes IPv4 blocks, static IPv6 blocks, and any other blocks
-	// that the operator should not touch.
-	// A swallowed error here reads back as "no blocks", and the write below
-	// replaces spec.blocks wholesale -- destroying exactly the unmanaged
-	// entries this preservation pass exists to protect.
-	existingBlocks, _, err := unstructured.NestedSlice(pool.Object, "spec", "blocks")
-	if err != nil {
-		return false, fmt.Errorf("failed to read spec.blocks: %w", err)
-	}
-
-	recordValue, recordExists := pool.GetAnnotations()[AnnotationManagedBlocks]
-	record := parseOwnershipRecord(recordValue, recordExists)
-
-	// Build the blocks this pass claims first, so their keys can suppress any
-	// duplicate sitting in the existing list.
-	// CiliumLoadBalancerIPPool spec.blocks is a list of IP blocks
-	// Format can be either:
-	// - spec.blocks[].cidr for CIDR-based allocation
-	// - spec.blocks[].start + spec.blocks[].stop for address range (Cilium uses "stop" not "end")
-	configBlocks := make([]interface{}, 0, len(configs))
-	configKeys := make(map[string]struct{}, len(configs))
+	// spec.blocks entries are objects: either a cidr, or a start/stop pair
+	// (Cilium spells the upper bound "stop", not "end").
+	desired := make([]ownedEntry, 0, len(configs))
 	for _, config := range configs {
-		var block map[string]interface{}
+		block := map[string]interface{}{"cidr": config.cidr}
 		if config.useAddressRange && config.start != "" && config.end != "" {
-			// Use start/stop for precise address range (Mode 1)
-			block = map[string]interface{}{
-				"start": config.start,
-				"stop":  config.end,
+			block = map[string]interface{}{"start": config.start, "stop": config.end}
+		}
+		desired = append(desired, ownedEntry{value: block, key: blockKey(block)})
+	}
+
+	return syncOwnedList(ctx, r, pool, ownedListSync{
+		fields:    []string{"spec", "blocks"},
+		recordKey: AnnotationManagedBlocks,
+		desired:   desired,
+		keyOf:     blockKeyOf,
+		owned: func(existing interface{}) bool {
+			block, ok := existing.(map[string]interface{})
+			if !ok {
+				// Not a shape this backend writes, so not the operator's.
+				return false
 			}
-		} else {
-			// Use CIDR (Mode 2 or fallback)
-			block = map[string]interface{}{
-				"cidr": config.cidr,
-			}
-		}
-		key := blockKey(block)
-		if key == "" {
-			// Refuse to write what cannot be recorded. An unkeyable block could
-			// never be recognised as the operator's on a later pass, so it would
-			// be preserved as a user's entry and a fresh copy appended every
-			// reconcile -- reintroducing precisely the unbounded growth the
-			// ownership record exists to stop.
-			log.Error(nil, "Skipping pool block with no usable identity", "pool", pool.GetName(), "block", block)
-			continue
-		}
-		if _, dup := configKeys[key]; dup {
-			continue
-		}
-		configKeys[key] = struct{}{}
-		configBlocks = append(configBlocks, block)
-	}
-
-	var preservedBlocks []interface{}
-	preservedKeys := make(map[string]struct{}, len(existingBlocks))
-	for _, b := range existingBlocks {
-		block, ok := b.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if isOwnedBlock(block, record, managedPrefixes) {
-			continue
-		}
-		preservedBlocks = append(preservedBlocks, block)
-		if key := blockKey(block); key != "" {
-			preservedKeys[key] = struct{}{}
-		}
-	}
-	if len(preservedBlocks) > 0 {
-		log.V(1).Info("Preserving unmanaged blocks in pool", "count", len(preservedBlocks))
-	}
-
-	// Anything already present and unowned belongs to the user, even where it
-	// coincides with a block this pass would write. Keep their copy, skip ours,
-	// and leave it out of the record -- claiming it would hand the operator the
-	// right to delete it once the prefix rotates out of range, turning a pin into
-	// a time bomb.
-	blocks := make([]interface{}, 0, len(preservedBlocks)+len(configBlocks))
-	blocks = append(blocks, preservedBlocks...)
-	managedKeys := make([]string, 0, len(configBlocks))
-	for _, b := range configBlocks {
-		key := blockKey(b.(map[string]interface{}))
-		if _, pinned := preservedKeys[key]; pinned {
-			continue
-		}
-		blocks = append(blocks, b)
-		managedKeys = append(managedKeys, key)
-	}
-
-	// Check if blocks actually changed before updating to avoid feedback loops
-	currentBlocks, _, err := unstructured.NestedSlice(pool.Object, "spec", "blocks")
-	if err != nil {
-		return false, fmt.Errorf("failed to read current spec.blocks: %w", err)
-	}
-	managedBlocksStr := formatOwnershipRecord(managedKeys)
-	blocksChanged := !equality.Semantic.DeepEqual(currentBlocks, blocks)
-	recordChanged := recordValue != managedBlocksStr || !recordExists
-
-	// The record must be written even when the block list is byte-identical:
-	// the first pass after an upgrade usually produces the same blocks, and
-	// without persisting the record the next rotation would fall back to the
-	// leaky geometric test all over again.
-	if !blocksChanged && !recordChanged {
-		log.V(2).Info("Pool blocks unchanged, skipping update", "pool", pool.GetName())
-		return false, nil
-	}
-
-	if blocksChanged {
-		if err := unstructured.SetNestedField(pool.Object, blocks, "spec", "blocks"); err != nil {
-			return false, fmt.Errorf("failed to set spec.blocks: %w", err)
-		}
-	}
-
-	setPoolAnnotation(pool, AnnotationManagedBlocks, managedBlocksStr)
-
-	// Update last-sync annotation
-	r.setLastSyncAnnotation(pool)
-
-	return true, r.Update(ctx, pool)
+			return isOwnedBlock(block, record, managedPrefixes)
+		},
+	})
 }
 
 // updateCIDRGroup updates a CiliumCIDRGroup with the new CIDRs.
 // Multiple CIDRs are added for current prefix plus historical prefixes.
 // Existing CIDRs that are not within managed prefixes are preserved.
 func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
-	log := logf.FromContext(ctx)
+	record := parseOwnershipRecord(recordFor(pool, AnnotationManagedCIDRs))
 
-	// Preserve existing CIDRs that are not within managed prefixes
-	// As with spec.blocks: an ignored error here silently drops the
-	// unmanaged CIDRs that the write below would otherwise preserve.
-	existingCIDRs, _, err := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
-	if err != nil {
-		return false, fmt.Errorf("failed to read spec.externalCIDRs: %w", err)
-	}
-	recordValue, recordExists := pool.GetAnnotations()[AnnotationManagedCIDRs]
-	record := parseOwnershipRecord(recordValue, recordExists)
-
-	configCIDRs := make([]string, 0, len(configs))
-	seenConfig := make(map[string]struct{}, len(configs))
+	desired := make([]ownedEntry, 0, len(configs))
 	for _, config := range configs {
-		key := canonicalEntry(config.cidr)
-		if key == "" {
-			continue
-		}
-		if _, dup := seenConfig[key]; dup {
-			continue
-		}
-		seenConfig[key] = struct{}{}
-		configCIDRs = append(configCIDRs, config.cidr)
+		desired = append(desired, ownedEntry{value: config.cidr, key: canonicalEntry(config.cidr)})
 	}
 
-	var preserved []interface{}
-	preservedKeys := make(map[string]struct{}, len(existingCIDRs))
-	for _, c := range existingCIDRs {
-		cidrStr, ok := c.(string)
-		if !ok {
-			continue
-		}
-		if isOwnedCIDR(cidrStr, record, managedPrefixes) {
-			continue
-		}
-		preserved = append(preserved, c)
-		preservedKeys[canonicalEntry(cidrStr)] = struct{}{}
-	}
-
-	// A CIDR the user already pinned stays theirs even where it coincides with one
-	// this pass would write; see updateLoadBalancerIPPool for why claiming it would
-	// make the pin deletable later.
-	externalCIDRs := make([]interface{}, 0, len(preserved)+len(configCIDRs))
-	externalCIDRs = append(externalCIDRs, preserved...)
-	managedCIDRs := make([]string, 0, len(configCIDRs))
-	for _, cidr := range configCIDRs {
-		if _, pinned := preservedKeys[canonicalEntry(cidr)]; pinned {
-			continue
-		}
-		externalCIDRs = append(externalCIDRs, cidr)
-		managedCIDRs = append(managedCIDRs, cidr)
-	}
-
-	// Check if CIDRs actually changed before updating to avoid feedback loops
-	currentCIDRs, _, err := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
-	if err != nil {
-		return false, fmt.Errorf("failed to read current spec.externalCIDRs: %w", err)
-	}
-	managedCIDRsStr := formatOwnershipRecord(managedCIDRs)
-	cidrsChanged := !equality.Semantic.DeepEqual(currentCIDRs, externalCIDRs)
-	recordChanged := recordValue != managedCIDRsStr || !recordExists
-
-	// As in updateLoadBalancerIPPool: persist the record even when the CIDR list
-	// is unchanged, otherwise the next rotation falls back to the geometric test.
-	if !cidrsChanged && !recordChanged {
-		log.V(2).Info("CIDRGroup unchanged, skipping update", "cidrGroup", pool.GetName())
-		return false, nil
-	}
-	setPoolAnnotation(pool, AnnotationManagedCIDRs, managedCIDRsStr)
-
-	if err := unstructured.SetNestedField(pool.Object, externalCIDRs, "spec", "externalCIDRs"); err != nil {
-		return false, fmt.Errorf("failed to set spec.externalCIDRs: %w", err)
-	}
-
-	// Update last-sync annotation
-	r.setLastSyncAnnotation(pool)
-
-	return true, r.Update(ctx, pool)
+	return syncOwnedList(ctx, r, pool, ownedListSync{
+		fields:    []string{"spec", "externalCIDRs"},
+		recordKey: AnnotationManagedCIDRs,
+		desired:   desired,
+		keyOf:     func(existing interface{}) string { return canonicalEntry(stringKeyOf(existing)) },
+		owned: func(existing interface{}) bool {
+			cidr, ok := existing.(string)
+			if !ok {
+				return false
+			}
+			return isOwnedCIDR(cidr, record, managedPrefixes)
+		},
+	})
 }
 
 // setLastSyncAnnotation sets the last-sync annotation to the current timestamp.

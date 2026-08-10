@@ -394,14 +394,14 @@ func (r *DynamicPrefixReconciler) getOrCreateReceiver(ctx context.Context, dp *d
 // otherwise reconcile on every renewal for no state change. Everything that can
 // alter the prefix, or report that acquisition is failing, wakes the controller
 // immediately.
-func (r *DynamicPrefixReconciler) forwardPrefixEvents(ctx context.Context, name string, events <-chan prefix.Event) {
+func (r *DynamicPrefixReconciler) forwardPrefixEvents(ctx context.Context, name string, received <-chan prefix.Event) {
 	log := logf.Log.WithName("dynamicprefix").WithValues("name", name)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-events:
+		case ev, ok := <-received:
 			if !ok {
 				return
 			}

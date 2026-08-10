@@ -18,10 +18,11 @@ package prefix
 
 import (
 	"context"
-	"k8s.io/utils/ptr"
 	"net/netip"
 	"testing"
 	"time"
+
+	"k8s.io/utils/ptr"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
 )

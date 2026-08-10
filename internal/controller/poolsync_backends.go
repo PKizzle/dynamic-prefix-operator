@@ -27,7 +27,6 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -167,38 +166,15 @@ func (b metalLBIPAddressPoolBackend) gvk() schema.GroupVersionKind {
 // MetalLB IPAddressPool lives in a namespace (metallb-system by default).
 func (b metalLBIPAddressPoolBackend) namespaced() bool { return true }
 func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
-	logger := log.FromContext(ctx)
-
-	existingAddresses, _, err := unstructured.NestedStringSlice(pool.Object, "spec", "addresses")
-	if err != nil {
-		return false, fmt.Errorf("failed to read spec.addresses: %w", err)
-	}
-
 	// spec.addresses is shared with the user exactly like the Cilium fields are,
 	// so it needs the same ownership record. Deciding by address geometry alone
 	// loses track of an entry the moment its prefix ages out of history, after
 	// which the entry is preserved as though the user had written it and a fresh
 	// one is appended alongside -- one leaked address per rotation, forever.
-	recordValue, recordExists := pool.GetAnnotations()[AnnotationManagedAddresses]
-	record := parseOwnershipRecord(recordValue, recordExists)
+	record := parseOwnershipRecord(recordFor(pool, AnnotationManagedAddresses))
 
-	preserved := make([]string, 0, len(existingAddresses))
-	preservedKeys := make(map[string]struct{}, len(existingAddresses))
-	for _, address := range existingAddresses {
-		if isOwnedAddressEntry(address, record, managedPrefixes) {
-			continue
-		}
-		preserved = append(preserved, address)
-		preservedKeys[canonicalAddressEntry(address)] = struct{}{}
-	}
-	if len(preserved) > 0 {
-		logger.V(1).Info("Preserving unmanaged MetalLB addresses", "count", len(preserved))
-	}
-
-	addresses := make([]string, 0, len(preserved)+len(configs))
-	addresses = append(addresses, preserved...)
-	managedAddresses := make([]string, 0, len(configs))
-	seen := make(map[string]struct{}, len(configs))
+	// MetalLB entries are either "start-end" or a CIDR.
+	desired := make([]ownedEntry, 0, len(configs))
 	for _, config := range configs {
 		entry := config.cidr
 		if config.useAddressRange && config.start != "" && config.end != "" {
@@ -207,44 +183,22 @@ func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReco
 		if entry == "" {
 			continue
 		}
-		key := canonicalAddressEntry(entry)
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
-		// Leave a user's pre-existing pin as theirs rather than claiming it.
-		if _, pinned := preservedKeys[key]; pinned {
-			continue
-		}
-		addresses = append(addresses, entry)
-		managedAddresses = append(managedAddresses, entry)
+		desired = append(desired, ownedEntry{value: entry, key: canonicalAddressEntry(entry)})
 	}
 
-	currentAddresses, _, err := unstructured.NestedStringSlice(pool.Object, "spec", "addresses")
-	if err != nil {
-		return false, fmt.Errorf("failed to read current spec.addresses: %w", err)
-	}
-	managedAddressesStr := formatOwnershipRecord(managedAddresses)
-	addressesChanged := !equality.Semantic.DeepEqual(currentAddresses, addresses)
-	recordChanged := recordValue != managedAddressesStr || !recordExists
-
-	// Persist the record even when the address list is byte-identical, or the
-	// first pass after an upgrade leaves nothing behind and the next rotation
-	// falls back to the geometric test again.
-	if !addressesChanged && !recordChanged {
-		logger.V(2).Info("MetalLB IPAddressPool addresses unchanged, skipping update", "pool", pool.GetName())
-		return false, nil
-	}
-
-	if addressesChanged {
-		if err := unstructured.SetNestedStringSlice(pool.Object, addresses, "spec", "addresses"); err != nil {
-			return false, fmt.Errorf("failed to set spec.addresses: %w", err)
-		}
-	}
-
-	setPoolAnnotation(pool, AnnotationManagedAddresses, managedAddressesStr)
-	r.setLastSyncAnnotation(pool)
-	return true, r.Update(ctx, pool)
+	return syncOwnedList(ctx, r, pool, ownedListSync{
+		fields:    []string{"spec", "addresses"},
+		recordKey: AnnotationManagedAddresses,
+		desired:   desired,
+		keyOf:     func(existing interface{}) string { return canonicalAddressEntry(stringKeyOf(existing)) },
+		owned: func(existing interface{}) bool {
+			address, ok := existing.(string)
+			if !ok {
+				return false
+			}
+			return isOwnedAddressEntry(address, record, managedPrefixes)
+		},
+	})
 }
 
 func (b metalLBIPAddressPoolBackend) release(_ context.Context, _ *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {

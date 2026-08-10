@@ -151,8 +151,21 @@ Operator                        Upstream Router
 
 **Reconciliation Triggers:**
 - DynamicPrefix create/update/delete
-- Prefix change from receiver
-- Lease expiry approaching (if DHCPv6-PD)
+- Prefix change from receiver, pushed through a `source.Channel`: each receiver's
+  event channel is drained by a forwarder goroutine that enqueues the owning
+  DynamicPrefix. Renewals are not forwarded — they move only the lease expiry,
+  which the periodic requeue already refreshes.
+- Lease expiry approaching (if DHCPv6-PD), and a periodic requeue capped at five
+  minutes as a backstop behind the push path
+
+**Ownership and release:** everything the operator writes into a field it shares
+with the user is recorded in a `dynamic-prefix.io/managed-*` annotation, and only
+recorded entries are ever removed — ownership is never inferred from the shape of
+an address. An object leaves the operator's care by three routes (its binding
+annotation is removed, its DynamicPrefix is deleted, or HA mode is switched off);
+all three release what was written rather than abandoning it. Calico is the one
+backend whose field cannot hold a draining prefix, so its history is expressed as
+sibling IPPools that the operator creates and deletes wholesale.
 
 #### Pool Sync Controller
 

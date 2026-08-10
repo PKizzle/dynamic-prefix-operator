@@ -33,9 +33,16 @@ linters:
           - lll
         path: api/*
       - linters:
-          - dupl
           - lll
         path: internal/*
+      # dupl stays off for tests, where near-identical table cases and fixtures
+      # are the point. It is on for production code: the three pool backends
+      # each carried their own copy of the same shared-list sync, and the copies
+      # drifted -- MetalLB spent a release deciding ownership geometrically
+      # after the others had moved to records, leaking an address per rotation.
+      - linters:
+          - dupl
+        path: _test\.go$
     paths:
       - third_party$
       - builtin$
