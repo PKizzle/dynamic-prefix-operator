@@ -203,6 +203,119 @@ func TestIsLinkLocal(t *testing.T) {
 	}
 }
 
+// TestRAReceiver_rejectRouterAdvertisement covers the two receive-side checks
+// RFC 4861 section 6.1.2 mandates. Without them the prefix every address in the
+// cluster derives from is decided by whatever Router Advertisement arrived last,
+// from any source, forwarded or not.
+func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
+	const (
+		linkLocal = "fe80::1"
+		global    = "2001:db8::1"
+	)
+
+	tests := []struct {
+		name           string
+		from           string
+		cm             *ipv6.ControlMessage
+		verifyHopLimit bool
+		wantRejected   bool
+	}{
+		{
+			name:           "a link-local router at hop limit 255 is accepted",
+			from:           linkLocal,
+			cm:             &ipv6.ControlMessage{HopLimit: 255},
+			verifyHopLimit: true,
+		},
+		{
+			name:           "a globally routable source is not a router on this link",
+			from:           global,
+			cm:             &ipv6.ControlMessage{HopLimit: 255},
+			verifyHopLimit: true,
+			wantRejected:   true,
+		},
+		{
+			name:           "a unique-local source is rejected too",
+			from:           "fd00::1",
+			cm:             &ipv6.ControlMessage{HopLimit: 255},
+			verifyHopLimit: true,
+			wantRejected:   true,
+		},
+		{
+			// A forwarding router must decrement the hop limit, so anything below
+			// 255 reached us from off-link.
+			name:           "a decremented hop limit means the packet was forwarded",
+			from:           linkLocal,
+			cm:             &ipv6.ControlMessage{HopLimit: 64},
+			verifyHopLimit: true,
+			wantRejected:   true,
+		},
+		{
+			name:           "a missing control message cannot be verified",
+			from:           linkLocal,
+			cm:             nil,
+			verifyHopLimit: true,
+			wantRejected:   true,
+		},
+		{
+			// When the socket refused to report hop limits the receiver still
+			// runs on the source check alone rather than dropping everything.
+			name:           "hop limit is not enforced when the socket cannot report it",
+			from:           linkLocal,
+			cm:             nil,
+			verifyHopLimit: false,
+		},
+		{
+			name:           "the source check still applies without hop-limit reporting",
+			from:           global,
+			cm:             nil,
+			verifyHopLimit: false,
+			wantRejected:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &RAReceiver{verifyHopLimit: tt.verifyHopLimit}
+			reason := r.rejectRouterAdvertisement(netip.MustParseAddr(tt.from), tt.cm)
+			if rejected := reason != ""; rejected != tt.wantRejected {
+				t.Errorf("rejectRouterAdvertisement(%s) rejected = %v (%q), want %v",
+					tt.from, rejected, reason, tt.wantRejected)
+			}
+		})
+	}
+}
+
+// TestRAReceiver_StartDegradesWithoutHopLimitReporting pins the fallback: a
+// socket that will not report hop limits must leave the receiver running on the
+// source check rather than failing to start, because a receiver that does not
+// start acquires no prefix at all.
+func TestRAReceiver_StartDegradesWithoutHopLimitReporting(t *testing.T) {
+	// The loopback interface is named lo on Linux and lo0 on macOS; Start only
+	// needs a name it can resolve, since the listener itself is faked.
+	interfaces, err := net.Interfaces()
+	if err != nil || len(interfaces) == 0 {
+		t.Skipf("no network interfaces available: %v", err)
+	}
+
+	conn := &fakeNDPConn{controlMessageErr: errors.New("not supported")}
+	r := NewRAReceiver(interfaces[0].Name)
+	r.listen = func(*net.Interface, ndp.Addr) (ndpConn, netip.Addr, error) {
+		return conn, netip.MustParseAddr("fe80::1"), nil
+	}
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v, want the receiver to start anyway", err)
+	}
+	t.Cleanup(func() { _ = r.Stop() })
+
+	if r.verifyHopLimit {
+		t.Error("expected hop-limit verification to be disabled after the socket refused it")
+	}
+	if reason := r.rejectRouterAdvertisement(netip.MustParseAddr("fe80::1"), nil); reason != "" {
+		t.Errorf("expected a link-local advertisement to be accepted without hop-limit reporting, got %q", reason)
+	}
+}
+
 func TestRAReceiverSource(t *testing.T) {
 	r := NewRAReceiver("eth0")
 	if r.Source() != SourceRouterAdvertisement {
@@ -472,15 +585,29 @@ func testRouterAdvertisement() *ndp.RouterAdvertisement {
 }
 
 type fakeNDPConn struct {
-	mu             sync.Mutex
-	messages       []ndp.Message
-	destinations   []netip.Addr
-	writeDeadlines []time.Time
-	writeErr       error
-	afterWrite     func()
+	mu                    sync.Mutex
+	messages              []ndp.Message
+	destinations          []netip.Addr
+	writeDeadlines        []time.Time
+	writeErr              error
+	afterWrite            func()
+	controlMessageErr     error
+	controlMessageEnabled ipv6.ControlFlags
 }
 
 func (c *fakeNDPConn) Close() error { return nil }
+
+func (c *fakeNDPConn) SetControlMessage(cf ipv6.ControlFlags, on bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.controlMessageErr != nil {
+		return c.controlMessageErr
+	}
+	if on {
+		c.controlMessageEnabled |= cf
+	}
+	return nil
+}
 
 func (c *fakeNDPConn) ReadFrom() (ndp.Message, *ipv6.ControlMessage, netip.Addr, error) {
 	return nil, nil, netip.Addr{}, errors.New("not implemented")

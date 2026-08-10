@@ -473,7 +473,14 @@ func (r *DHCPv6PDReceiver) processIAPDReply(reply *dhcpv6.Message, expectedIAID 
 	// Find IA_PD option
 	var iaPD *dhcpv6.OptIAPD
 	for _, opt := range reply.Options.Get(dhcpv6.OptionIAPD) {
-		pd := opt.(*dhcpv6.OptIAPD)
+		// Comma-ok, not a bare assertion: this is remote input being typed inside
+		// a goroutine with no recover, so a decoder that ever hands back a
+		// generic option here would take the process down rather than skip a
+		// malformed reply.
+		pd, ok := opt.(*dhcpv6.OptIAPD)
+		if !ok {
+			continue
+		}
 		if pd.IaId == expectedIAID {
 			iaPD = pd
 			break

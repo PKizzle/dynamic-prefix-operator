@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -43,6 +44,7 @@ var allRoutersMulticast = netip.MustParseAddr("ff02::2")
 type ndpConn interface {
 	Close() error
 	ReadFrom() (ndp.Message, *ipv6.ControlMessage, netip.Addr, error)
+	SetControlMessage(cf ipv6.ControlFlags, on bool) error
 	SetReadDeadline(t time.Time) error
 	SetWriteDeadline(t time.Time) error
 	WriteTo(m ndp.Message, cm *ipv6.ControlMessage, dst netip.Addr) error
@@ -71,6 +73,13 @@ type RAReceiver struct {
 	maxRouterSolicitations     int
 	routerSolicitationInterval time.Duration
 	requireGlobalUnicast       bool
+	// verifyHopLimit records whether the socket agreed to report each packet's
+	// hop limit. Set during Start, read only by the receive loop it starts.
+	verifyHopLimit bool
+	// rejected counts advertisements dropped by the RFC 4861 source and hop-limit
+	// checks. A flood is a plausible way to attack the log, so the drops are
+	// counted and summarised rather than logged one for one.
+	rejected uint64
 }
 
 // NewRAReceiver creates a new Router Advertisement receiver for the given
@@ -131,6 +140,22 @@ func (r *RAReceiver) Start(ctx context.Context) error {
 	}
 
 	log.V(1).Info("NDP listener started", "interface", r.iface, "localAddr", addr.String())
+
+	// RFC 4861 section 6.1.2 requires a received Router Advertisement to carry a
+	// hop limit of 255, which is what makes an RA unforgeable from off-link: a
+	// router cannot forward a packet without decrementing it. Checking that needs
+	// the hop limit to be delivered alongside each packet.
+	//
+	// If the socket will not report it the receiver still runs, because the source
+	// check below is the more important of the two and a receiver that refuses to
+	// start acquires no prefix at all -- but it says so, once, rather than leaving
+	// the impression that both checks are in force.
+	r.verifyHopLimit = true
+	if err := conn.SetControlMessage(ipv6.FlagHopLimit, true); err != nil {
+		r.verifyHopLimit = false
+		log.Info("Could not enable hop-limit reporting; Router Advertisements will be accepted without the RFC 4861 hop-limit check",
+			"interface", r.iface, "error", err.Error())
+	}
 
 	r.conn = conn
 	r.ctx, r.cancel = context.WithCancel(ctx)
@@ -240,7 +265,7 @@ func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}) {
 			continue
 		}
 
-		msg, _, from, err := r.conn.ReadFrom()
+		msg, cm, from, err := r.conn.ReadFrom()
 		if err != nil {
 			// Timeout is expected, just continue
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -268,6 +293,20 @@ func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}) {
 		if !ok {
 			// Not a Router Advertisement, ignore
 			log.V(2).Info("Ignoring non-RA message", "type", fmt.Sprintf("%T", msg))
+			continue
+		}
+
+		if reason := r.rejectRouterAdvertisement(from, cm); reason != "" {
+			count := atomic.AddUint64(&r.rejected, 1)
+			// One line per packet would hand anyone on the link a way to fill the
+			// node's disk, so the drops are counted and reported on a curve.
+			if count == 1 || count%100 == 0 {
+				log.Info("Ignoring Router Advertisement that fails RFC 4861 validation",
+					"interface", r.iface, "from", from, "reason", reason, "rejectedTotal", count)
+			} else {
+				log.V(1).Info("Ignoring Router Advertisement that fails RFC 4861 validation",
+					"interface", r.iface, "from", from, "reason", reason)
+			}
 			continue
 		}
 
@@ -362,6 +401,40 @@ func (r *RAReceiver) sendRouterSolicitation(hwAddr net.HardwareAddr) error {
 	return nil
 }
 
+// rejectRouterAdvertisement applies the two receive-side checks RFC 4861
+// section 6.1.2 requires of a Router Advertisement, returning why it must be
+// discarded or "" if it may be processed.
+//
+// Neither this package nor mdlayher/ndp performed them before, which left the
+// prefix the whole cluster derives its addresses from decided by whatever RA
+// arrived last -- from anywhere, including off-link. They are not a complete
+// defence: an attacker with access to the link can still forge a compliant RA,
+// which is inherent to taking delegation from Router Advertisements at all. What
+// they do is restore the floor every conforming NDP implementation provides,
+// and rule out the remote attacker entirely.
+//
+//   - The source must be link-local. A router advertises from fe80::/10, and an
+//     RA from a routable address is either misconfigured or spoofed.
+//   - The hop limit must be 255. Since a forwarding router must decrement it,
+//     receiving 255 proves the packet was never forwarded, i.e. originated on
+//     this link.
+func (r *RAReceiver) rejectRouterAdvertisement(from netip.Addr, cm *ipv6.ControlMessage) string {
+	if !isLinkLocal(from) {
+		return "source address is not link-local"
+	}
+
+	if !r.verifyHopLimit {
+		return ""
+	}
+	if cm == nil {
+		return "hop limit was not reported for this packet"
+	}
+	if cm.HopLimit != ndp.HopLimit {
+		return fmt.Sprintf("hop limit is %d, not %d, so the packet was forwarded", cm.HopLimit, ndp.HopLimit)
+	}
+	return ""
+}
+
 // handleRouterAdvertisement processes a received Router Advertisement.
 func (r *RAReceiver) handleRouterAdvertisement(ra *ndp.RouterAdvertisement) {
 	log := logf.Log.WithName("ra-receiver")
@@ -429,7 +502,11 @@ func (r *RAReceiver) handleRouterAdvertisement(ra *ndp.RouterAdvertisement) {
 	}
 
 	if bestPrefix == nil {
-		log.Info("No suitable prefix found in Router Advertisement")
+		// V(1): a link that advertises a prefix this receiver does not accept
+		// does so on every advertisement, so at level 0 an ordinary router
+		// several times a minute -- or an attacker at will -- writes an
+		// unbounded number of identical lines.
+		log.V(1).Info("No suitable prefix found in Router Advertisement")
 		return
 	}
 
@@ -439,7 +516,7 @@ func (r *RAReceiver) handleRouterAdvertisement(ra *ndp.RouterAdvertisement) {
 	// present in the advertisement would leak into status and into the
 	// change-detection comparison below.
 	if int(bestPrefix.PrefixLength) > netip.MustParseAddr("::").BitLen() {
-		log.Info("Ignoring Router Advertisement prefix with an out-of-range length",
+		log.V(1).Info("Ignoring Router Advertisement prefix with an out-of-range length",
 			"prefixLength", bestPrefix.PrefixLength)
 		return
 	}

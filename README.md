@@ -461,6 +461,22 @@ value, the resource reports `PrefixAcquired=False` with reason `PrefixRejected`,
 and a warning event explains why. Set the field to `false` only when the prefix
 being tracked is deliberately not global unicast.
 
+### What an advertisement has to satisfy
+
+Router Advertisements are validated as RFC 4861 §6.1.2 requires before anything
+in them is believed: the source address must be link-local, and the hop limit
+must be 255. The second is what makes an RA unforgeable from off-link — a router
+that forwards a packet must decrement the hop limit, so 255 on arrival proves the
+packet originated on this link. Advertisements failing either check are counted
+and dropped.
+
+**This does not make RA-based delegation a trusted channel.** Anyone with access
+to the link can still send a conforming advertisement and move the prefix; that is
+inherent to taking delegation from Router Advertisements, and the same exposure
+every SLAAC host on the link has. The checks restore the floor that a conforming
+NDP implementation provides and rule out remote sources. If the link is not
+trusted, use RA Guard on the switch, or DHCPv6-PD instead.
+
 ## Supported Resources
 
 - **CiliumLoadBalancerIPPool** — for Cilium LB-IPAM (`spec.blocks` with start/stop)
