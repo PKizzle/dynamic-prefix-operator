@@ -29,23 +29,24 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # Done in shell rather than with a third-party action: this job holds
+      # packages:write, and lowercasing a string is not worth an external
+      # dependency inside it.
       - name: Convert repository name to lowercase
         id: image_name
-        uses: ASzc/change-string-case-action@v6
-        with:
-          string: ${{ github.repository }}
+        run: echo "lowercase=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.9.0
 
       - name: Log in to Container Registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -59,7 +60,7 @@ jobs:
 
       - name: Extract metadata (tags, labels)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.9.0
         with:
           images: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.lowercase }}
           # Suffix tags with architecture for per-arch pulls
@@ -74,7 +75,7 @@ jobs:
 
       - name: Build and push Docker image
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
@@ -83,6 +84,11 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
           platforms: ${{ matrix.platform }}
+          # Left off here on purpose. These are per-platform builds whose
+          # digests are merged into one index by `imagetools create` below, and
+          # that merge carries image manifests only -- buildx attestations would
+          # be built and then dropped. The published tags are signed and given
+          # an SBOM after the merge instead, where both survive.
           provenance: false
 
       - name: Export digest
@@ -94,7 +100,7 @@ jobs:
 
       - name: Upload digest
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: digests-${{ steps.platform.outputs.short }}
           path: /tmp/digests/*
@@ -109,26 +115,30 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Keyless cosign signing exchanges this for a short-lived certificate; no
+      # signing key is stored anywhere.
+      id-token: write
 
     steps:
+      # Done in shell rather than with a third-party action: this job holds
+      # packages:write, and lowercasing a string is not worth an external
+      # dependency inside it.
       - name: Convert repository name to lowercase
         id: image_name
-        uses: ASzc/change-string-case-action@v6
-        with:
-          string: ${{ github.repository }}
+        run: echo "lowercase=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: /tmp/digests
           pattern: digests-*
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.9.0
 
       - name: Log in to Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -136,7 +146,7 @@ jobs:
 
       - name: Extract metadata for manifest
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.9.0
         with:
           images: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.lowercase }}
           tags: |
@@ -156,17 +166,21 @@ jobs:
       # under ONE tag instead of a separate `-nydus` tag. Upstream's Go tool
       # cannot do this. No release artifacts are published for the fork, so we
       # build the two binaries we need from source (cached between runs).
+      # Pinned to a commit, not the branch. This checkout is built from source
+      # and then executed in a job that holds packages:write and an
+      # authenticated GHCR session, so anyone able to push to that branch could
+      # otherwise reach this project's published images. Bump deliberately.
       - name: Check out Nydus fork
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: PKizzle/nydus
-          ref: production
+          ref: 69c678de9cab5cc5ee57f2441216141d896834f7 # production
           path: .nydus-src
 
       - name: Cache Nydus build
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: .nydus-src
 
@@ -222,3 +236,46 @@ jobs:
             done
             echo "- ${image}" >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # Everything below runs after the tags carry their final content -- the
+      # merged index plus, on a release, the nydus siblings -- so what is signed
+      # and inventoried is exactly what a user pulls.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.2
+
+      - name: Sign the published images
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          for image in "${tags[@]}"; do
+            # By digest, not by tag: signing a tag signs whatever it points at
+            # now, and the point of the signature is to bind this content.
+            digest="$(docker buildx imagetools inspect --format '{{ .Manifest.Digest }}' "$image")"
+            repository="${image%%:*}"
+            echo "Signing ${repository}@${digest}"
+            cosign sign "${repository}@${digest}"
+          done
+
+      - name: Generate and attach an SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.9.0
+        with:
+          image: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.lowercase }}:${{ steps.meta.outputs.version }}
+          format: spdx-json
+          artifact-name: sbom.spdx.json
+          upload-artifact: true
+
+      # The image is scanned as published, after the nydus attach, so the scan
+      # covers what is actually distributed. It reports rather than blocks:
+      # govulncheck already gates on reachable vulnerabilities in this module's
+      # own code, and a base-image CVE with no fix available should not make a
+      # release unpublishable.
+      - name: Scan the published image
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@1f0aa582c8c8f5f7639610d6d38baddfea4fdcee # v0.9.2
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.lowercase }}:${{ steps.meta.outputs.version }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true

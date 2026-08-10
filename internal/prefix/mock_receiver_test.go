@@ -181,7 +181,7 @@ func TestMockReceiver_SimulateError(t *testing.T) {
 		if event.Type != EventTypeFailed {
 			t.Errorf("event.Type = %s, want %s", event.Type, EventTypeFailed)
 		}
-		if event.Error != testErr {
+		if !errors.Is(event.Error, testErr) {
 			t.Errorf("event.Error = %v, want %v", event.Error, testErr)
 		}
 	case <-time.After(time.Second):

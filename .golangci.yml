@@ -4,17 +4,27 @@ run:
 linters:
   default: none
   enable:
+    - bodyclose
     - copyloopvar
     - dupl
     - errcheck
+    # errorlint: this codebase wraps errors and inspects them at boundaries, so
+    # a comparison with == against a wrapped error is a silent behaviour change.
+    - errorlint
     - ginkgolinter
     - goconst
     - gocyclo
+    # gosec: the operator parses untrusted ICMPv6 and DHCPv6 off the wire and
+    # runs with NET_RAW, which is exactly the profile this linter is for.
+    - gosec
     - govet
     - ineffassign
     - lll
     - misspell
     - nakedret
+    # nilerr: returning nil after checking an error is how this project's
+    # swallowed-error bugs looked, twice.
+    - nilerr
     - prealloc
     - revive
     - staticcheck
@@ -43,6 +53,13 @@ linters:
       - linters:
           - dupl
         path: _test\.go$
+      # gosec's subprocess and integer-conversion rules are about untrusted
+      # input reaching a shell or an overflow. Test helpers shell out to kubectl
+      # with values the test itself chose, and test fixtures build byte arrays
+      # from constants; neither is the threat this operator has.
+      - linters:
+          - gosec
+        path: (_test\.go|^test/utils/)
     paths:
       - third_party$
       - builtin$

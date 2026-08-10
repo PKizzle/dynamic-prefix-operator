@@ -19,6 +19,7 @@ package prefix
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -267,8 +268,12 @@ func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}) {
 
 		msg, cm, from, err := r.conn.ReadFrom()
 		if err != nil {
-			// Timeout is expected, just continue
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			// Timeout is expected, just continue.
+			// errors.As, not a bare assertion: the deadline error arrives
+			// wrapped on some paths, and a missed timeout is treated as a
+			// socket failure and paced with a backoff it does not need.
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				iterationCount++
 				// Log every 30 seconds to show we're still alive
 				if iterationCount%30 == 0 {

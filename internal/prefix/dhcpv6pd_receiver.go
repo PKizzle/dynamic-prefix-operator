@@ -19,6 +19,7 @@ package prefix
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/netip"
@@ -259,13 +260,10 @@ func (r *DHCPv6PDReceiver) acquirePrefix() error {
 	}
 	defer func() { _ = client.Close() }()
 
-	// Generate IAID from interface index
-	iaid := [4]byte{
-		byte(ifi.Index >> 24),
-		byte(ifi.Index >> 16),
-		byte(ifi.Index >> 8),
-		byte(ifi.Index),
-	}
+	// Generate IAID from interface index. The IAID is four bytes of identity
+	// rather than a number, so it is written as an explicit big-endian encoding.
+	var iaid [4]byte
+	binary.BigEndian.PutUint32(iaid[:], uint32(ifi.Index)) // #nosec G115 -- interface indexes are small positive integers
 
 	// Create IA_PD option with prefix hint
 	iaPD := &dhcpv6.OptIAPD{

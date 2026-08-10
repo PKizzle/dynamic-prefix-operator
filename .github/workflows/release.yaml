@@ -20,24 +20,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
           version: v4.1.1
 
+      # Installed from the upstream release rather than through a third-party
+      # action whose v2 tag points at a release candidate.
       - name: Set up Kustomize
-        uses: imranismail/setup-kustomize@v2
-        with:
-          kustomize-version: "5.8.1"
+        env:
+          KUSTOMIZE_VERSION: "5.8.1"
+        run: |
+          set -euo pipefail
+          curl -fsSL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf kustomize.tar.gz kustomize
+          sudo install -m 0755 kustomize /usr/local/bin/kustomize
+          rm -f kustomize kustomize.tar.gz
+          kustomize version
 
       - name: Determine Prerelease Status
         id: prerelease
@@ -69,11 +78,12 @@ jobs:
           # Update image tag in values.yaml to use the release version
           sed -i "s/tag:.*/tag: \"$VERSION\"/" $VALUES_FILE
 
+      # Done in shell rather than with a third-party action: this job holds
+      # contents:write and packages:write, and lowercasing a string is not worth
+      # an external dependency inside it.
       - name: Convert repository to lowercase
         id: repository
-        uses: ASzc/change-string-case-action@v6
-        with:
-          string: ${{ github.repository }}
+        run: echo "lowercase=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Generate install.yaml
         run: |
@@ -136,7 +146,7 @@ jobs:
           helm package charts/dynamic-prefix-operator --destination .
 
       - name: Log in to Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -144,9 +154,7 @@ jobs:
 
       - name: Convert repository owner to lowercase
         id: repository_owner
-        uses: ASzc/change-string-case-action@v6
-        with:
-          string: ${{ github.repository_owner }}
+        run: echo "lowercase=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
       - name: Push Helm chart to OCI registry
         run: |
@@ -336,10 +344,10 @@ jobs:
           EOF
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v6
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
 
       - name: Upload Helm repository Pages artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: dist/helm-repo
           include-hidden-files: true
@@ -356,4 +364,4 @@ jobs:
     steps:
       - name: Deploy Helm repository to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

@@ -1,5 +1,9 @@
 # Build the manager binary
-FROM golang:1.26 AS builder
+#
+# Both base images are pinned by digest as well as tag. A tag is a mutable
+# pointer, so an unpinned build is not reproducible and silently follows
+# whatever the publisher moved it to; dependabot keeps the digests current.
+FROM golang:1.26@sha256:2005724102f45917a63e9d092fc0e4ea56ea575048ce147caad5f5f61502c365 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
@@ -25,7 +29,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ma
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 # NOTE: Using regular distroless (not :nonroot) because raw ICMPv6 sockets
 # for RA monitoring require root even with CAP_NET_RAW.
-FROM gcr.io/distroless/static:latest
+FROM gcr.io/distroless/static:latest@sha256:9197324ba51d9cd071af8505989365c006adf9d6d2067eada25aef00abbb5278
 WORKDIR /
 COPY --from=builder /workspace/manager .
 # User is controlled via Kubernetes securityContext (default: root for raw socket access)

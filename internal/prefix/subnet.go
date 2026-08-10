@@ -84,6 +84,9 @@ func CalculateSubnet(basePrefix netip.Prefix, cfg SubnetConfig) (Subnet, error) 
 	// operator went on to advertise addresses it does not own -- and it is
 	// what keeps the arithmetic below inside 128 bits, since FillBytes panics
 	// when the value does not fit the buffer.
+	// The conversion is safe because the caller has already rejected a subnet
+	// prefix shorter than the base, so the difference is in [0, 128].
+	// #nosec G115 -- bounded above by the prefix-length check
 	maxSubnets := new(big.Int).Lsh(big.NewInt(1), uint(cfg.PrefixLength-basePrefix.Bits()))
 	if cfg.Offset < 0 || new(big.Int).SetInt64(cfg.Offset).Cmp(maxSubnets) >= 0 {
 		return Subnet{}, fmt.Errorf(

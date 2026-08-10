@@ -69,9 +69,37 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+# COVERAGE_FLOOR is the total statement coverage the suite must not fall below.
+# Raise it as coverage improves; never lower it to make a change pass.
+COVERAGE_FLOOR ?= 60.0
+
 .PHONY: test
 test: manifests generate fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+	# -race because this operator runs receiver goroutines, event forwarders and
+	# a shared verdict cache alongside concurrent reconciles: the bugs worth
+	# catching here are exactly the ones a serial run cannot see.
+	# -covermode=atomic is required with -race.
+	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" \
+		go test $$(go list ./... | grep -v /e2e) -race -covermode=atomic -coverprofile cover.out
+
+.PHONY: test-coverage
+test-coverage: test ## Run tests and fail if total coverage falls below COVERAGE_FLOOR.
+	@total=$$(go tool cover -func=cover.out | awk '/^total:/ {print $$3}' | tr -d '%'); \
+	echo "total coverage: $$total% (floor $(COVERAGE_FLOOR)%)"; \
+	awk -v t="$$total" -v f="$(COVERAGE_FLOOR)" 'BEGIN { if (t+0 < f+0) { printf("coverage %.1f%% is below the floor of %.1f%%\n", t, f); exit 1 } }'
+
+.PHONY: tidy-check
+tidy-check: ## Fail if go.mod/go.sum are not tidy.
+	# A CI step that runs `go mod tidy` mutates the checkout and can never fail;
+	# this compares against the committed files instead.
+	@cp go.mod go.mod.tidy-check && cp go.sum go.sum.tidy-check
+	@go mod tidy
+	@if ! diff -q go.mod go.mod.tidy-check >/dev/null || ! diff -q go.sum go.sum.tidy-check >/dev/null; then \
+		mv go.mod.tidy-check go.mod; mv go.sum.tidy-check go.sum; \
+		echo "go.mod/go.sum are not tidy; run 'go mod tidy' and commit the result"; \
+		exit 1; \
+	fi
+	@rm -f go.mod.tidy-check go.sum.tidy-check
 
 # TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
 # The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.

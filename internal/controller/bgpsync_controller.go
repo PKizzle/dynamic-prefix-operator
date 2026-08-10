@@ -267,7 +267,13 @@ func (r *BGPSyncReconciler) getPoolServiceSelector(
 
 		// Found the matching pool, extract serviceSelector
 		selector, found, err := unstructured.NestedMap(pool.Object, "spec", "serviceSelector")
-		if err != nil || !found {
+		if err != nil {
+			// A selector that is present but unreadable is not the same as one
+			// that is absent: treating it as absent builds an advertisement that
+			// matches every Service instead of the intended subset.
+			return nil, fmt.Errorf("failed to read spec.serviceSelector on pool %s: %w", pool.GetName(), err)
+		}
+		if !found {
 			return nil, nil // No selector defined
 		}
 		return selector, nil

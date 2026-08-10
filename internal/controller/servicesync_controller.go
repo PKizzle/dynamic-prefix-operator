@@ -1021,7 +1021,9 @@ func (r *ServiceSyncReconciler) calculateIPOffset(base, target netip.Addr) ([16]
 		} else {
 			borrow = 0
 		}
-		offset[i] = byte(diff)
+		// diff has just been normalised into [0, 255] by the borrow above, so
+		// this is the byte it already is.
+		offset[i] = byte(diff) // #nosec G115 -- diff is in [0,255] after the borrow adjustment
 	}
 
 	return offset, borrow == 0
@@ -1047,9 +1049,13 @@ func (r *ServiceSyncReconciler) applyIPOffset(base netip.Addr, offset [16]byte) 
 // host bit. It bounds the offset arithmetic for subnet mode, where the managed
 // window is a CIDR rather than an explicit start/end pair.
 func lastAddressIn(p netip.Prefix) netip.Addr {
+	// Indexed rather than shifted, so there is no width conversion to reason
+	// about: entry i is the mask for the i-th bit within a byte.
+	bitMask := [8]byte{0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01}
+
 	bytes := p.Masked().Addr().As16()
 	for bit := p.Bits(); bit < 128; bit++ {
-		bytes[bit/8] |= 1 << (7 - uint(bit)%8)
+		bytes[bit/8] |= bitMask[bit%8]
 	}
 	return netip.AddrFrom16(bytes)
 }
