@@ -352,6 +352,31 @@ Add these annotations to LoadBalancer Services for HA mode:
 | `dynamic-prefix.io/service-address-range` | Address range for dynamically assigned IP offset calculation |
 | `dynamic-prefix.io/service-subnet` | Subnet for dynamically assigned IP offset calculation |
 | `dynamic-prefix.io/skip-external-dns-update` | Set to `"true"` to skip external-dns target management for this Service |
+| `dynamic-prefix.io/skip-l2-nudge` | Set to `"true"` to disable the [L2 announcer nudge](#cilium-l2-announcer-nudge) for this Service |
+
+### Cilium L2 announcer nudge
+
+On a Cilium release carrying the L2 announcer bug described in
+[`docs/cilium-l2announcer-bug-report.md`](docs/cilium-l2announcer-bug-report.md), an address added to
+an existing Service is assigned by LB-IPAM and programmed into the datapath but **never announced**,
+so it silently fails to answer ARP/NDP. Every prefix rotation would otherwise leave each managed
+Service unreachable at its new address until something unrelated happened to touch it.
+
+The announcer rebuilds a Service's addresses only when a Service, policy, node or lease event reaches
+it — never when a frontend appears. The operator therefore writes
+`dynamic-prefix.io/l2-announce-nudge` once the new address is actually present in
+`status.loadBalancer.ingress`, which supplies the missing event. The value is a fingerprint of the
+assigned address set, so the write happens once per change rather than on every reconcile.
+
+Set `dynamic-prefix.io/skip-l2-nudge: "true"` to disable it for a Service — appropriate on a Cilium
+release where the bug is fixed, or where Cilium L2 announcements are not used at all.
+
+**Upstream status.** Cilium fixed this in
+[PR #47579](https://github.com/cilium/cilium/pull/47579) (merged 2026-07-29), which makes the
+announcer re-evaluate services on frontend changes. The fix is in `v1.21.0-pre.0` and on the `v1.20`
+branch, but **not in `v1.20.0`** — it merged roughly 2½ hours after that release was built. It is
+expected in `v1.20.1`. On any release carrying the fix the nudge is redundant and can be switched
+off; it is kept here for clusters still on an affected version.
 
 ### Annotations written by the operator
 
@@ -368,6 +393,7 @@ guessing from the address shape.
 | `dynamic-prefix.io/managed-cidrs` | CIDR groups | The CIDRs last written to `spec.externalCIDRs` |
 | `dynamic-prefix.io/managed-addresses` | MetalLB pools | The entries last written to `spec.addresses` |
 | `dynamic-prefix.io/last-sync` | Both | Timestamp of the last change the operator made |
+| `dynamic-prefix.io/l2-announce-nudge` | Services | Fingerprint of the assigned addresses the [L2 announcer nudge](#cilium-l2-announcer-nudge) last forced Cilium to re-read |
 
 Deleting one is safe but not free: the operator falls back to matching against the
 prefixes currently in `status`, which cannot recognise an entry whose prefix has

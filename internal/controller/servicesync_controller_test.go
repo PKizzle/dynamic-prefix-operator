@@ -1752,3 +1752,178 @@ func TestCalculateServiceIPsErrorsOnUnknownRangeOrSubnet(t *testing.T) {
 		})
 	}
 }
+
+// TestFingerprintAddresses covers the properties the nudge relies on: the value
+// must not depend on the order status happens to list addresses in, and it must
+// change whenever the set does. Without the first, every reconcile would look
+// like a change and the operator would rewrite the Service forever.
+func TestFingerprintAddresses(t *testing.T) {
+	a := fingerprintAddresses([]string{"192.0.2.1", "2001:db8::1", "2001:db8::2"})
+	reordered := fingerprintAddresses([]string{"2001:db8::2", "192.0.2.1", "2001:db8::1"})
+	if a != reordered {
+		t.Errorf("fingerprint depends on order: %q vs %q", a, reordered)
+	}
+
+	added := fingerprintAddresses([]string{"192.0.2.1", "2001:db8::1", "2001:db8::2", "2001:db8::3"})
+	if a == added {
+		t.Errorf("fingerprint unchanged after adding an address: %q", added)
+	}
+
+	removed := fingerprintAddresses([]string{"192.0.2.1", "2001:db8::1"})
+	if a == removed {
+		t.Errorf("fingerprint unchanged after removing an address: %q", removed)
+	}
+
+	if fingerprintAddresses(nil) != fingerprintAddresses([]string{}) {
+		t.Error("nil and empty address sets must fingerprint alike")
+	}
+}
+
+func TestAssignedLoadBalancerIPs(t *testing.T) {
+	svc := &corev1.Service{
+		Status: corev1.ServiceStatus{
+			LoadBalancer: corev1.LoadBalancerStatus{
+				Ingress: []corev1.LoadBalancerIngress{
+					{IP: "2001:db8::2"},
+					{Hostname: "lb.example.com"}, // hostname-only entries carry no address
+					{IP: "192.0.2.1"},
+				},
+			},
+		},
+	}
+
+	got := assignedLoadBalancerIPs(svc)
+	want := []string{"192.0.2.1", "2001:db8::2"}
+	if len(got) != len(want) {
+		t.Fatalf("assignedLoadBalancerIPs() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("assignedLoadBalancerIPs()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestNudgeL2Announcer pins the behaviour that works around the Cilium L2
+// announcer bug: touch the Service exactly once per change to the assigned
+// address set, never before the current address is actually assigned, and never
+// at all when the Service opts out.
+func TestNudgeL2Announcer(t *testing.T) {
+	const currentIP = "2001:db8:abcd:100:0:ffff:0:2"
+
+	newSvc := func(annotations map[string]string, assigned ...string) *corev1.Service {
+		ingress := make([]corev1.LoadBalancerIngress, 0, len(assigned))
+		for _, ip := range assigned {
+			ingress = append(ingress, corev1.LoadBalancerIngress{IP: ip})
+		}
+		return &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "svc",
+				Namespace:   "default",
+				Annotations: annotations,
+			},
+			Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
+			Status: corev1.ServiceStatus{
+				LoadBalancer: corev1.LoadBalancerStatus{Ingress: ingress},
+			},
+		}
+	}
+
+	tests := []struct {
+		name          string
+		annotations   map[string]string
+		assigned      []string
+		wantRequeue   bool
+		wantNudge     bool
+		wantUnchanged bool
+	}{
+		{
+			name:        "writes the fingerprint once the current address is assigned",
+			annotations: map[string]string{AnnotationName: "home-ipv6"},
+			assigned:    []string{"192.0.2.1", currentIP},
+			wantNudge:   true,
+		},
+		{
+			name:        "defers while LB-IPAM has not assigned the current address",
+			annotations: map[string]string{AnnotationName: "home-ipv6"},
+			assigned:    []string{"192.0.2.1"},
+			wantRequeue: true,
+		},
+		{
+			name: "opting out suppresses the nudge entirely",
+			annotations: map[string]string{
+				AnnotationName:        "home-ipv6",
+				AnnotationSkipL2Nudge: AnnotationValueTrue,
+			},
+			assigned:      []string{"192.0.2.1", currentIP},
+			wantUnchanged: true,
+		},
+		{
+			name: "already nudged for this address set is a no-op",
+			annotations: map[string]string{
+				AnnotationName: "home-ipv6",
+				AnnotationL2Nudge: fingerprintAddresses(
+					[]string{"192.0.2.1", currentIP}),
+			},
+			assigned:      []string{"192.0.2.1", currentIP},
+			wantUnchanged: true,
+		},
+		{
+			name: "a stale fingerprint from the previous rotation is refreshed",
+			annotations: map[string]string{
+				AnnotationName:    "home-ipv6",
+				AnnotationL2Nudge: fingerprintAddresses([]string{"192.0.2.1"}),
+			},
+			assigned:  []string{"192.0.2.1", currentIP},
+			wantNudge: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := runtime.NewScheme()
+			_ = clientgoscheme.AddToScheme(scheme)
+			_ = dynamicprefixiov1alpha1.AddToScheme(scheme)
+
+			svc := newSvc(tt.annotations, tt.assigned...)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
+			reconciler := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme}
+
+			before := svc.DeepCopy()
+			res, err := reconciler.nudgeL2Announcer(ctx, svc, currentIP)
+			if err != nil {
+				t.Fatalf("nudgeL2Announcer() error = %v", err)
+			}
+
+			if tt.wantRequeue && res.RequeueAfter == 0 {
+				t.Error("expected a requeue while the address is unassigned, got none")
+			}
+			if !tt.wantRequeue && res.RequeueAfter != 0 {
+				t.Errorf("unexpected requeue: %v", res.RequeueAfter)
+			}
+
+			var stored corev1.Service
+			if err := fakeClient.Get(ctx, types.NamespacedName{Name: "svc", Namespace: "default"}, &stored); err != nil {
+				t.Fatalf("Get() error = %v", err)
+			}
+			got := stored.GetAnnotations()[AnnotationL2Nudge]
+
+			switch {
+			case tt.wantNudge:
+				want := fingerprintAddresses(assignedLoadBalancerIPs(svc))
+				if got != want {
+					t.Errorf("nudge annotation = %q, want %q", got, want)
+				}
+			case tt.wantUnchanged:
+				if got != before.GetAnnotations()[AnnotationL2Nudge] {
+					t.Errorf("nudge annotation changed to %q, want it left alone", got)
+				}
+			default:
+				if got != "" {
+					t.Errorf("nudge annotation = %q, want none written", got)
+				}
+			}
+		})
+	}
+}

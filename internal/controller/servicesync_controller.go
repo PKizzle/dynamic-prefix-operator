@@ -20,7 +20,10 @@ package controller
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"net/netip"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +73,17 @@ const (
 	// The operator will still manage lbipam.cilium.io/ips normally.
 	// Only has effect in HA mode (the external-dns target annotation is only managed in HA mode).
 	AnnotationSkipExternalDNSUpdate = "dynamic-prefix.io/skip-external-dns-update"
+
+	// AnnotationL2Nudge records the set of assigned LoadBalancer addresses the
+	// operator last forced Cilium's L2 announcer to re-read. See nudgeL2Announcer
+	// for why the nudge is needed; the value is an opaque fingerprint, and only
+	// its inequality with the current one is meaningful.
+	AnnotationL2Nudge = "dynamic-prefix.io/l2-announce-nudge"
+
+	// AnnotationSkipL2Nudge when set to "true" on a Service disables the L2
+	// announcer nudge for it. Intended for clusters on a Cilium release that has
+	// fixed the underlying bug, or that do not use Cilium L2 announcements at all.
+	AnnotationSkipL2Nudge = "dynamic-prefix.io/skip-l2-nudge"
 
 	// AnnotationValueTrue is the opt-in value for boolean annotations.
 	AnnotationValueTrue = "true"
@@ -293,7 +307,103 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			"preservedCount", len(preservedIPs), "managedCount", len(allIPs))
 	}
 
+	return r.nudgeL2Announcer(ctx, &svc, currentIP)
+}
+
+// nudgeL2Announcer makes Cilium re-read a Service's assigned LoadBalancer
+// addresses by writing a fingerprint of that set back onto the Service.
+//
+// It works around a bug in Cilium's L2 announcer, reproduced on 1.20.0.
+// pkg/l2announcer derives a Service's announced addresses from the frontend
+// table, but its event loop wakes only on Service, policy, local-node and lease
+// events -- never on a frontend change. On a prefix rotation the events arrive in
+// the losing order: the operator's annotation update reaches the announcer first,
+// while LB-IPAM has not yet assigned the new address, so the announcer stores the
+// previous address set. LB-IPAM then creates the frontend, and with no further
+// Service event the new address is never announced.
+//
+// The failure is quiet and easy to misread, because everything else is correct:
+// the pool block, the lbipam.cilium.io/ips annotation, the assignment in
+// status.loadBalancer.ingress and the datapath frontends all carry the address.
+// Only the l2-announce table lacks it, so the address simply never answers NDP.
+//
+// Writing the annotation supplies the missing Service event. Fingerprinting the
+// assigned set keeps this to one write per change rather than a hot loop: when
+// nothing has moved the annotation already matches and no update is issued.
+func (r *ServiceSyncReconciler) nudgeL2Announcer(ctx context.Context, svc *corev1.Service, currentIP string) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	annotations := svc.GetAnnotations()
+	if annotations[AnnotationSkipL2Nudge] == AnnotationValueTrue {
+		return ctrl.Result{}, nil
+	}
+
+	assigned := assignedLoadBalancerIPs(svc)
+
+	// Nudging before LB-IPAM has assigned the current address would fingerprint the
+	// old set and then sit still -- which is precisely the state being worked
+	// around. Wait for the address to show up instead. The status write that brings
+	// it re-triggers this reconcile, so the requeue is only a backstop.
+	if !slices.Contains(assigned, currentIP) {
+		log.V(1).Info("Current address not assigned yet, deferring L2 announcer nudge",
+			"service", client.ObjectKeyFromObject(svc), "currentIP", currentIP)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	fingerprint := fingerprintAddresses(assigned)
+	if annotations[AnnotationL2Nudge] == fingerprint {
+		return ctrl.Result{}, nil
+	}
+
+	newAnnotations := make(map[string]string, len(annotations)+1)
+	for k, v := range annotations {
+		newAnnotations[k] = v
+	}
+	newAnnotations[AnnotationL2Nudge] = fingerprint
+	svc.SetAnnotations(newAnnotations)
+
+	if err := r.Update(ctx, svc); err != nil {
+		log.Error(err, "Failed to nudge Cilium L2 announcer")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+	log.Info("Nudged Cilium L2 announcer to re-read assigned addresses",
+		"service", client.ObjectKeyFromObject(svc), "addresses", assigned)
 	return ctrl.Result{}, nil
+}
+
+// assignedLoadBalancerIPs returns the addresses Cilium has actually assigned to
+// the Service, sorted so that the fingerprint does not depend on the order the
+// addresses happen to appear in status.
+func assignedLoadBalancerIPs(svc *corev1.Service) []string {
+	ips := make([]string, 0, len(svc.Status.LoadBalancer.Ingress))
+	for _, ingress := range svc.Status.LoadBalancer.Ingress {
+		if ingress.IP != "" {
+			ips = append(ips, ingress.IP)
+		}
+	}
+	slices.Sort(ips)
+	return ips
+}
+
+// fingerprintAddresses reduces an address set to a short annotation value. Only
+// equality is ever tested, so a non-cryptographic hash is sufficient and keeps
+// the annotation short next to the addresses it stands for.
+//
+// The result deliberately does not depend on the order of the input: a caller
+// that passed the addresses in whatever order status listed them would otherwise
+// see a fresh fingerprint on most reconciles, and the operator would rewrite the
+// Service forever. Sorting here makes that guarantee the function's own rather
+// than something every caller has to remember.
+func fingerprintAddresses(ips []string) string {
+	sorted := slices.Clone(ips)
+	slices.Sort(sorted)
+
+	h := fnv.New64a()
+	for _, ip := range sorted {
+		_, _ = h.Write([]byte(ip))
+		_, _ = h.Write([]byte{0})
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // releaseService strips the entries the operator wrote from a Service that is no

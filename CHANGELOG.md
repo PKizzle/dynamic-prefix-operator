@@ -4,6 +4,14 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## v0.0.12 - 2026-08-10
+
+### Added
+
+- Added a workaround for a Cilium L2 announcer bug that left every managed Service unreachable at its new address after a prefix rotation. Cilium builds a Service's announced addresses from the frontend table but only recomputes them on Service, policy, node or lease events — never when a frontend appears. On a rotation the operator's annotation update reaches the announcer *before* LB-IPAM has assigned the new address, so the announcer stores the previous set; LB-IPAM then creates the frontend and, with no further Service event, the address is never announced. Nothing else looks wrong — the pool block, `lbipam.cilium.io/ips`, `status.loadBalancer.ingress` and the datapath frontends all carry the address — so the only symptom is that it silently fails to answer ARP/NDP, and it is permanent rather than slow (measured: still absent 120 minutes after a rotation, then announced within seconds of any unrelated Service update). The operator now writes `dynamic-prefix.io/l2-announce-nudge` once the address is present in `status.loadBalancer.ingress`, supplying the event Cilium is missing. The value is a fingerprint of the assigned address set, so it is written once per change rather than on every reconcile. Set `dynamic-prefix.io/skip-l2-nudge: "true"` to disable it for a Service.
+
+  Upstream fixed this in [cilium/cilium#47579](https://github.com/cilium/cilium/pull/47579) (merged 2026-07-29), which is in `v1.21.0-pre.0` and on the `v1.20` branch but **not in `v1.20.0`** — it landed about 2½ hours after that release was built, and is expected in `v1.20.1`. Upgrading Cilium is the real fix; this workaround only bridges until then, and is redundant on any release carrying #47579. Root-cause record: [`docs/cilium-l2announcer-bug-report.md`](docs/cilium-l2announcer-bug-report.md).
+
 ## v0.0.11 - 2026-08-06
 
 ### Added
