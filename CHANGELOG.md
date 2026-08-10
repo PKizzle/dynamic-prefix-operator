@@ -4,7 +4,14 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
-## Unreleased
+## v0.0.14 - 2026-08-10
+
+This release is an audit round: one security fix in the operator itself, three in
+the Helm chart, and a set of lifecycle defects that all shared a shape — the
+operator knew what it had written and not when to stop maintaining it.
+
+**Upgrade the chart, not just the image.** Three of the fixes are chart-side and
+have no effect if only the image tag is bumped.
 
 ### Added
 
