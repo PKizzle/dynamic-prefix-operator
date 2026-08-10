@@ -195,8 +195,10 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		var err error
 		allIPs, currentIP, err = r.calculateSuffixIPs(&dp, suffix)
 		if err != nil {
-			log.Error(err, "Failed to calculate IPs from suffix", "suffix", suffix)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			// A malformed suffix annotation never fixes itself. Retrying flat and
+			// silently every 10 seconds left the Service unmanaged with nothing
+			// to point at; this backs off and is counted.
+			return ctrl.Result{}, fmt.Errorf("failed to calculate IPs from suffix %q: %w", suffix, err)
 		}
 		log.V(1).Info("Using suffix-based IP calculation", "suffix", suffix, "currentIP", currentIP)
 	} else {
@@ -210,8 +212,7 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		var err error
 		allIPs, currentIP, err = r.calculateServiceIPs(ctx, &dp, &svc, currentServiceIP)
 		if err != nil {
-			log.Error(err, "Failed to calculate Service IPs")
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			return ctrl.Result{}, fmt.Errorf("failed to calculate Service IPs: %w", err)
 		}
 	}
 
@@ -332,8 +333,11 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		newAnnotations[AnnotationLastSync] = time.Now().UTC().Format(time.RFC3339)
 		svc.SetAnnotations(newAnnotations)
 		if err := r.Update(ctx, &svc); err != nil {
-			log.Error(err, "Failed to update Service annotations")
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			// A conflict means another writer won and the annotations have to be
+			// recomputed against the new state; anything else needs to back off
+			// and be counted. Both were previously flat 5s retries, invisible to
+			// controller_runtime_reconcile_errors_total.
+			return ctrl.Result{}, fmt.Errorf("failed to update Service annotations: %w", err)
 		}
 		log.Info("Service annotations updated", "service", req.NamespacedName,
 			"allIPs", finalIPsStr, "dnsTarget", finalTargetStr, "skipExternalDNS", skipExternalDNS,
@@ -384,10 +388,17 @@ func (r *ServiceSyncReconciler) nudgeL2Announcer(ctx context.Context, svc *corev
 	// old set and then sit still -- which is precisely the state being worked
 	// around. Wait for the address to show up instead. The status write that brings
 	// it re-triggers this reconcile, so the requeue is only a backstop.
+	//
+	// It is a backstop that has to stay cheap: if LB-IPAM never assigns this
+	// address -- no pool block covers it, the pool is exhausted, another Service
+	// holds it -- then this waits forever. A minute rather than ten seconds keeps
+	// that from being six wakeups a minute per Service for the life of the
+	// process, and the reason is stated on the Service so the wait is diagnosable
+	// rather than merely quiet.
 	if !slices.Contains(assigned, currentIP) {
 		log.V(1).Info("Current address not assigned yet, deferring L2 announcer nudge",
-			"service", client.ObjectKeyFromObject(svc), "currentIP", currentIP)
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			"service", client.ObjectKeyFromObject(svc), "currentIP", currentIP, "assigned", assigned)
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
 	fingerprint := fingerprintAddresses(assigned)

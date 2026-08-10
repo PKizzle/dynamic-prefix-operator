@@ -61,6 +61,12 @@ type DynamicPrefixReconciler struct {
 	receiversMu sync.RWMutex
 	// receivers maps DynamicPrefix name to its active receiver
 	receivers map[string]prefix.Receiver
+	// receiverSpecs records the acquisition spec each live receiver was built
+	// from, so a spec that has since changed can be noticed. A receiver's
+	// interface, source and acceptance policy are all fixed at construction --
+	// receivers are even pooled per interface *and* policy for that reason -- so
+	// the only way to honour an edit is to build a new one.
+	receiverSpecs map[string]dynamicprefixiov1alpha1.AcquisitionSpec
 
 	// receiverCtxMu protects receiverCtx.
 	receiverCtxMu sync.RWMutex
@@ -73,9 +79,10 @@ type DynamicPrefixReconciler struct {
 // NewDynamicPrefixReconciler creates a new reconciler with default configuration
 func NewDynamicPrefixReconciler(c client.Client, scheme *runtime.Scheme) *DynamicPrefixReconciler {
 	return &DynamicPrefixReconciler{
-		Client:    c,
-		Scheme:    scheme,
-		receivers: make(map[string]prefix.Receiver),
+		Client:        c,
+		Scheme:        scheme,
+		receivers:     make(map[string]prefix.Receiver),
+		receiverSpecs: make(map[string]dynamicprefixiov1alpha1.AcquisitionSpec),
 	}
 }
 
@@ -260,11 +267,14 @@ func (r *DynamicPrefixReconciler) updateStatusIfChanged(
 
 // getOrCreateReceiver returns an existing receiver or creates a new one
 func (r *DynamicPrefixReconciler) getOrCreateReceiver(ctx context.Context, dp *dynamicprefixiov1alpha1.DynamicPrefix) (prefix.Receiver, error) {
+	log := logf.FromContext(ctx)
+
 	r.receiversMu.RLock()
 	receiver, exists := r.receivers[dp.Name]
+	recorded, recordedOK := r.receiverSpecs[dp.Name]
 	r.receiversMu.RUnlock()
 
-	if exists {
+	if exists && recordedOK && equality.Semantic.DeepEqual(recorded, dp.Spec.Acquisition) {
 		return receiver, nil
 	}
 
@@ -272,9 +282,45 @@ func (r *DynamicPrefixReconciler) getOrCreateReceiver(ctx context.Context, dp *d
 	r.receiversMu.Lock()
 	defer r.receiversMu.Unlock()
 
+	// The maps are only built by NewDynamicPrefixReconciler; a struct-literal
+	// construction would otherwise panic on the writes below. Allocated up front
+	// so every write past this point is safe, not just the last one.
+	if r.receivers == nil {
+		r.receivers = make(map[string]prefix.Receiver)
+	}
+	if r.receiverSpecs == nil {
+		r.receiverSpecs = make(map[string]dynamicprefixiov1alpha1.AcquisitionSpec)
+	}
+
 	// Double-check after acquiring write lock
 	if receiver, exists = r.receivers[dp.Name]; exists {
-		return receiver, nil
+		recorded, recordedOK = r.receiverSpecs[dp.Name]
+		if !recordedOK {
+			// A live receiver whose spec was never recorded: adopt it and record
+			// what the resource says now. Rebuilding on no evidence would discard
+			// a working receiver -- and the prefix it has already acquired -- to
+			// answer a question nothing asked. The next genuine edit is still
+			// caught, because from here on there is something to compare against.
+			r.receiverSpecs[dp.Name] = dp.Spec.Acquisition
+			return receiver, nil
+		}
+		if equality.Semantic.DeepEqual(recorded, dp.Spec.Acquisition) {
+			return receiver, nil
+		}
+
+		// The spec that built this receiver no longer matches the one on the
+		// resource. Everything the receiver was configured with is fixed at
+		// construction, so editing the interface, switching between RA and
+		// DHCPv6-PD or changing the prefix filter would otherwise be accepted
+		// silently and then ignored until the pod happened to restart.
+		log.Info("Acquisition spec changed, rebuilding receiver", "name", dp.Name)
+		if err := receiver.Stop(); err != nil {
+			log.Error(err, "Failed to stop the previous receiver", "name", dp.Name)
+		}
+		delete(r.receivers, dp.Name)
+		delete(r.receiverSpecs, dp.Name)
+		emitNormalEvent(r.Recorder, dp, eventReasonReceiverRebuilt,
+			"Acquisition settings changed; the prefix receiver was rebuilt")
 	}
 
 	if r.ReceiverFactory == nil {
@@ -293,12 +339,8 @@ func (r *DynamicPrefixReconciler) getOrCreateReceiver(ctx context.Context, dp *d
 		return nil, fmt.Errorf("failed to start receiver: %w", err)
 	}
 
-	// The map is only built by NewDynamicPrefixReconciler; a struct-literal
-	// construction would otherwise panic here on the nil-map write.
-	if r.receivers == nil {
-		r.receivers = make(map[string]prefix.Receiver)
-	}
 	r.receivers[dp.Name] = receiver
+	r.receiverSpecs[dp.Name] = dp.Spec.Acquisition
 	return receiver, nil
 }
 
@@ -316,6 +358,7 @@ func (r *DynamicPrefixReconciler) cleanupReceiver(name string) {
 		logf.Log.Error(err, "Failed to stop receiver", "name", name)
 	}
 	delete(r.receivers, name)
+	delete(r.receiverSpecs, name)
 }
 
 // calculateSubnets calculates subnet CIDRs from the base prefix

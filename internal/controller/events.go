@@ -28,10 +28,12 @@ const (
 	eventReasonPrefixChanged          = "PrefixChanged"
 	eventReasonPoolUpdated            = "PoolUpdated"
 	eventReasonPoolReleased           = "PoolReleased"
+	eventReasonPoolSyncFailed         = "PoolSyncFailed"
 	eventReasonServiceReleased        = "ServiceReleased"
 	eventReasonTransitionStarted      = "TransitionStarted"
 	eventReasonTransitionCompleted    = "TransitionCompleted"
 	eventReasonReceiverCreationFailed = "ReceiverCreationFailed"
+	eventReasonReceiverRebuilt        = "ReceiverRebuilt"
 	eventReasonPrefixRejected         = "PrefixRejected"
 )
 

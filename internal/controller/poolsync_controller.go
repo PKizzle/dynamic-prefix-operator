@@ -212,13 +212,25 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 	// Build pool configurations for current prefix and historical prefixes
 	configs, err := r.buildPoolConfigurations(ctx, &dp, hasAddressRange, addressRangeName, hasSubnet, subnetName)
 	if err != nil {
-		log.Info("Failed to build pool configurations", "error", err.Error())
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		// A misspelled address-range or subnet name lands here and never resolves
+		// on its own. Polling silently every 10 seconds left the pool unsynced
+		// with nothing to show for it: no event on the pool, no condition, and
+		// nothing in the error metric. Say so on the object, and let the error
+		// back off rather than spin.
+		emitWarningEvent(r.Recorder, pool, eventReasonPoolSyncFailed,
+			fmt.Sprintf("Cannot build configurations for %s pool %s from DynamicPrefix %s: %v",
+				backend.name(), req.Name, dpName, err))
+		recordPoolSyncFailedMetric(backend.name(), dpName, req.String())
+		return ctrl.Result{}, fmt.Errorf("failed to build pool configurations for %s: %w", req.Name, err)
 	}
 
 	if len(configs) == 0 {
-		log.Info("No pool configurations generated")
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		// Nothing to write yet -- typically a DynamicPrefix that has not acquired
+		// a prefix. That is a wait, not a failure, so it requeues rather than
+		// erroring; but it is reported on the pool so an empty pool is
+		// explicable.
+		log.V(1).Info("No pool configurations generated", "pool", req.Name, "dynamicPrefix", dpName)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// Collect all managed prefixes for block preservation logic
