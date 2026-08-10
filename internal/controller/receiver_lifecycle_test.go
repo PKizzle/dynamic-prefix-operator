@@ -164,6 +164,62 @@ func TestPrefixFlapDoesNotDuplicateHistory(t *testing.T) {
 	}
 }
 
+// TestOffsetBelowRangeStartIsRejected covers a Service holding an address below
+// the range it is supposed to come from -- a user pin, or a range narrowed after
+// assignment. The offset is computed as a 128-bit two's complement difference,
+// so "below" produced a number just under 2^128; adding that to a historical
+// range wrapped around to an address unrelated to any managed prefix, which was
+// then written into lbipam.cilium.io/ips *and recorded as the operator's*. The
+// only check was IsValid(), which netip.AddrFrom16 satisfies unconditionally.
+func TestOffsetBelowRangeStartIsRejected(t *testing.T) {
+	r := &ServiceSyncReconciler{}
+
+	rangeStart := netip.MustParseAddr("2001:db8:abcd::f000:0:0:0")
+	below := netip.MustParseAddr("2001:db8:abcd::1")
+
+	if _, ok := r.calculateIPOffset(rangeStart, below); ok {
+		t.Error("an address below the range start was accepted as a positive offset")
+	}
+
+	// The same address at or above the start is fine.
+	above := netip.MustParseAddr("2001:db8:abcd::f000:0:0:5")
+	offset, ok := r.calculateIPOffset(rangeStart, above)
+	if !ok {
+		t.Fatal("an address inside the range was rejected")
+	}
+
+	// An offset that would land outside the historical window is dropped rather
+	// than written.
+	histStart := netip.MustParseAddr("2001:db8:9999::f000:0:0:0")
+	histEnd := netip.MustParseAddr("2001:db8:9999::f000:0:0:2")
+	if addr, ok := r.offsetAddressWithin(histStart, histEnd, offset); ok {
+		t.Errorf("an address past the end of the historical range was accepted: %s", addr)
+	}
+
+	wideEnd := netip.MustParseAddr("2001:db8:9999::ffff:ffff:ffff:ffff")
+	addr, ok := r.offsetAddressWithin(histStart, wideEnd, offset)
+	if !ok {
+		t.Fatal("an address inside the historical range was rejected")
+	}
+	if want := netip.MustParseAddr("2001:db8:9999::f000:0:0:5"); addr != want {
+		t.Errorf("offsetAddressWithin() = %s, want %s", addr, want)
+	}
+}
+
+// TestLastAddressIn pins the upper bound used for subnet mode.
+func TestLastAddressIn(t *testing.T) {
+	for _, tt := range []struct{ prefix, want string }{
+		{"2001:db8:abcd::/64", "2001:db8:abcd:0:ffff:ffff:ffff:ffff"},
+		{"2001:db8:abcd::/48", "2001:db8:abcd:ffff:ffff:ffff:ffff:ffff"},
+		{"2001:db8:abcd::1/128", "2001:db8:abcd::1"},
+	} {
+		got := lastAddressIn(netip.MustParsePrefix(tt.prefix))
+		if want := netip.MustParseAddr(tt.want); got != want {
+			t.Errorf("lastAddressIn(%s) = %s, want %s", tt.prefix, got, want)
+		}
+	}
+}
+
 // TestPrefixEventsWakeTheReconciler covers the push path. Every receiver
 // populated an events channel that nothing in the controller package ever read,
 // so a rotation reached status only via the periodic requeue -- capped at five

@@ -465,7 +465,10 @@ func TestServiceSyncReconciler_calculateIPOffset(t *testing.T) {
 			base := netip.MustParseAddr(tt.base)
 			target := netip.MustParseAddr(tt.target)
 
-			offset := r.calculateIPOffset(base, target)
+			offset, ok := r.calculateIPOffset(base, target)
+			if !ok {
+				t.Fatalf("calculateIPOffset(%s, %s) reported the target as below the base", base, target)
+			}
 			if offset != tt.expected {
 				t.Errorf("calculateIPOffset() = %v, want %v", offset, tt.expected)
 			}
@@ -513,7 +516,10 @@ func TestServiceSyncReconciler_applyIPOffset(t *testing.T) {
 			base := netip.MustParseAddr(tt.base)
 			expected := netip.MustParseAddr(tt.expected)
 
-			result := r.applyIPOffset(base, tt.offset)
+			result, ok := r.applyIPOffset(base, tt.offset)
+			if !ok {
+				t.Fatalf("applyIPOffset(%s, %v) wrapped past 128 bits", base, tt.offset)
+			}
 			if result != expected {
 				t.Errorf("applyIPOffset() = %v, want %v", result, expected)
 			}

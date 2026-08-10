@@ -879,7 +879,15 @@ func (r *ServiceSyncReconciler) calculateAddressRangeIPs(
 	}
 
 	// Calculate offset from start of range
-	offset := r.calculateIPOffset(currentRange.Start, currentAddr)
+	offset, ok := r.calculateIPOffset(currentRange.Start, currentAddr)
+	if !ok {
+		// The Service holds an address below the range it is supposed to come
+		// from -- a pin, or a range narrowed after assignment. There is no
+		// meaningful offset to carry to the historical prefixes, and computing
+		// one anyway produces addresses outside every managed prefix.
+		return "", nil, fmt.Errorf("assigned address %s is below address range %q (starts at %s)",
+			currentAddr, rangeSpec.Name, currentRange.Start)
+	}
 
 	var allIPs []string
 	currentPrefixIP := currentAddr.String()
@@ -903,10 +911,11 @@ func (r *ServiceSyncReconciler) calculateAddressRangeIPs(
 			continue
 		}
 
-		histIP := r.applyIPOffset(histRange.Start, offset)
-		if histIP.IsValid() {
-			allIPs = append(allIPs, histIP.String())
+		histIP, ok := r.offsetAddressWithin(histRange.Start, histRange.End, offset)
+		if !ok {
+			continue
 		}
+		allIPs = append(allIPs, histIP.String())
 	}
 
 	return currentPrefixIP, allIPs, nil
@@ -951,7 +960,11 @@ func (r *ServiceSyncReconciler) calculateSubnetIPs(
 	}
 
 	// Calculate offset from start of subnet
-	offset := r.calculateIPOffset(currentSubnet.CIDR.Addr(), currentAddr)
+	offset, ok := r.calculateIPOffset(currentSubnet.CIDR.Addr(), currentAddr)
+	if !ok {
+		return "", nil, fmt.Errorf("assigned address %s is below subnet %q (%s)",
+			currentAddr, subnetSpec.Name, currentSubnet.CIDR)
+	}
 
 	var allIPs []string
 	currentPrefixIP := currentAddr.String()
@@ -975,17 +988,26 @@ func (r *ServiceSyncReconciler) calculateSubnetIPs(
 			continue
 		}
 
-		histIP := r.applyIPOffset(histSubnet.CIDR.Addr(), offset)
-		if histIP.IsValid() {
-			allIPs = append(allIPs, histIP.String())
+		histIP, ok := r.offsetAddressWithin(histSubnet.CIDR.Addr(), lastAddressIn(histSubnet.CIDR), offset)
+		if !ok {
+			continue
 		}
+		allIPs = append(allIPs, histIP.String())
 	}
 
 	return currentPrefixIP, allIPs, nil
 }
 
 // calculateIPOffset calculates the offset between two IPv6 addresses.
-func (r *ServiceSyncReconciler) calculateIPOffset(base, target netip.Addr) [16]byte {
+// The second return reports whether the target actually sits at or above the
+// base. A target below it yields a borrow out of the top byte -- the two's
+// complement of the real distance, a number just under 2^128 -- and adding that
+// to a historical base wraps back around to an address unrelated to any prefix
+// the operator manages. Since the result is then written into
+// lbipam.cilium.io/ips *and recorded as the operator's*, it is not enough for it
+// to be harmless: the operator would be claiming an address it has no business
+// owning. Callers skip the entry instead.
+func (r *ServiceSyncReconciler) calculateIPOffset(base, target netip.Addr) ([16]byte, bool) {
 	baseBytes := base.As16()
 	targetBytes := target.As16()
 	var offset [16]byte
@@ -1002,11 +1024,12 @@ func (r *ServiceSyncReconciler) calculateIPOffset(base, target netip.Addr) [16]b
 		offset[i] = byte(diff)
 	}
 
-	return offset
+	return offset, borrow == 0
 }
 
-// applyIPOffset applies an offset to an IPv6 address.
-func (r *ServiceSyncReconciler) applyIPOffset(base netip.Addr, offset [16]byte) netip.Addr {
+// applyIPOffset applies an offset to an IPv6 address, reporting false if the
+// addition carried past 128 bits and wrapped.
+func (r *ServiceSyncReconciler) applyIPOffset(base netip.Addr, offset [16]byte) (netip.Addr, bool) {
 	baseBytes := base.As16()
 	var result [16]byte
 
@@ -1017,7 +1040,36 @@ func (r *ServiceSyncReconciler) applyIPOffset(base netip.Addr, offset [16]byte) 
 		carry = sum >> 8
 	}
 
-	return netip.AddrFrom16(result)
+	return netip.AddrFrom16(result), carry == 0
+}
+
+// lastAddressIn returns the highest address a prefix contains, by setting every
+// host bit. It bounds the offset arithmetic for subnet mode, where the managed
+// window is a CIDR rather than an explicit start/end pair.
+func lastAddressIn(p netip.Prefix) netip.Addr {
+	bytes := p.Masked().Addr().As16()
+	for bit := p.Bits(); bit < 128; bit++ {
+		bytes[bit/8] |= 1 << (7 - uint(bit)%8)
+	}
+	return netip.AddrFrom16(bytes)
+}
+
+// offsetAddressWithin applies an offset to base and keeps the result only if it
+// is still inside the window the operator manages, given by base and last
+// inclusive.
+//
+// netip.AddrFrom16 always returns a valid address, so validity was never the
+// question the callers thought they were asking: an address outside the
+// historical range is well-formed and completely wrong.
+func (r *ServiceSyncReconciler) offsetAddressWithin(base, last netip.Addr, offset [16]byte) (netip.Addr, bool) {
+	addr, ok := r.applyIPOffset(base, offset)
+	if !ok {
+		return netip.Addr{}, false
+	}
+	if addr.Less(base) || last.Less(addr) {
+		return netip.Addr{}, false
+	}
+	return addr, true
 }
 
 // SetupWithManager sets up the controller with the Manager.
