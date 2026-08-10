@@ -258,13 +258,32 @@ jobs:
             cosign sign "${repository}@${digest}"
           done
 
-      - name: Generate and attach an SBOM
+      - name: Generate an SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.9.0
         with:
           image: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.lowercase }}:${{ steps.meta.outputs.version }}
           format: spdx-json
           artifact-name: sbom.spdx.json
+          output-file: sbom.spdx.json
           upload-artifact: true
+          # Attaching to the GitHub Release needs contents:write, and this job
+          # builds and runs the nydus fork from source -- it should not also be
+          # able to write to the repository. The SBOM goes to the registry
+          # instead, next to the image it describes, which is where a consumer
+          # can actually find it.
+          upload-release-assets: false
+
+      - name: Attach the SBOM to the image
+        env:
+          COSIGN_YES: "true"
+        run: |
+          set -euo pipefail
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          for image in "${tags[@]}"; do
+            digest="$(docker buildx imagetools inspect --format '{{ .Manifest.Digest }}' "$image")"
+            repository="${image%%:*}"
+            cosign attest --predicate sbom.spdx.json --type spdxjson "${repository}@${digest}"
+          done
 
       # The image is scanned as published, after the nydus attach, so the scan
       # covers what is actually distributed. It reports rather than blocks:
