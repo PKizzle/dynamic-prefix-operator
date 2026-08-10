@@ -19,12 +19,15 @@ package controller
 
 import (
 	"context"
+	"net/netip"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
 	"github.com/pkizzle/dynamic-prefix-operator/internal/prefix"
@@ -115,6 +118,122 @@ func TestReceiverRebuiltWhenAcquisitionChanges(t *testing.T) {
 	}
 	if len(factory.specs) != 3 {
 		t.Errorf("factory called %d times after switching acquisition method, want 3", len(factory.specs))
+	}
+}
+
+// TestPrefixFlapDoesNotDuplicateHistory covers a prefix that comes back:
+// A -> B -> A. The outgoing prefix was appended to history unconditionally, so
+// after the second change A was both the current prefix and a history entry.
+// Pool builders read the two as distinct sets, and Calico turns the duplicate
+// into a sibling IPPool carrying its parent's CIDR -- which Calico rejects as an
+// overlap, so the sync fails and keeps failing.
+func TestPrefixFlapDoesNotDuplicateHistory(t *testing.T) {
+	ctx := context.Background()
+	r := &DynamicPrefixReconciler{}
+
+	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
+			Transition: &dynamicprefixiov1alpha1.TransitionSpec{MaxPrefixHistory: 2},
+		},
+	}
+
+	rotate := func(to string) {
+		r.handlePrefixChange(ctx, dp, &prefix.Prefix{Network: netip.MustParsePrefix(to)})
+		dp.Status.CurrentPrefix = to
+	}
+
+	dp.Status.CurrentPrefix = "2001:db8:a::/64"
+	rotate("2001:db8:b::/64")
+	rotate("2001:db8:a::/64") // the ISP hands the original prefix back
+
+	for _, entry := range dp.Status.History {
+		if entry.Prefix == dp.Status.CurrentPrefix {
+			t.Errorf("history still contains the current prefix %s after a flap: %+v",
+				dp.Status.CurrentPrefix, dp.Status.History)
+		}
+	}
+
+	seen := make(map[string]int, len(dp.Status.History))
+	for _, entry := range dp.Status.History {
+		seen[entry.Prefix]++
+		if seen[entry.Prefix] > 1 {
+			t.Errorf("prefix %s appears %d times in history: %+v",
+				entry.Prefix, seen[entry.Prefix], dp.Status.History)
+		}
+	}
+}
+
+// TestPrefixEventsWakeTheReconciler covers the push path. Every receiver
+// populated an events channel that nothing in the controller package ever read,
+// so a rotation reached status only via the periodic requeue -- capped at five
+// minutes -- and each receiver's channel filled up and then dropped events
+// permanently.
+func TestPrefixEventsWakeTheReconciler(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r := &DynamicPrefixReconciler{prefixEvents: make(chan event.GenericEvent, prefixEventQueueSize)}
+	events := make(chan prefix.Event, 4)
+	go r.forwardPrefixEvents(ctx, "home-ipv6", events)
+
+	waitForWake := func(t *testing.T, what string) {
+		t.Helper()
+		select {
+		case got := <-r.prefixEvents:
+			if got.Object.GetName() != "home-ipv6" {
+				t.Errorf("%s woke the reconciler for %q, want home-ipv6", what, got.Object.GetName())
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s did not wake the reconciler", what)
+		}
+	}
+
+	for _, tc := range []struct {
+		eventType prefix.EventType
+		what      string
+	}{
+		{prefix.EventTypeAcquired, "acquiring a prefix"},
+		{prefix.EventTypeChanged, "a prefix change"},
+		{prefix.EventTypeExpired, "a lease expiring"},
+		{prefix.EventTypeFailed, "an acquisition failure"},
+	} {
+		events <- prefix.Event{Type: tc.eventType}
+		waitForWake(t, tc.what)
+	}
+
+	// A renewal changes only the lease expiry, which the periodic requeue
+	// already refreshes; forwarding it would reconcile on every DHCPv6 renewal
+	// for no change in state.
+	events <- prefix.Event{Type: prefix.EventTypeRenewed}
+	events <- prefix.Event{Type: prefix.EventTypeChanged}
+	waitForWake(t, "a change following a renewal")
+	select {
+	case extra := <-r.prefixEvents:
+		t.Errorf("a renewal also woke the reconciler (got %v)", extra.Object.GetName())
+	default:
+	}
+}
+
+// TestPrefixEventForwarderStopsWithItsReceiver covers the goroutine's lifetime: a
+// rebuilt or deleted receiver must not leave a forwarder reading a channel
+// nobody writes to any more.
+func TestPrefixEventForwarderStopsWithItsReceiver(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &DynamicPrefixReconciler{prefixEvents: make(chan event.GenericEvent, 1)}
+	events := make(chan prefix.Event)
+
+	done := make(chan struct{})
+	go func() {
+		r.forwardPrefixEvents(ctx, "home-ipv6", events)
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the forwarder outlived its context")
 	}
 }
 
