@@ -82,6 +82,18 @@ const (
 	// AnnotationManagedCIDRs records the CIDRs the operator last wrote into
 	// spec.externalCIDRs on a CiliumCIDRGroup.
 	AnnotationManagedCIDRs = "dynamic-prefix.io/managed-cidrs"
+
+	// AnnotationManagedCIDR records the single CIDR the operator last wrote into
+	// spec.cidr on a Calico IPPool.
+	//
+	// Calico's field holds one scalar rather than a list, so there is nothing to
+	// preserve alongside it and the record is not needed to tell the operator's
+	// entries from the user's. It is needed to answer the other question: whether
+	// the operator put the current value there at all. Without it a released or
+	// orphaned IPPool is indistinguishable from one the user wrote by hand, so
+	// the watch predicate stopped matching it and the CIDR was left pointing at a
+	// prefix nothing maintains.
+	AnnotationManagedCIDR = "dynamic-prefix.io/managed-cidr"
 )
 
 // ownershipRecord is the set of entries the operator wrote on its previous pass.
@@ -224,6 +236,7 @@ func hasOwnershipRecord(annotations map[string]string) bool {
 		AnnotationManagedTargets,
 		AnnotationManagedBlocks,
 		AnnotationManagedCIDRs,
+		AnnotationManagedCIDR,
 		AnnotationManagedAddresses,
 	} {
 		if _, ok := annotations[key]; ok {

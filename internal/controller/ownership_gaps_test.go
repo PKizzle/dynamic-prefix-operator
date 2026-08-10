@@ -399,6 +399,326 @@ func TestServiceReleasedOnDeannotation(t *testing.T) {
 	}
 }
 
+// newManagedService builds a Service carrying operator-written entries and their
+// records, as it would look after a normal HA-mode sync.
+func newManagedService(dpName, operatorAddr, userIPv4 string) *corev1.Service {
+	annotations := map[string]string{
+		AnnotationCiliumIPs:         strings.Join([]string{userIPv4, operatorAddr}, ","),
+		AnnotationManagedIPs:        operatorAddr,
+		AnnotationExternalDNSTarget: operatorAddr,
+		AnnotationManagedTargets:    operatorAddr,
+		AnnotationL2Nudge:           "deadbeef",
+	}
+	if dpName != "" {
+		annotations[AnnotationName] = dpName
+	}
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "network", Annotations: annotations},
+		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
+	}
+}
+
+// assertServiceReleased checks that the operator's entries and records are gone
+// while the user's own entry survives.
+func assertServiceReleased(t *testing.T, annotations map[string]string, operatorAddr, userIPv4 string) {
+	t.Helper()
+
+	ips := strings.Split(annotations[AnnotationCiliumIPs], ",")
+	if containsString(ips, operatorAddr) {
+		t.Errorf("operator address was not released: %v", ips)
+	}
+	if !containsString(ips, userIPv4) {
+		t.Errorf("user entry %q was removed; only recorded entries may be released: %v", userIPv4, ips)
+	}
+	for _, key := range []string{
+		AnnotationManagedIPs, AnnotationManagedTargets, AnnotationExternalDNSTarget, AnnotationL2Nudge,
+	} {
+		if v, ok := annotations[key]; ok {
+			t.Errorf("%s should be gone after release, got %q", key, v)
+		}
+	}
+}
+
+// TestServiceReleasedWhenDynamicPrefixDeleted covers deleting the DynamicPrefix
+// itself. The Service kept an lbipam annotation and an external-dns target that
+// stop being maintained the moment the CR goes, and the controller merely polled
+// for the missing CR every 30 seconds, forever, without touching them.
+func TestServiceReleasedWhenDynamicPrefixDeleted(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = dynamicprefixiov1alpha1.AddToScheme(scheme)
+
+	const userIPv4 = "192.0.2.238"
+	const operatorAddr = "2001:db8:abcd::ffff:0:2"
+
+	// The Service still references a DynamicPrefix, but it no longer exists.
+	svc := newManagedService("home-ipv6", operatorAddr, userIPv4)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
+	r := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme}
+	key := types.NamespacedName{Name: "svc", Namespace: "network"}
+
+	result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Errorf("RequeueAfter = %v; a deleted DynamicPrefix never comes back, so polling for it is pointless",
+			result.RequeueAfter)
+	}
+
+	var got corev1.Service
+	if err := fakeClient.Get(ctx, key, &got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	assertServiceReleased(t, got.GetAnnotations(), operatorAddr, userIPv4)
+}
+
+// TestServiceReleasedWhenHAModeDisabled covers switching transition.mode from ha
+// back to simple. Reconcile returned early for a non-HA prefix, so the entries
+// written while HA was on were left behind and stopped being updated.
+func TestServiceReleasedWhenHAModeDisabled(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	_ = clientgoscheme.AddToScheme(scheme)
+	_ = dynamicprefixiov1alpha1.AddToScheme(scheme)
+
+	const userIPv4 = "192.0.2.238"
+	const operatorAddr = "2001:db8:abcd::ffff:0:2"
+
+	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
+			Transition: &dynamicprefixiov1alpha1.TransitionSpec{
+				Mode: dynamicprefixiov1alpha1.TransitionModeSimple,
+			},
+		},
+		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{CurrentPrefix: "2001:db8:abcd::/64"},
+	}
+	svc := newManagedService("home-ipv6", operatorAddr, userIPv4)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dp, svc).Build()
+	r := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme}
+	key := types.NamespacedName{Name: "svc", Namespace: "network"}
+
+	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var got corev1.Service
+	if err := fakeClient.Get(ctx, key, &got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	assertServiceReleased(t, got.GetAnnotations(), operatorAddr, userIPv4)
+}
+
+// TestPoolReleasedWhenDynamicPrefixDeleted covers the same deletion for pools.
+// syncPool returned the NotFound error and retried with backoff forever, leaving
+// the blocks in place and the error counter climbing.
+func TestPoolReleasedWhenDynamicPrefixDeleted(t *testing.T) {
+	ctx := context.Background()
+	scheme := newPoolBackendTestScheme(t)
+	scheme.AddKnownTypeWithName(DefaultCiliumLBIPPoolGVK, &unstructured.Unstructured{})
+
+	const userBlock = "2001:db8:9999::/64"
+	const operatorBlock = "2001:db8:abcd::/64"
+
+	pool := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": APIVersion(DefaultCiliumLBIPPoolGVK),
+			"kind":       DefaultCiliumLBIPPoolGVK.Kind,
+			"metadata": map[string]interface{}{
+				"name": "lb-pool",
+				"annotations": map[string]interface{}{
+					AnnotationName: "home-ipv6",
+					// Records key blocks the way blockKey does, not as bare CIDRs.
+					AnnotationManagedBlocks: blockKey(map[string]interface{}{"cidr": operatorBlock}),
+				},
+			},
+			"spec": map[string]interface{}{
+				"blocks": []interface{}{
+					map[string]interface{}{"cidr": userBlock},
+					map[string]interface{}{"cidr": operatorBlock},
+				},
+			},
+		},
+	}
+	pool.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool).Build()
+	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
+
+	if _, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "lb-pool"},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	fetched := &unstructured.Unstructured{}
+	fetched.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "lb-pool"}, fetched); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	blocks, _, err := unstructured.NestedSlice(fetched.Object, "spec", "blocks")
+	if err != nil {
+		t.Fatalf("read blocks: %v", err)
+	}
+	var cidrs []string
+	for _, b := range blocks {
+		if block, ok := b.(map[string]interface{}); ok {
+			if cidr, ok := block["cidr"].(string); ok {
+				cidrs = append(cidrs, cidr)
+			}
+		}
+	}
+	if containsString(cidrs, operatorBlock) {
+		t.Errorf("operator block was not released: %v", cidrs)
+	}
+	if !containsString(cidrs, userBlock) {
+		t.Errorf("user block %q was removed; only recorded entries may be released: %v", userBlock, cidrs)
+	}
+	if _, ok := fetched.GetAnnotations()[AnnotationManagedBlocks]; ok {
+		t.Error("managed-blocks record should be gone after release")
+	}
+}
+
+// TestCalicoReleaseRemovesDrainingSiblings covers the objects the operator
+// created outright. Siblings carry no owner reference and were pruned only from
+// inside a successful sync, so de-annotating the parent left them allocating from
+// a prefix the ISP had already withdrawn.
+func TestCalicoReleaseRemovesDrainingSiblings(t *testing.T) {
+	ctx := context.Background()
+	const maxHistory = 2
+	scheme := newPoolBackendTestScheme(t)
+
+	pool := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": APIVersion(DefaultCalicoIPPoolGVK),
+			"kind":       DefaultCalicoIPPoolGVK.Kind,
+			"metadata": map[string]interface{}{
+				"name":        "calico-pool",
+				"annotations": map[string]interface{}{AnnotationName: "home-ipv6"},
+			},
+			"spec": map[string]interface{}{"cidr": "2001:db8:abcd::/64"},
+		},
+	}
+	pool.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool).Build()
+	r := &PoolSyncReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+		// Calico is only reconciled when its CRD was discovered, which is what
+		// BackendGVKs stands in for here.
+		BackendGVKs: []schema.GroupVersionKind{DefaultCalicoIPPoolGVK},
+	}
+	backend := calicoIPPoolBackend{resourceGVK: DefaultCalicoIPPoolGVK}
+
+	// Rotate enough to accumulate draining siblings.
+	for gen := 0; gen < 4; gen++ {
+		fetched := &unstructured.Unstructured{}
+		fetched.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
+		if err := fakeClient.Get(ctx, types.NamespacedName{Name: "calico-pool"}, fetched); err != nil {
+			t.Fatalf("gen %d: get: %v", gen, err)
+		}
+		configs, managed := calicoPoolStateForGeneration(gen, maxHistory)
+		if _, err := backend.update(ctx, r, fetched, configs, managed); err != nil {
+			t.Fatalf("gen %d: update: %v", gen, err)
+		}
+	}
+
+	fetched := &unstructured.Unstructured{}
+	fetched.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "calico-pool"}, fetched); err != nil {
+		t.Fatalf("get before release: %v", err)
+	}
+	if _, ok := fetched.GetAnnotations()[AnnotationManagedCIDR]; !ok {
+		t.Fatal("Calico sync must record spec.cidr as managed, or the release path can never find it")
+	}
+
+	// De-annotate, exactly as a user removing the binding would.
+	annotations := fetched.GetAnnotations()
+	delete(annotations, AnnotationName)
+	fetched.SetAnnotations(annotations)
+	if err := fakeClient.Update(ctx, fetched); err != nil {
+		t.Fatalf("de-annotate: %v", err)
+	}
+
+	if _, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "calico-pool"},
+	}); err != nil {
+		t.Fatalf("reconcile after de-annotation: %v", err)
+	}
+
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(ListGVK(DefaultCalicoIPPoolGVK))
+	if err := fakeClient.List(ctx, list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for i := range list.Items {
+		if list.Items[i].GetLabels()[LabelCalicoParentPool] == "calico-pool" {
+			t.Errorf("draining sibling %s survived release; it allocates from a withdrawn prefix",
+				list.Items[i].GetName())
+		}
+	}
+
+	released := &unstructured.Unstructured{}
+	released.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "calico-pool"}, released); err != nil {
+		t.Fatalf("get after release: %v", err)
+	}
+	if _, ok := released.GetAnnotations()[AnnotationManagedCIDR]; ok {
+		t.Error("managed-cidr record should be gone after release")
+	}
+}
+
+// TestReleaseDoesNotInventFieldsOnOtherBackends pins the backend dispatch. The
+// release path used to branch on which record annotation was present rather than
+// on the matched backend, so a CIDR group carrying a blocks record had an empty
+// spec.blocks created on it -- a field its schema does not have.
+func TestReleaseDoesNotInventFieldsOnOtherBackends(t *testing.T) {
+	ctx := context.Background()
+	scheme := newPoolBackendTestScheme(t)
+
+	group := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": APIVersion(DefaultCiliumCIDRGroupGVK),
+			"kind":       DefaultCiliumCIDRGroupGVK.Kind,
+			"metadata": map[string]interface{}{
+				"name": "cidr-group",
+				"annotations": map[string]interface{}{
+					// A blocks record on an object that has no spec.blocks.
+					AnnotationManagedBlocks: "2001:db8:abcd::/64",
+					AnnotationManagedCIDRs:  "2001:db8:abcd::/64",
+				},
+			},
+			"spec": map[string]interface{}{
+				"externalCIDRs": []interface{}{"2001:db8:abcd::/64"},
+			},
+		},
+	}
+	group.SetGroupVersionKind(DefaultCiliumCIDRGroupGVK)
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(group).Build()
+	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
+
+	if _, err := r.Reconcile(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "cidr-group"},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	fetched := &unstructured.Unstructured{}
+	fetched.SetGroupVersionKind(DefaultCiliumCIDRGroupGVK)
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "cidr-group"}, fetched); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if _, found, _ := unstructured.NestedSlice(fetched.Object, "spec", "blocks"); found {
+		t.Error("spec.blocks was created on a CiliumCIDRGroup, which has no such field")
+	}
+}
+
 // TestExternalDNSTargetReleasedOnOptOut covers opting out after the target was
 // already managed. Merely ceasing to update it would leave an address that stops
 // resolving at the next rotation, so the opt-out has to hand the field back.

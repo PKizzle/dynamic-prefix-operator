@@ -147,7 +147,7 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// Service, and the addresses in it stop resolving once the prefix rotates,
 		// so hand the fields back rather than walking away from them.
 		if hasOwnershipRecord(annotations) {
-			return r.releaseService(ctx, &svc)
+			return r.releaseService(ctx, &svc, "the dynamic-prefix.io/name annotation was removed")
 		}
 		return ctrl.Result{}, nil
 	}
@@ -156,20 +156,35 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	var dp dynamicprefixiov1alpha1.DynamicPrefix
 	if err := r.Get(ctx, types.NamespacedName{Name: dpName}, &dp); err != nil {
 		if apierrors.IsNotFound(err) {
+			// Polling for a DynamicPrefix that has been deleted never succeeds,
+			// and meanwhile the Service keeps an external-dns target that stops
+			// resolving at the next rotation. Hand the entries back instead.
+			if hasOwnershipRecord(annotations) {
+				return r.releaseService(ctx, &svc,
+					fmt.Sprintf("DynamicPrefix %s no longer exists", dpName))
+			}
 			log.V(1).Info("Referenced DynamicPrefix not found, will retry", "name", dpName)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
-		log.Error(err, "Failed to get DynamicPrefix", "name", dpName)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		// Returned so a persistent API failure backs off and reaches
+		// controller_runtime_reconcile_errors_total instead of retrying flat.
+		return ctrl.Result{}, fmt.Errorf("failed to get DynamicPrefix %s: %w", dpName, err)
 	}
 
 	// Check if HA mode is enabled
 	if dp.Spec.Transition == nil || dp.Spec.Transition.Mode != dynamicprefixiov1alpha1.TransitionModeHA {
-		// Not HA mode, skip Service management
+		// HA mode was switched off. The addresses the operator put in
+		// lbipam.cilium.io/ips and the external-dns target are still there and
+		// stop being maintained from here on, so hand them back rather than
+		// leaving them to go stale at the next rotation.
+		if hasOwnershipRecord(annotations) {
+			return r.releaseService(ctx, &svc,
+				fmt.Sprintf("DynamicPrefix %s is no longer in HA mode", dpName))
+		}
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Syncing Service for HA mode", "service", req.NamespacedName, "dynamicPrefix", dpName)
+	log.V(1).Info("Syncing Service for HA mode", "service", req.NamespacedName, "dynamicPrefix", dpName)
 
 	var allIPs []string
 	var currentIP string
@@ -434,13 +449,15 @@ func fingerprintAddresses(ips []string) string {
 	return strconv.FormatUint(h.Sum64(), 16)
 }
 
-// releaseService strips the entries the operator wrote from a Service that is no
-// longer opted in, and removes the records describing them.
+// releaseService strips the entries the operator wrote from a Service it no
+// longer manages, and removes the records describing them. The reason is logged,
+// since a Service can reach this through any of three routes: it was
+// de-annotated, its DynamicPrefix was deleted, or HA mode was switched off.
 //
 // Only recorded entries are touched. Everything else in those annotations was put
 // there by the user and stays exactly as it is, including addresses that merely
 // resemble the operator's.
-func (r *ServiceSyncReconciler) releaseService(ctx context.Context, svc *corev1.Service) (ctrl.Result, error) {
+func (r *ServiceSyncReconciler) releaseService(ctx context.Context, svc *corev1.Service, reason string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	annotations := svc.GetAnnotations()
 
@@ -487,11 +504,10 @@ func (r *ServiceSyncReconciler) releaseService(ctx context.Context, svc *corev1.
 
 	svc.SetAnnotations(newAnnotations)
 	if err := r.Update(ctx, svc); err != nil {
-		log.Error(err, "Failed to release Service annotations")
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return ctrl.Result{}, fmt.Errorf("failed to release Service annotations: %w", err)
 	}
-	log.Info("Released Service annotations after removal of the dynamic-prefix.io/name annotation",
-		"service", client.ObjectKeyFromObject(svc))
+	log.Info("Released Service annotations",
+		"service", client.ObjectKeyFromObject(svc), "reason", reason)
 	return ctrl.Result{}, nil
 }
 
@@ -1054,11 +1070,11 @@ func (r *ServiceSyncReconciler) findReferencingServices(ctx context.Context, obj
 		return nil
 	}
 
-	// Only process if HA mode is enabled
-	if dp.Spec.Transition == nil || dp.Spec.Transition.Mode != dynamicprefixiov1alpha1.TransitionModeHA {
-		return nil
-	}
-
+	// Deliberately not filtered on HA mode. Switching a DynamicPrefix out of HA
+	// mode, or deleting it, is exactly when the Services it managed need to hear
+	// about it -- refusing to fan out for a non-HA prefix meant the annotations
+	// the operator had written were simply abandoned. Reconcile decides what to
+	// do; this only decides who is told.
 	log := logf.FromContext(ctx)
 	var requests []reconcile.Request
 

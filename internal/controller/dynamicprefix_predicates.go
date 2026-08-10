@@ -44,7 +44,14 @@ type dependentDynamicPrefixStatus struct {
 func dynamicPrefixDependentChangePredicate() predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(event.CreateEvent) bool { return true },
-		DeleteFunc: func(event.DeleteEvent) bool { return false },
+		// Deletion has to fan out. Everything the operator wrote into pools and
+		// Services is still there when the DynamicPrefix goes away, and those
+		// addresses stop being routable at the next rotation. Dropping the event
+		// meant the dependents were never told: the pool controller would keep
+		// failing to resolve the reference, the Service controller would poll for
+		// it forever, and the entries -- including an external-dns target still
+		// resolving to a dead address -- stayed behind permanently.
+		DeleteFunc: func(event.DeleteEvent) bool { return true },
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			oldDP, oldOK := e.ObjectOld.(*dynamicprefixiov1alpha1.DynamicPrefix)
 			newDP, newOK := e.ObjectNew.(*dynamicprefixiov1alpha1.DynamicPrefix)

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -178,7 +179,7 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 		// addresses in them stop being routable at the next rotation, so release
 		// them instead of leaving them to rot.
 		if hasOwnershipRecord(annotations) {
-			return ctrl.Result{}, r.releasePool(ctx, pool)
+			return ctrl.Result{}, r.releasePool(ctx, pool, backend, "the dynamic-prefix.io/name annotation was removed")
 		}
 		return ctrl.Result{}, nil
 	}
@@ -188,6 +189,18 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 	// Fetch the referenced DynamicPrefix
 	var dp dynamicprefixiov1alpha1.DynamicPrefix
 	if err := r.Get(ctx, types.NamespacedName{Name: dpName}, &dp); err != nil {
+		if apierrors.IsNotFound(err) {
+			// The DynamicPrefix is gone for good. Retrying cannot bring it back,
+			// and the entries the operator wrote are still in the pool, pointing
+			// at a prefix nothing maintains any more -- so hand them back rather
+			// than error-looping forever with the pool left as it was.
+			if hasOwnershipRecord(annotations) {
+				return ctrl.Result{}, r.releasePool(ctx, pool, backend,
+					fmt.Sprintf("DynamicPrefix %s no longer exists", dpName))
+			}
+			log.V(1).Info("Referenced DynamicPrefix does not exist", "name", dpName)
+			return ctrl.Result{}, nil
+		}
 		log.Error(err, "Failed to get DynamicPrefix", "name", dpName)
 		// Returning nil here hid API failures from
 		// controller_runtime_reconcile_errors_total and replaced
@@ -238,89 +251,37 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 // The records are the only evidence of what was the operator's -- there is no
 // DynamicPrefix left to consult -- so anything not named in them was the user's
 // and is left untouched.
-func (r *PoolSyncReconciler) releasePool(ctx context.Context, pool *unstructured.Unstructured) error {
+func (r *PoolSyncReconciler) releasePool(
+	ctx context.Context,
+	pool *unstructured.Unstructured,
+	backend poolBackend,
+	reason string,
+) error {
 	log := logf.FromContext(ctx)
-	annotations := pool.GetAnnotations()
-	changed := false
 
-	if recordValue, ok := annotations[AnnotationManagedBlocks]; ok {
-		record := parseOwnershipRecord(recordValue, true)
-		existing, _, err := unstructured.NestedSlice(pool.Object, "spec", "blocks")
-		if err != nil {
-			return fmt.Errorf("failed to read spec.blocks: %w", err)
-		}
-		kept := make([]interface{}, 0, len(existing))
-		for _, b := range existing {
-			block, ok := b.(map[string]interface{})
-			if !ok {
-				kept = append(kept, b)
-				continue
-			}
-			if key := blockKey(block); key != "" && record.owns(key) {
-				continue
-			}
-			kept = append(kept, b)
-		}
-		if err := unstructured.SetNestedField(pool.Object, kept, "spec", "blocks"); err != nil {
-			return fmt.Errorf("failed to set spec.blocks: %w", err)
-		}
-		changed = true
+	// Dispatch on the backend that matched, not on which record annotation
+	// happens to be present. The two disagree when a pool carries a record from
+	// another backend, and the old form then read and wrote spec.blocks on
+	// objects that have no such field -- creating an empty list on a CIDR group
+	// or a MetalLB pool.
+	changed, err := backend.release(ctx, r, pool)
+	if err != nil {
+		return fmt.Errorf("failed to release %s pool %s: %w", backend.name(), pool.GetName(), err)
 	}
-
-	if recordValue, ok := annotations[AnnotationManagedCIDRs]; ok {
-		record := parseOwnershipRecord(recordValue, true)
-		existing, _, err := unstructured.NestedSlice(pool.Object, "spec", "externalCIDRs")
-		if err != nil {
-			return fmt.Errorf("failed to read spec.externalCIDRs: %w", err)
-		}
-		kept := make([]interface{}, 0, len(existing))
-		for _, c := range existing {
-			if s, ok := c.(string); ok && record.owns(s) {
-				continue
-			}
-			kept = append(kept, c)
-		}
-		if err := unstructured.SetNestedField(pool.Object, kept, "spec", "externalCIDRs"); err != nil {
-			return fmt.Errorf("failed to set spec.externalCIDRs: %w", err)
-		}
-		changed = true
-	}
-
-	if recordValue, ok := annotations[AnnotationManagedAddresses]; ok {
-		record := parseOwnershipRecord(recordValue, true)
-		existing, _, err := unstructured.NestedStringSlice(pool.Object, "spec", "addresses")
-		if err != nil {
-			return fmt.Errorf("failed to read spec.addresses: %w", err)
-		}
-		kept := make([]string, 0, len(existing))
-		for _, a := range existing {
-			if record.owns(canonicalAddressEntry(a)) {
-				continue
-			}
-			kept = append(kept, a)
-		}
-		if err := unstructured.SetNestedStringSlice(pool.Object, kept, "spec", "addresses"); err != nil {
-			return fmt.Errorf("failed to set spec.addresses: %w", err)
-		}
-		changed = true
-	}
-
 	if !changed {
 		return nil
 	}
 
-	updated := pool.GetAnnotations()
-	for _, key := range []string{
-		AnnotationManagedBlocks, AnnotationManagedCIDRs, AnnotationManagedAddresses, AnnotationLastSync,
-	} {
-		delete(updated, key)
-	}
-	pool.SetAnnotations(updated)
+	annotations := pool.GetAnnotations()
+	delete(annotations, AnnotationLastSync)
+	pool.SetAnnotations(annotations)
 
 	if err := r.Update(ctx, pool); err != nil {
 		return fmt.Errorf("failed to release pool %s: %w", pool.GetName(), err)
 	}
-	log.Info("Released pool entries after removal of the dynamic-prefix.io/name annotation", "pool", pool.GetName())
+	log.Info("Released pool entries", "pool", pool.GetName(), "backend", backend.name(), "reason", reason)
+	emitNormalEvent(r.Recorder, pool, eventReasonPoolReleased,
+		fmt.Sprintf("Released the entries this operator wrote to %s pool %s: %s", backend.name(), pool.GetName(), reason))
 	return nil
 }
 

@@ -48,6 +48,73 @@ type poolBackend interface {
 	// for a namespaced pool matches a same-named cluster-scoped one.
 	namespaced() bool
 	update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error)
+	// release hands back everything the operator wrote to this pool, leaving the
+	// user's own entries untouched, and reports whether anything changed.
+	//
+	// It belongs to the backend for the same reason update does: the release path
+	// used to dispatch on which record annotation was present rather than on which
+	// backend matched, so it read and wrote spec.blocks on objects that have no
+	// such field. Pairing each write with its own undo keeps a backend's knowledge
+	// of its schema in one place.
+	release(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error)
+}
+
+// releaseRecordedSlice removes from a list field exactly the entries named in an
+// ownership record, and drops the record. Entries the record does not name were
+// the user's and stay, including ones that merely resemble the operator's.
+//
+// The field is only touched when the record exists, so a backend that never wrote
+// here cannot have an empty list created underneath it.
+func releaseRecordedSlice(
+	pool *unstructured.Unstructured,
+	recordKey string,
+	keyOf func(interface{}) string,
+	fields ...string,
+) (bool, error) {
+	recordValue, ok := pool.GetAnnotations()[recordKey]
+	if !ok {
+		return false, nil
+	}
+
+	record := parseOwnershipRecord(recordValue, true)
+	existing, _, err := unstructured.NestedSlice(pool.Object, fields...)
+	if err != nil {
+		return false, fmt.Errorf("failed to read %s: %w", strings.Join(fields, "."), err)
+	}
+
+	kept := make([]interface{}, 0, len(existing))
+	for _, item := range existing {
+		if key := keyOf(item); key != "" && record.owns(key) {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	if err := unstructured.SetNestedField(pool.Object, kept, fields...); err != nil {
+		return false, fmt.Errorf("failed to set %s: %w", strings.Join(fields, "."), err)
+	}
+
+	annotations := pool.GetAnnotations()
+	delete(annotations, recordKey)
+	pool.SetAnnotations(annotations)
+	return true, nil
+}
+
+// blockKeyOf keys a Cilium pool block, which is a start/stop or cidr object.
+func blockKeyOf(item interface{}) string {
+	block, ok := item.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	return blockKey(block)
+}
+
+// stringKeyOf keys a plain string list entry, such as a CIDR group's entries.
+func stringKeyOf(item interface{}) string {
+	s, ok := item.(string)
+	if !ok {
+		return ""
+	}
+	return s
 }
 
 type ciliumLoadBalancerIPPoolBackend struct {
@@ -65,6 +132,10 @@ func (b ciliumLoadBalancerIPPoolBackend) update(ctx context.Context, r *PoolSync
 	return r.updateLoadBalancerIPPool(ctx, pool, configs, managedPrefixes)
 }
 
+func (b ciliumLoadBalancerIPPoolBackend) release(_ context.Context, _ *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
+	return releaseRecordedSlice(pool, AnnotationManagedBlocks, blockKeyOf, "spec", "blocks")
+}
+
 type ciliumCIDRGroupBackend struct {
 	resourceGVK schema.GroupVersionKind
 }
@@ -78,6 +149,10 @@ func (b ciliumCIDRGroupBackend) gvk() schema.GroupVersionKind {
 func (b ciliumCIDRGroupBackend) namespaced() bool { return false }
 func (b ciliumCIDRGroupBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
 	return r.updateCIDRGroup(ctx, pool, configs, managedPrefixes)
+}
+
+func (b ciliumCIDRGroupBackend) release(_ context.Context, _ *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
+	return releaseRecordedSlice(pool, AnnotationManagedCIDRs, stringKeyOf, "spec", "externalCIDRs")
 }
 
 type metalLBIPAddressPoolBackend struct {
@@ -172,6 +247,16 @@ func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReco
 	return true, r.Update(ctx, pool)
 }
 
+func (b metalLBIPAddressPoolBackend) release(_ context.Context, _ *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
+	return releaseRecordedSlice(pool, AnnotationManagedAddresses, func(item interface{}) string {
+		s, ok := item.(string)
+		if !ok {
+			return ""
+		}
+		return canonicalAddressEntry(s)
+	}, "spec", "addresses")
+}
+
 // canonicalAddressEntry normalises a MetalLB address entry so ownership survives
 // a difference in spelling. Entries are either "start-end" or a CIDR/address.
 func canonicalAddressEntry(entry string) string {
@@ -244,7 +329,14 @@ func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, 
 	if err != nil {
 		return false, fmt.Errorf("failed to read spec.cidr: %w", err)
 	}
-	if currentCIDR == cidr {
+
+	// The record says the operator owns the value in spec.cidr. Unlike the list
+	// backends it is not used to separate the operator's entries from the user's
+	// -- there is only one value -- but without it a de-annotated IPPool carries
+	// no trace of the operator at all, so the watch predicate stops matching it
+	// and it is never handed back.
+	recorded := pool.GetAnnotations()[AnnotationManagedCIDR] == cidr
+	if currentCIDR == cidr && recorded {
 		logger.V(2).Info("Calico IPPool CIDR unchanged, skipping update", "pool", pool.GetName())
 		return siblingsChanged, nil
 	}
@@ -253,8 +345,40 @@ func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, 
 		return false, fmt.Errorf("failed to set spec.cidr: %w", err)
 	}
 
+	setPoolAnnotation(pool, AnnotationManagedCIDR, formatOwnershipRecord([]string{cidr}))
 	r.setLastSyncAnnotation(pool)
 	return true, r.Update(ctx, pool)
+}
+
+// release hands a Calico IPPool back: the draining siblings the operator created
+// are deleted outright, and the record describing spec.cidr is dropped.
+//
+// spec.cidr itself is left as it stands. The field is mandatory and holds exactly
+// one prefix, so there is no empty value to restore and no earlier value to put
+// back -- clearing it would reject the object, and deleting a pool the user
+// created is not this operator's decision to make. The siblings are different:
+// those objects exist only because the operator made them.
+func (b calicoIPPoolBackend) release(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	// No configs means every sibling has aged out, which is exactly the state a
+	// released pool should be left in.
+	changed, err := b.syncDrainingSiblings(ctx, r, pool, nil)
+	if err != nil {
+		return changed, err
+	}
+
+	annotations := pool.GetAnnotations()
+	if _, ok := annotations[AnnotationManagedCIDR]; ok {
+		delete(annotations, AnnotationManagedCIDR)
+		pool.SetAnnotations(annotations)
+		changed = true
+		cidr, _, _ := unstructured.NestedString(pool.Object, "spec", "cidr")
+		logger.Info("Released Calico IPPool; spec.cidr is left as it stands because the field cannot be empty",
+			"pool", pool.GetName(), "cidr", cidr)
+	}
+
+	return changed, nil
 }
 
 // LabelCalicoParentPool marks a Calico IPPool as a draining sibling created for a
