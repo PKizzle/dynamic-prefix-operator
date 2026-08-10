@@ -18,6 +18,7 @@ package prefix
 
 import (
 	"context"
+	"k8s.io/utils/ptr"
 	"net/netip"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func TestDefaultReceiverFactory_SharesRAReceiverByInterface(t *testing.T) {
 	spec := dynamicprefixiov1alpha1.AcquisitionSpec{
 		RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 			Interface: "eth0",
-			Enabled:   true,
+			Enabled:   ptr.To(true),
 		},
 	}
 
@@ -118,7 +119,7 @@ func TestDefaultReceiverFactory_CreatesSeparateRAReceiversForDifferentInterfaces
 		_, err := factory.CreateReceiver(dynamicprefixiov1alpha1.AcquisitionSpec{
 			RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 				Interface: iface,
-				Enabled:   true,
+				Enabled:   ptr.To(true),
 			},
 		})
 		if err != nil {

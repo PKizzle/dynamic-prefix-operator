@@ -63,7 +63,7 @@ func requireGlobalUnicastFromSpec(spec dynamicprefixiov1alpha1.AcquisitionSpec) 
 // 3. If both configured → CompositeReceiver (DHCPv6-PD primary, RA fallback)
 func (f *DefaultReceiverFactory) CreateReceiver(spec dynamicprefixiov1alpha1.AcquisitionSpec) (Receiver, error) {
 	hasDHCPv6 := spec.DHCPv6PD != nil
-	hasRA := spec.RouterAdvertisement != nil && spec.RouterAdvertisement.Enabled
+	hasRA := spec.RouterAdvertisement.RAEnabled()
 
 	requireGUA := requireGlobalUnicastFromSpec(spec)
 

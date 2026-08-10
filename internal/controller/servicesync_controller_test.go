@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -62,7 +63,7 @@ var _ = Describe("ServiceSync Controller", func() {
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 							Interface: "eth0",
-							Enabled:   true,
+							Enabled:   ptr.To(true),
 						},
 					},
 					AddressRanges: []dynamicprefixiov1alpha1.AddressRangeSpec{
@@ -353,7 +354,7 @@ var _ = Describe("ServiceSync Controller", func() {
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 							Interface: "eth0",
-							Enabled:   true,
+							Enabled:   ptr.To(true),
 						},
 					},
 					Transition: &dynamicprefixiov1alpha1.TransitionSpec{

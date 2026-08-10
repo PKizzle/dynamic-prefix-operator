@@ -100,6 +100,10 @@ type PoolSyncReconciler struct {
 	// BackendGVKs holds discovered pool backend resources. If empty, the reconciler
 	// falls back to the default Cilium resources for tests and backward compatibility.
 	BackendGVKs []schema.GroupVersionKind
+
+	// poolState aggregates per-pool sync outcomes into the PoolsSynced condition
+	// on each DynamicPrefix.
+	poolState poolSyncState
 }
 
 // lbIPPoolGVK returns the GVK for CiliumLoadBalancerIPPool.
@@ -221,6 +225,7 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 			fmt.Sprintf("Cannot build configurations for %s pool %s from DynamicPrefix %s: %v",
 				backend.name(), req.Name, dpName, err))
 		recordPoolSyncFailedMetric(backend.name(), dpName, req.String())
+		r.updatePoolsSyncedCondition(ctx, dpName, req.String(), err)
 		return ctrl.Result{}, fmt.Errorf("failed to build pool configurations for %s: %w", req.Name, err)
 	}
 
@@ -243,6 +248,7 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 		// Surfaced so conflicts retry promptly with backoff and rejected
 		// updates (immutable fields, webhooks) become visible in the metrics.
 		recordPoolSyncFailedMetric(backend.name(), dpName, req.String())
+		r.updatePoolsSyncedCondition(ctx, dpName, req.String(), updateErr)
 		return ctrl.Result{}, updateErr
 	}
 
@@ -254,6 +260,7 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 		log.Info("Pool already up-to-date", "backend", backend.name(), "pool", req.Name, "blockCount", len(configs))
 	}
 	recordPoolSyncedMetric(backend.name(), dpName, req.String())
+	r.updatePoolsSyncedCondition(ctx, dpName, req.String(), nil)
 	return ctrl.Result{}, nil
 }
 
@@ -291,6 +298,7 @@ func (r *PoolSyncReconciler) releasePool(
 	if err := r.Update(ctx, pool); err != nil {
 		return fmt.Errorf("failed to release pool %s: %w", pool.GetName(), err)
 	}
+	forgetPoolMetrics(backend.name(), pool.GetAnnotations()[AnnotationName], client.ObjectKeyFromObject(pool).String())
 	log.Info("Released pool entries", "pool", pool.GetName(), "backend", backend.name(), "reason", reason)
 	emitNormalEvent(r.Recorder, pool, eventReasonPoolReleased,
 		fmt.Sprintf("Released the entries this operator wrote to %s pool %s: %s", backend.name(), pool.GetName(), reason))

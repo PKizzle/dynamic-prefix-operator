@@ -107,10 +107,28 @@ type RouterAdvertisementSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Interface string `json:"interface,omitempty"`
 
-	// Enabled controls whether RA monitoring is active
+	// Enabled controls whether RA monitoring is active. Defaults to true.
+	//
+	// A pointer, because the pair "omitempty" and "default=true" cannot express
+	// false on a plain bool: the zero value is indistinguishable from unset, so a
+	// Go client round-tripping this object drops `enabled: false` from the JSON
+	// and the API server defaults it straight back to true. PrefixFilterSpec
+	// already models an opt-out this way.
 	// +optional
 	// +kubebuilder:default=true
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// RAEnabled reports whether Router Advertisement monitoring is active, applying
+// the documented default for a spec that does not say.
+func (s *RouterAdvertisementSpec) RAEnabled() bool {
+	if s == nil {
+		return false
+	}
+	if s.Enabled == nil {
+		return true
+	}
+	return *s.Enabled
 }
 
 // AddressRangeSpec defines an address range within the received prefix.

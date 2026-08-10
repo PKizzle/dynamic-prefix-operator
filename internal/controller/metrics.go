@@ -93,3 +93,22 @@ func recordPoolSyncedMetric(backend, dynamicPrefix, pool string) {
 func recordPoolSyncFailedMetric(backend, dynamicPrefix, pool string) {
 	poolsSynced.WithLabelValues(backend, dynamicPrefix, pool).Set(0)
 }
+
+// forgetPoolMetrics drops the series for a pool the operator no longer manages.
+//
+// A gauge keeps reporting its last value forever, so a released or deleted pool
+// would go on claiming to be in sync -- or, worse, out of sync -- indefinitely,
+// and in a cluster that churns pools the label set grows for the life of the
+// process.
+func forgetPoolMetrics(backend, dynamicPrefix, pool string) {
+	poolsSynced.DeleteLabelValues(backend, dynamicPrefix, pool)
+}
+
+// forgetPrefixMetrics drops the series for a DynamicPrefix that has been
+// deleted. The counters are cumulative and keep their meaning across a
+// resource's life, but the lease-expiry gauge would otherwise report an expiry
+// for a resource that no longer exists.
+func forgetPrefixMetrics(name string) {
+	prefixLeaseExpirySeconds.DeleteLabelValues(name)
+	poolsSynced.DeletePartialMatch(prometheus.Labels{"dynamic_prefix": name})
+}

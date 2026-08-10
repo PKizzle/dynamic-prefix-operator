@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -59,7 +60,7 @@ var _ = Describe("BGPSync Controller", func() {
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 							Interface: "eth0",
-							Enabled:   true,
+							Enabled:   ptr.To(true),
 						},
 					},
 					Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
@@ -215,7 +216,7 @@ var _ = Describe("BGPSync Controller", func() {
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 							Interface: "eth0",
-							Enabled:   true,
+							Enabled:   ptr.To(true),
 						},
 					},
 					Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
@@ -296,7 +297,7 @@ var _ = Describe("BGPSync Controller", func() {
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 							Interface: "eth0",
-							Enabled:   true,
+							Enabled:   ptr.To(true),
 						},
 					},
 					Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
@@ -406,7 +407,7 @@ func TestBGPSyncReconciler_Reconcile_CreateAdvertisement(t *testing.T) {
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 					Interface: "eth0",
-					Enabled:   true,
+					Enabled:   ptr.To(true),
 				},
 			},
 			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
@@ -510,7 +511,7 @@ func TestBGPSyncReconciler_Reconcile_UpdateStatus(t *testing.T) {
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 					Interface: "eth0",
-					Enabled:   true,
+					Enabled:   ptr.To(true),
 				},
 			},
 			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
@@ -603,7 +604,7 @@ func TestBGPSyncReconciler_Reconcile_NoBGPSubnets(t *testing.T) {
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 					Interface: "eth0",
-					Enabled:   true,
+					Enabled:   ptr.To(true),
 				},
 			},
 			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
@@ -685,7 +686,7 @@ func TestBGPSyncReconciler_Reconcile_DeleteOrphaned(t *testing.T) {
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 					Interface: "eth0",
-					Enabled:   true,
+					Enabled:   ptr.To(true),
 				},
 			},
 			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
@@ -778,7 +779,7 @@ func TestBGPSyncReconciler_Reconcile_WithPoolSelector(t *testing.T) {
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 					Interface: "eth0",
-					Enabled:   true,
+					Enabled:   ptr.To(true),
 				},
 			},
 			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{

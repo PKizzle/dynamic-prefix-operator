@@ -22,6 +22,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
 )
@@ -31,7 +32,7 @@ func TestDynamicPrefixAffectsDependents(t *testing.T) {
 		return &dynamicprefixiov1alpha1.DynamicPrefix{
 			Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 				Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
-					RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{Interface: "eth0", Enabled: true},
+					RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{Interface: "eth0", Enabled: ptr.To(true)},
 				},
 				AddressRanges: []dynamicprefixiov1alpha1.AddressRangeSpec{
 					{Name: "loadbalancers", Start: "::f000:0:0:0", End: "::ffff:ffff:ffff:ffff"},

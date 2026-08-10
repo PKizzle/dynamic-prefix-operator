@@ -133,6 +133,7 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// a reason that has nothing to do with the resource.
 		if apierrors.IsNotFound(err) {
 			r.cleanupReceiver(req.Name)
+			forgetPrefixMetrics(req.Name)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err

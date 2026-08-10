@@ -23,6 +23,7 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -368,11 +369,16 @@ func (r *BGPSyncReconciler) updateStatus(
 		}
 	}
 
-	// Update BGPAdvertisementReady condition
+	// Update BGPAdvertisementReady condition.
+	//
+	// meta.SetStatusCondition rather than a hand-rolled equivalent: it preserves
+	// LastTransitionTime across an unchanged status, which is the whole point of
+	// the field, and it reports whether anything actually changed -- including a
+	// change of Reason, which the previous comparison ignored, so a
+	// reason-only transition was computed and then silently dropped.
 	condition := r.buildBGPCondition(ctx, dp, subnetsWithBGP)
-	existingCondition := r.findCondition(dp.Status.Conditions, dynamicprefixiov1alpha1.ConditionTypeBGPAdvertisementReady)
-	if existingCondition == nil || existingCondition.Status != condition.Status || existingCondition.Message != condition.Message {
-		r.setCondition(&dp.Status.Conditions, condition)
+	condition.ObservedGeneration = dp.Generation
+	if meta.SetStatusCondition(&dp.Status.Conditions, condition) {
 		statusChanged = true
 	}
 
@@ -430,27 +436,6 @@ func (r *BGPSyncReconciler) buildBGPCondition(
 		Message:            "Some BGP advertisements are not yet ready",
 		LastTransitionTime: metav1.Now(),
 	}
-}
-
-// findCondition finds a condition by type.
-func (r *BGPSyncReconciler) findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
-	for i := range conditions {
-		if conditions[i].Type == conditionType {
-			return &conditions[i]
-		}
-	}
-	return nil
-}
-
-// setCondition updates or adds a condition.
-func (r *BGPSyncReconciler) setCondition(conditions *[]metav1.Condition, condition metav1.Condition) {
-	for i := range *conditions {
-		if (*conditions)[i].Type == condition.Type {
-			(*conditions)[i] = condition
-			return
-		}
-	}
-	*conditions = append(*conditions, condition)
 }
 
 // SetupWithManager sets up the controller with the Manager.

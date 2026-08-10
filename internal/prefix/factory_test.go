@@ -18,6 +18,7 @@ limitations under the License.
 package prefix
 
 import (
+	"k8s.io/utils/ptr"
 	"testing"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
@@ -49,7 +50,7 @@ func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
 			spec: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 					Interface: "eth0",
-					Enabled:   true,
+					Enabled:   ptr.To(true),
 				},
 			},
 			expectedType:   "*prefix.RAReceiver",
@@ -64,7 +65,7 @@ func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
 				},
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 					Interface: "eth0",
-					Enabled:   true,
+					Enabled:   ptr.To(true),
 				},
 			},
 			expectedType:   "*prefix.CompositeReceiver",
@@ -79,7 +80,7 @@ func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
 				},
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 					Interface: "eth0",
-					Enabled:   false,
+					Enabled:   ptr.To(false),
 				},
 			},
 			expectedType:   "*prefix.DHCPv6PDReceiver",
@@ -105,7 +106,7 @@ func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
 			spec: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 					Interface: "",
-					Enabled:   true,
+					Enabled:   ptr.To(true),
 				},
 			},
 			wantErr: true,

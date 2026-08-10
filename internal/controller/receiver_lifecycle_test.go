@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
@@ -48,7 +49,7 @@ func raAcquisition(iface string) dynamicprefixiov1alpha1.AcquisitionSpec {
 	return dynamicprefixiov1alpha1.AcquisitionSpec{
 		RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 			Interface: iface,
-			Enabled:   true,
+			Enabled:   ptr.To(true),
 		},
 	}
 }
