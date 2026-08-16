@@ -50,11 +50,10 @@ type poolBackend interface {
 	// release hands back everything the operator wrote to this pool, leaving the
 	// user's own entries untouched, and reports whether anything changed.
 	//
-	// It belongs to the backend for the same reason update does: the release path
-	// used to dispatch on which record annotation was present rather than on which
-	// backend matched, so it read and wrote spec.blocks on objects that have no
-	// such field. Pairing each write with its own undo keeps a backend's knowledge
-	// of its schema in one place.
+	// It belongs to the backend for the same reason update does: only the backend
+	// knows which field its record describes. Dispatching on whichever record
+	// annotation happens to be present instead would write spec.blocks on objects
+	// that have no such field.
 	release(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error)
 }
 
@@ -151,7 +150,22 @@ func (b ciliumCIDRGroupBackend) update(ctx context.Context, r *PoolSyncReconcile
 }
 
 func (b ciliumCIDRGroupBackend) release(_ context.Context, _ *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
-	return releaseRecordedSlice(pool, AnnotationManagedCIDRs, stringKeyOf, "spec", "externalCIDRs")
+	return releaseRecordedSlice(pool, AnnotationManagedCIDRs, cidrKeyOf, "spec", "externalCIDRs")
+}
+
+// cidrKeyOf identifies an entry in a CiliumCIDRGroup's spec.externalCIDRs, for
+// both the write side and the undo side.
+func cidrKeyOf(existing interface{}) string {
+	return canonicalEntry(stringKeyOf(existing))
+}
+
+// addressKeyOf identifies an entry in a MetalLB IPAddressPool's spec.addresses,
+// for both the write side and the undo side.
+//
+// The record's own lookup normalises a bare address or CIDR, but not MetalLB's
+// "start-end" form, so entries have to arrive here already canonicalised.
+func addressKeyOf(existing interface{}) string {
+	return canonicalAddressEntry(stringKeyOf(existing))
 }
 
 type metalLBIPAddressPoolBackend struct {
@@ -190,7 +204,7 @@ func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReco
 		fields:    []string{"spec", "addresses"},
 		recordKey: AnnotationManagedAddresses,
 		desired:   desired,
-		keyOf:     func(existing interface{}) string { return canonicalAddressEntry(stringKeyOf(existing)) },
+		keyOf:     addressKeyOf,
 		owned: func(existing interface{}) bool {
 			address, ok := existing.(string)
 			if !ok {
@@ -202,13 +216,7 @@ func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReco
 }
 
 func (b metalLBIPAddressPoolBackend) release(_ context.Context, _ *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
-	return releaseRecordedSlice(pool, AnnotationManagedAddresses, func(item interface{}) string {
-		s, ok := item.(string)
-		if !ok {
-			return ""
-		}
-		return canonicalAddressEntry(s)
-	}, "spec", "addresses")
+	return releaseRecordedSlice(pool, AnnotationManagedAddresses, addressKeyOf, "spec", "addresses")
 }
 
 // canonicalAddressEntry normalises a MetalLB address entry so ownership survives

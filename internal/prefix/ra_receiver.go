@@ -75,7 +75,9 @@ type RAReceiver struct {
 	routerSolicitationInterval time.Duration
 	requireGlobalUnicast       bool
 	// verifyHopLimit records whether the socket agreed to report each packet's
-	// hop limit. Set during Start, read only by the receive loop it starts.
+	// hop limit. Written under mu by Start and handed to that generation's
+	// receive loop as an argument, since Stop does not wait for the previous
+	// loop to leave ReadFrom.
 	verifyHopLimit bool
 	// rejected counts advertisements dropped by the RFC 4861 source and hop-limit
 	// checks. A flood is a plausible way to attack the log, so the drops are
@@ -160,17 +162,17 @@ func (r *RAReceiver) Start(ctx context.Context) error {
 
 	r.conn = conn
 	r.ctx, r.cancel = context.WithCancel(ctx)
-	// Fresh stop channel per run. Stop() closes this one, and it was previously
-	// only ever created in the constructor -- so a restart handed the new
-	// goroutines an already-closed channel (they exited at once, leaving a
-	// receiver that looked healthy but delivered nothing) and the next Stop
-	// panicked closing it twice.
+	// Fresh stop channel per run, because Stop() closes this one. Reusing a
+	// channel across runs would hand the new goroutines an already-closed one --
+	// they exit at once, leaving a receiver that looks healthy and delivers
+	// nothing -- and make the next Stop panic closing it twice.
 	r.stopCh = make(chan struct{})
 	r.started = true
 
-	// Each generation's goroutines take their own context and stop channel;
-	// reading the fields inside them would race with the next Start.
-	go r.receiveLoop(r.ctx, r.stopCh)
+	// Each generation's goroutines take their own context, stop channel, socket
+	// and hop-limit policy; reading the fields inside them would race with the
+	// next Start.
+	go r.receiveLoop(r.ctx, r.stopCh, conn, r.verifyHopLimit)
 	go r.sendInitialRouterSolicitations(r.ctx, r.stopCh, ifi.HardwareAddr)
 
 	return nil
@@ -236,7 +238,7 @@ func (r *RAReceiver) waitAfterError(ctx context.Context, stopCh <-chan struct{})
 }
 
 // receiveLoop continuously reads Router Advertisements from the interface.
-func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}) {
+func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}, conn ndpConn, verifyHopLimit bool) {
 	log := logf.Log.WithName("ra-receiver")
 	log.V(1).Info("Receive loop started", "interface", r.iface)
 
@@ -253,7 +255,7 @@ func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}) {
 		}
 
 		// Set read deadline to allow periodic checking of stop signal
-		if err := r.conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 			log.Error(err, "Failed to set read deadline")
 			r.sendError(fmt.Errorf("failed to set read deadline: %w", err))
 			// A sticky failure here (the interface went down) returns
@@ -266,7 +268,7 @@ func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}) {
 			continue
 		}
 
-		msg, cm, from, err := r.conn.ReadFrom()
+		msg, cm, from, err := conn.ReadFrom()
 		if err != nil {
 			// Timeout is expected, just continue.
 			// errors.As, not a bare assertion: the deadline error arrives
@@ -301,7 +303,7 @@ func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}) {
 			continue
 		}
 
-		if reason := r.rejectRouterAdvertisement(from, cm); reason != "" {
+		if reason := r.rejectRouterAdvertisement(from, cm, verifyHopLimit); reason != "" {
 			count := atomic.AddUint64(&r.rejected, 1)
 			// One line per packet would hand anyone on the link a way to fill the
 			// node's disk, so the drops are counted and reported on a curve.
@@ -410,25 +412,22 @@ func (r *RAReceiver) sendRouterSolicitation(hwAddr net.HardwareAddr) error {
 // section 6.1.2 requires of a Router Advertisement, returning why it must be
 // discarded or "" if it may be processed.
 //
-// Neither this package nor mdlayher/ndp performed them before, which left the
-// prefix the whole cluster derives its addresses from decided by whatever RA
-// arrived last -- from anywhere, including off-link. They are not a complete
-// defence: an attacker with access to the link can still forge a compliant RA,
-// which is inherent to taking delegation from Router Advertisements at all. What
-// they do is restore the floor every conforming NDP implementation provides,
-// and rule out the remote attacker entirely.
+// They are not a complete defence: an attacker with access to the link can still
+// forge a compliant RA, which is inherent to taking delegation from Router
+// Advertisements at all. What they do is restore the floor every conforming NDP
+// implementation provides, and rule out the remote attacker entirely.
 //
 //   - The source must be link-local. A router advertises from fe80::/10, and an
 //     RA from a routable address is either misconfigured or spoofed.
 //   - The hop limit must be 255. Since a forwarding router must decrement it,
 //     receiving 255 proves the packet was never forwarded, i.e. originated on
 //     this link.
-func (r *RAReceiver) rejectRouterAdvertisement(from netip.Addr, cm *ipv6.ControlMessage) string {
+func (r *RAReceiver) rejectRouterAdvertisement(from netip.Addr, cm *ipv6.ControlMessage, verifyHopLimit bool) string {
 	if !isLinkLocal(from) {
 		return "source address is not link-local"
 	}
 
-	if !r.verifyHopLimit {
+	if !verifyHopLimit {
 		return ""
 	}
 	if cm == nil {

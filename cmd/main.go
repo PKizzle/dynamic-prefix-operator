@@ -261,8 +261,9 @@ func main() {
 
 	// Set up ServiceSync controller for HA mode Service management
 	if err := (&controller.ServiceSyncReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: eventRecorder,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceSync")
 		os.Exit(1)

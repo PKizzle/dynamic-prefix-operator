@@ -30,15 +30,15 @@ import (
 // static ones the user supplied. Every reconcile therefore has to answer "which
 // of these entries are mine?" before it can replace them.
 //
-// That question used to be answered geometrically, by testing each entry against
-// the currently managed prefixes (current + Status.History). That is wrong at
-// exactly one moment, and it is a moment that arrives on every rotation: when a
-// prefix falls out of the history window, the address the operator itself wrote
-// for it stops matching any managed prefix and is reclassified as a user's static
-// address -- and preserved forever. One entry leaked per object per rotation,
-// without bound, until the accumulated entries were enough to saturate the
-// load-balancer implementation's layer-2 announcements: IPv6 connectivity then
-// failed for most Services while DNS and every other layer still looked healthy.
+// Answering it geometrically -- testing each entry against the currently managed
+// prefixes (current + Status.History) -- is wrong at exactly one moment, and it
+// is a moment that arrives on every rotation: when a prefix falls out of the
+// history window, the address the operator itself wrote for it stops matching any
+// managed prefix, is reclassified as a user's static address, and is preserved
+// forever. That leaks one entry per object per rotation, without bound, until the
+// accumulated entries saturate the load-balancer implementation's layer-2
+// announcements and IPv6 connectivity fails for most Services while DNS and every
+// other layer still looks healthy.
 //
 // Geometry cannot answer the question, because after eviction there is nothing
 // left in the object to distinguish "an address I wrote three rotations ago" from
@@ -91,7 +91,7 @@ const (
 	// entries from the user's. It is needed to answer the other question: whether
 	// the operator put the current value there at all. Without it a released or
 	// orphaned IPPool is indistinguishable from one the user wrote by hand, so
-	// the watch predicate stopped matching it and the CIDR was left pointing at a
+	// the watch predicate would stop matching it and leave the CIDR pointing at a
 	// prefix nothing maintains.
 	AnnotationManagedCIDR = "dynamic-prefix.io/managed-cidr"
 )

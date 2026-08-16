@@ -20,12 +20,14 @@ spec:
       path: /metrics
       {{- if .Values.config.metrics.secure }}
       # The endpoint is HTTPS and authenticated: Prometheus presents its own
-      # ServiceAccount token, and the operator's metrics-auth ClusterRole must be
-      # bound to that ServiceAccount for the scrape to be authorized.
+      # ServiceAccount token, and that ServiceAccount must hold the
+      # metrics-reader ClusterRole this chart ships, or the scrape authenticates
+      # and is then denied. Set serviceMonitor.scraperServiceAccount to have the
+      # chart bind it.
       scheme: https
       bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
       tlsConfig:
-        insecureSkipVerify: true
+        {{- toYaml .Values.serviceMonitor.tlsConfig | nindent 8 }}
       {{- end }}
       {{- with .Values.serviceMonitor.metricRelabelings }}
       metricRelabelings:

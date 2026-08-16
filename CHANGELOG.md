@@ -4,6 +4,25 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## Unreleased
+
+### Fixed
+
+- **Security (chart):** secure metrics authenticated every scrape and authorized none of them. `config.metrics.secure` defaults to true, so the operator asks the API server whether the caller may read `/metrics`, but the chart shipped no ClusterRole granting that to anyone — every authenticated scrape was denied, and an upgrade silently stopped all `dynamic_prefix_*` metrics. The chart now ships a `metrics-reader` ClusterRole, binds it when `serviceMonitor.scraperServiceAccount.name` is set, and the NetworkPolicy takes the metrics port from the bind address instead of the 8080 it stopped listening on.
+- `PoolsSynced` never cleared once a failing pool stopped being managed. Releasing a pool (de-annotated, or its DynamicPrefix deleted) or deleting it outright left the failure recorded in memory, so the condition went on naming a pool the operator no longer touches and `kubectl wait --for=condition=PoolsSynced` never returned. The same state is now keyed per backend as well as per name: several pool kinds are cluster-scoped and can share one, and a healthy pool could clear a broken sibling's entry and report the whole set as synced.
+- A pool bound to a DynamicPrefix that had not acquired a prefix yet was reported as a sync failure — a Warning on every pool, `PoolsSynced=False`, and exponential backoff toward a quarter of an hour through the whole of a fresh install. Waiting for the first advertisement now requeues quietly, on both the pool and HA-mode Service paths.
+- A released pool's `dynamic_prefix_pools_synced` series was never dropped. The release path read the binding annotation to build the label set, but the common path runs precisely because that annotation was removed, so it deleted a series that never existed and left the real one reporting a pool the operator had handed back.
+- Receiver failures no longer wake the reconciler. A down interface reports one failure per second, and reconcile reads the receiver's last prefix rather than the error, so each wake-up did nothing but reconcile — indefinitely, once per second, per DynamicPrefix.
+- Releasing a pool now also drops record annotations belonging to other backends. Only the matched backend can undo its own writes, but any record left behind kept the object inside the watch filter for a binding that no longer exists.
+- The RA receive loop takes its socket and hop-limit policy as arguments rather than reading them from the receiver. `Stop` does not wait for the loop to leave `ReadFrom`, so a restart — which the shared RA pool performs when a stopped entry is re-armed — could have the outgoing generation racing the next `Start` for those fields.
+- Releasing a Service now emits a `ServiceReleased` event, as releasing a pool already did; `kubectl describe svc` showed nothing when a Service lost its managed addresses and DNS target.
+
+### Changed
+
+- `govulncheck` is pinned to v1.6.0. The previous pin predated the Go toolchain this module builds with by about two years, which risks a security gate that fails to load the sources or quietly analyses a degraded package graph.
+- kustomize has one pin again. Two workflows carried an inline installer at 5.8.1 while the Makefile installed 5.7.1, so the manifests a release published need not have matched what `make build-installer` produced locally; CI now installs it through `make kustomize`.
+- `docker.yaml` declares a top-level `permissions: contents: read`, the last workflow without a default floor and the one holding `packages: write` and `id-token: write`.
+
 ## v0.0.14 - 2026-08-10
 
 This release is an audit round: one security fix in the operator itself, three in

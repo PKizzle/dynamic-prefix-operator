@@ -100,8 +100,12 @@ func recordPoolSyncFailedMetric(backend, dynamicPrefix, pool string) {
 // would go on claiming to be in sync -- or, worse, out of sync -- indefinitely,
 // and in a cluster that churns pools the label set grows for the life of the
 // process.
-func forgetPoolMetrics(backend, dynamicPrefix, pool string) {
-	poolsSynced.DeleteLabelValues(backend, dynamicPrefix, pool)
+//
+// Matched on backend and pool rather than on all three labels: the release path
+// runs after the dynamic-prefix.io/name annotation is gone, so the DynamicPrefix
+// the series was recorded under is no longer knowable there.
+func forgetPoolMetrics(backend, pool string) {
+	poolsSynced.DeletePartialMatch(prometheus.Labels{"backend": backend, "pool": pool})
 }
 
 // forgetPrefixMetrics drops the series for a DynamicPrefix that has been

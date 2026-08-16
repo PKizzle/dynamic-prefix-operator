@@ -275,8 +275,8 @@ func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &RAReceiver{verifyHopLimit: tt.verifyHopLimit}
-			reason := r.rejectRouterAdvertisement(netip.MustParseAddr(tt.from), tt.cm)
+			r := &RAReceiver{}
+			reason := r.rejectRouterAdvertisement(netip.MustParseAddr(tt.from), tt.cm, tt.verifyHopLimit)
 			if rejected := reason != ""; rejected != tt.wantRejected {
 				t.Errorf("rejectRouterAdvertisement(%s) rejected = %v (%q), want %v",
 					tt.from, rejected, reason, tt.wantRejected)
@@ -311,7 +311,7 @@ func TestRAReceiver_StartDegradesWithoutHopLimitReporting(t *testing.T) {
 	if r.verifyHopLimit {
 		t.Error("expected hop-limit verification to be disabled after the socket refused it")
 	}
-	if reason := r.rejectRouterAdvertisement(netip.MustParseAddr("fe80::1"), nil); reason != "" {
+	if reason := r.rejectRouterAdvertisement(netip.MustParseAddr("fe80::1"), nil, r.verifyHopLimit); reason != "" {
 		t.Errorf("expected a link-local advertisement to be accepted without hop-limit reporting, got %q", reason)
 	}
 }

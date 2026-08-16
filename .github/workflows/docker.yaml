@@ -11,6 +11,12 @@ on:
     branches:
       - main
 
+# Least privilege by default, so a job added later has to ask for more rather
+# than inherit whatever the repository default happens to be. This workflow is
+# the one holding packages: write and id-token: write.
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
 

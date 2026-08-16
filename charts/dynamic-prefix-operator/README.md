@@ -105,8 +105,17 @@ Pool backend watches are discovered automatically from installed CRDs. ServiceSy
 |-----------|-------------|---------|
 | `serviceMonitor.enabled` | Create ServiceMonitor | `false` |
 | `serviceMonitor.interval` | Scrape interval | `30s` |
+| `serviceMonitor.tlsConfig` | TLS settings for the scrape when metrics are secure | `{insecureSkipVerify: true}` |
+| `serviceMonitor.scraperServiceAccount.name` | Bind the metrics-reader role to this ServiceAccount | `""` |
 | `networkPolicy.enabled` | Create NetworkPolicy | `false` |
 | `podDisruptionBudget.enabled` | Create PDB | `false` |
+
+With `config.metrics.secure` (the default), metrics are served over HTTPS and
+each scrape is authorized through a SubjectAccessReview. The chart ships a
+`…-metrics-reader` ClusterRole granting `get` on `/metrics`; the scraping
+ServiceAccount must hold it, or scrapes are denied with 403. Set
+`serviceMonitor.scraperServiceAccount.name` (for example `prometheus-k8s` in
+`monitoring`) to have the chart create that binding.
 
 ### Security
 

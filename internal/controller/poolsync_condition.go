@@ -28,11 +28,23 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
 )
+
+// poolStateKey identifies one backend object. A reconcile.Request carries only a
+// name, and several backends are cluster-scoped, so a CiliumLoadBalancerIPPool
+// and a CiliumCIDRGroup can share one. Keyed by name alone their verdicts would
+// overwrite each other and the condition would report whichever synced last.
+type poolStateKey struct {
+	backend string
+	pool    string
+}
+
+func (k poolStateKey) String() string {
+	return k.backend + " " + k.pool
+}
 
 // poolSyncState remembers which pools are currently failing to sync, per
 // DynamicPrefix, so the PoolsSynced condition can describe the whole set rather
@@ -44,46 +56,60 @@ import (
 // ever an aggregate of facts that are themselves recorded on the pools.
 type poolSyncState struct {
 	mu sync.Mutex
-	// failing maps DynamicPrefix name to the set of pool keys currently failing.
-	failing map[string]map[string]string
+	// failing maps DynamicPrefix name to the set of pools currently failing.
+	failing map[string]map[poolStateKey]string
 }
 
 // record notes the outcome of one pool's sync and reports the resulting
 // condition for its DynamicPrefix.
-func (s *poolSyncState) record(dpName, poolKey string, syncErr error) (metav1.ConditionStatus, string, string) {
+func (s *poolSyncState) record(dpName string, key poolStateKey, syncErr error) (metav1.ConditionStatus, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.failing == nil {
-		s.failing = make(map[string]map[string]string)
+		s.failing = make(map[string]map[poolStateKey]string)
 	}
 	pools := s.failing[dpName]
 	if pools == nil {
-		pools = make(map[string]string)
+		pools = make(map[poolStateKey]string)
 		s.failing[dpName] = pools
 	}
 
 	if syncErr != nil {
-		pools[poolKey] = syncErr.Error()
+		pools[key] = syncErr.Error()
 	} else {
-		delete(pools, poolKey)
+		delete(pools, key)
 	}
 
+	return conditionFor(s.failing, dpName)
+}
+
+// conditionFor renders the aggregate condition for one DynamicPrefix, dropping
+// the entry when nothing is failing. Callers hold s.mu.
+func conditionFor(failing map[string]map[poolStateKey]string, dpName string) (metav1.ConditionStatus, string, string) {
+	pools := failing[dpName]
 	if len(pools) == 0 {
-		delete(s.failing, dpName)
+		delete(failing, dpName)
 		return metav1.ConditionTrue, "PoolsSynced", "All referencing pools are in sync"
 	}
 
 	names := make([]string, 0, len(pools))
-	for name := range pools {
-		names = append(names, name)
+	for key := range pools {
+		names = append(names, key.String())
 	}
 	sort.Strings(names)
 
 	// One representative reason keeps the message useful when several pools fail
 	// for the same cause, which is the common case.
+	var first string
+	for key, msg := range pools {
+		if key.String() == names[0] {
+			first = msg
+			break
+		}
+	}
 	return metav1.ConditionFalse, "PoolSyncFailed", fmt.Sprintf(
-		"%d pool(s) are not in sync: %s (%s)", len(names), strings.Join(names, ", "), pools[names[0]])
+		"%d pool(s) are not in sync: %s (%s)", len(names), strings.Join(names, ", "), first)
 }
 
 // forget drops a DynamicPrefix's state, so a deleted resource does not keep
@@ -94,41 +120,89 @@ func (s *poolSyncState) forget(dpName string) {
 	delete(s.failing, dpName)
 }
 
+// forgetEntries drops every failing entry the predicate matches and names the
+// DynamicPrefixes whose aggregate changed as a result.
+//
+// A pool that fails and is then released or deleted is never reconciled through
+// the success path again, so without this its entry -- and the PoolsSynced=False
+// naming it -- would outlive the operator's interest in it.
+func (s *poolSyncState) forgetEntries(match func(poolStateKey) bool) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var affected []string
+	for dpName, pools := range s.failing {
+		changed := false
+		for key := range pools {
+			if match(key) {
+				delete(pools, key)
+				changed = true
+			}
+		}
+		if changed {
+			affected = append(affected, dpName)
+		}
+	}
+	sort.Strings(affected)
+	return affected
+}
+
+// condition renders the aggregate for one DynamicPrefix without recording an
+// outcome, for callers that have just dropped entries.
+func (s *poolSyncState) condition(dpName string) (metav1.ConditionStatus, string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return conditionFor(s.failing, dpName)
+}
+
 // updatePoolsSyncedCondition reflects one pool's sync outcome in the referenced
 // DynamicPrefix's PoolsSynced condition.
-//
-// The condition type has existed since the first release and was never set by
-// anything, so `kubectl wait --for=condition=PoolsSynced` waited forever and the
-// only sign a pool had failed was a log line and a Prometheus gauge.
 //
 // Writes are skipped unless the condition actually changes, because this runs on
 // every pool reconcile: without that check a cluster with many pools would
 // rewrite one shared status object continuously.
-func (r *PoolSyncReconciler) updatePoolsSyncedCondition(ctx context.Context, dpName, poolKey string, syncErr error) {
+func (r *PoolSyncReconciler) updatePoolsSyncedCondition(ctx context.Context, dpName string, key poolStateKey, syncErr error) {
+	status, reason, message := r.poolState.record(dpName, key, syncErr)
+	r.writePoolsSyncedCondition(ctx, dpName, status, reason, message)
+}
+
+// releasePoolsSyncedEntries drops the state of pools the operator has stopped
+// managing and rewrites the conditions that named them.
+func (r *PoolSyncReconciler) releasePoolsSyncedEntries(ctx context.Context, match func(poolStateKey) bool) {
+	for _, dpName := range r.poolState.forgetEntries(match) {
+		status, reason, message := r.poolState.condition(dpName)
+		r.writePoolsSyncedCondition(ctx, dpName, status, reason, message)
+	}
+}
+
+// writePoolsSyncedCondition persists one rendered condition.
+//
+// A conflict is left for the next reconcile rather than retried here: the
+// condition is a report derived from in-memory state, every pool is reconciled
+// again, and a retry against the cached read would resubmit the same stale
+// object.
+func (r *PoolSyncReconciler) writePoolsSyncedCondition(
+	ctx context.Context,
+	dpName string,
+	status metav1.ConditionStatus,
+	reason, message string,
+) {
 	log := logf.FromContext(ctx)
-	status, reason, message := r.poolState.record(dpName, poolKey, syncErr)
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var dp dynamicprefixiov1alpha1.DynamicPrefix
-		if err := r.Get(ctx, types.NamespacedName{Name: dpName}, &dp); err != nil {
-			return err
-		}
-
-		existing := meta.FindStatusCondition(dp.Status.Conditions, dynamicprefixiov1alpha1.ConditionTypePoolsSynced)
-		if existing != nil && existing.Status == status && existing.Reason == reason &&
-			existing.Message == message && existing.ObservedGeneration == dp.Generation {
-			return nil
-		}
-
-		meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
+	var dp dynamicprefixiov1alpha1.DynamicPrefix
+	err := r.Get(ctx, types.NamespacedName{Name: dpName}, &dp)
+	if err == nil {
+		if !meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
 			Type:               dynamicprefixiov1alpha1.ConditionTypePoolsSynced,
 			Status:             status,
 			ObservedGeneration: dp.Generation,
 			Reason:             reason,
 			Message:            message,
-		})
-		return r.Status().Update(ctx, &dp)
-	})
+		}) {
+			return
+		}
+		err = r.Status().Update(ctx, &dp)
+	}
 
 	switch {
 	case err == nil:

@@ -105,11 +105,11 @@ func (r *BGPSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	expectedAdvertisements := make(map[string]bool)
 
 	// Create or update advertisements for each subnet with BGP enabled.
-	// Failures are collected rather than dropped: returning nil here meant a
-	// failed create, an update conflict or a failed delete was never retried
-	// and never reached controller_runtime_reconcile_errors_total, so an
-	// advertisement could stay missing or stale until the next spec change.
-	// One subnet's failure must still not stop the others, hence the join.
+	// Failures are collected rather than dropped: returning nil would leave a
+	// failed create, an update conflict or a failed delete unretried and absent
+	// from controller_runtime_reconcile_errors_total, so an advertisement could
+	// stay missing or stale until the next spec change. One subnet's failure
+	// must still not stop the others, hence the join.
 	var syncErrs []error
 	for _, subnet := range subnetsWithBGP {
 		advName := r.advertisementName(dp.Name, subnet.Name)

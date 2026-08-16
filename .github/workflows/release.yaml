@@ -34,19 +34,15 @@ jobs:
         with:
           version: v4.1.1
 
-      # Installed from the upstream release rather than through a third-party
-      # action whose v2 tag points at a release candidate.
+      # Through the Makefile rather than a third-party action or a second inline
+      # pin, so the published install.yaml is rendered by the same kustomize a
+      # local `make build-installer` uses.
       - name: Set up Kustomize
-        env:
-          KUSTOMIZE_VERSION: "5.8.1"
         run: |
           set -euo pipefail
-          curl -fsSL -o kustomize.tar.gz \
-            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
-          tar -xzf kustomize.tar.gz kustomize
-          sudo install -m 0755 kustomize /usr/local/bin/kustomize
-          rm -f kustomize kustomize.tar.gz
-          kustomize version
+          make kustomize
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+          ./bin/kustomize version
 
       - name: Determine Prerelease Status
         id: prerelease

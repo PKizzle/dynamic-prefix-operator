@@ -64,8 +64,8 @@ func (c *CompositeReceiver) Start(ctx context.Context) error {
 
 	// Start primary receiver. Both failure paths must cancel: the parent is the
 	// manager context, which lives for the whole process and retains every
-	// child it is given, and a failing interface is retried every 30s -- so
-	// each attempt used to leave another cancelCtx behind for good.
+	// child it is given, and a failing interface is retried every 30s -- so an
+	// uncancelled attempt leaves a cancelCtx behind for good, once per retry.
 	if err := c.primary.Start(c.ctx); err != nil {
 		c.cancel()
 		return err

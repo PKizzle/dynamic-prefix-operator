@@ -10,7 +10,9 @@ Dynamic Prefix Operator is a Kubernetes operator that manages dynamic IPv6 prefi
 
 ```bash
 make build            # Build manager binary
-make test             # Run unit tests with coverage
+make test             # Run unit tests with coverage (race detector enabled)
+make test-coverage    # Run tests and enforce the coverage floor, as CI does
+make tidy-check       # Fail if go.mod/go.sum are not tidy, as CI does
 make lint             # Run golangci-lint
 make lint-fix         # Run linter with auto-fixes
 make generate         # Generate code (deepcopy, CRDs)
@@ -33,7 +35,7 @@ make test-e2e         # Run e2e tests with Kind cluster
 
 4. **Address Range Calculation** (`internal/prefix/addressrange.go`): Combines prefix with start/end suffixes to calculate full address ranges within the /64.
 
-5. **PoolSyncReconciler** (`internal/controller/poolsync_controller.go`): Syncs annotated supported pool backends with calculated address ranges/subnets. Supports multi-block or multi-entry mode where the backend can represent it, keeping entries for current prefix plus historical prefixes.
+5. **PoolSyncReconciler** (`internal/controller/poolsync_controller.go`): Syncs annotated supported pool backends with calculated address ranges/subnets. Supports multi-block or multi-entry mode where the backend can represent it, keeping entries for current prefix plus historical prefixes. Also writes the referenced DynamicPrefix's `PoolsSynced` condition (`internal/controller/poolsync_condition.go`), aggregated across every pool bound to it — so `DynamicPrefix.status` has two writers, this one and the DynamicPrefixReconciler.
 
 6. **ServiceSyncReconciler** (`internal/controller/servicesync_controller.go`): HA mode controller that manages LoadBalancer Services. Sets `lbipam.cilium.io/ips` for multi-IP assignment and `external-dns.alpha.kubernetes.io/target` for DNS targeting (skippable per-Service via `dynamic-prefix.io/skip-external-dns-update: "true"`). Supports two IP calculation modes: **static suffix** (explicit `dynamic-prefix.io/suffix` annotation, preferred for dual-stack) and **dynamically assigned** (inferred from Cilium-assigned IP). Preserves non-managed entries (hostnames, IPv4, static IPv6) in both annotations via `extractUnmanagedIPs()`, supporting dual-stack NAT setups where IPv4 uses a hostname and IPv6 uses direct addresses.
 
@@ -44,6 +46,8 @@ ISP/Router → RA Receiver → DynamicPrefix CR (status.currentPrefix)
     → Pool Controller (watches annotated pools, builds multi-block configs)
     → Supported pool backends (Cilium, MetalLB, Calico specs updated with current + historical entries where supported)
     → Service Controller (HA mode: manages Service IPs and DNS targeting)
+
+Pool Controller → DynamicPrefix CR (status PoolsSynced condition)
 ```
 
 ### Pool Integration
@@ -61,7 +65,7 @@ The operator watches annotated Cilium, MetalLB, and Calico resources and auto-up
 
 ## Testing
 
-- **Unit tests**: Ginkgo/Gomega BDD framework in `*_test.go` files
+- **Unit tests**: mostly standard `testing` with table-driven cases in `*_test.go` files; some suites (notably parts of `internal/controller`) use the Ginkgo/Gomega BDD framework against envtest. Match whichever style the file you are editing already uses.
 - **Integration tests**: `internal/integration/` for ISP simulation scenarios
 - **E2E tests**: `test/e2e/` using Kind clusters
 
@@ -77,7 +81,7 @@ go test -v ./... -run TestAddressRange
 
 ## Key Technologies
 
-- **Go 1.26.0** with controller-runtime v0.22.4 (Kubebuilder 4.10.1)
+- **Go 1.26.0** with controller-runtime v0.24.1 (Kubebuilder 4.10.1)
 - **mdlayher/ndp**: Router Advertisement (NDP) monitoring
 - **Helm 3** and **Kustomize** for deployment
 

@@ -80,10 +80,10 @@ func CalculateSubnet(basePrefix netip.Prefix, cfg SubnetConfig) (Subnet, error) 
 
 	// Only 2^(prefixLength - baseBits) subnets of this length exist inside the
 	// base prefix. Rejecting anything beyond that keeps the result within the
-	// delegation -- previously it silently wrapped past the end and the
-	// operator went on to advertise addresses it does not own -- and it is
-	// what keeps the arithmetic below inside 128 bits, since FillBytes panics
-	// when the value does not fit the buffer.
+	// delegation -- an index past the end wraps silently, leaving the operator
+	// advertising addresses it does not own -- and it keeps the arithmetic
+	// below inside 128 bits, since FillBytes panics when the value does not fit
+	// the buffer.
 	// The conversion is safe because the caller has already rejected a subnet
 	// prefix shorter than the base, so the difference is in [0, 128].
 	// #nosec G115 -- bounded above by the prefix-length check

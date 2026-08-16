@@ -49,11 +49,7 @@ type ownedEntry struct {
 //
 // Three backends write a list they share with the user -- Cilium's spec.blocks
 // and spec.externalCIDRs, MetalLB's spec.addresses -- and all three follow the
-// same procedure. They used to implement it three times, about eighty lines
-// each, and the copies drifted: MetalLB spent a full release deciding ownership
-// geometrically after the others had moved to records, and leaked one address
-// per rotation for it. The procedure lives here once so a fix cannot land in two
-// places out of three.
+// same procedure, so it lives here once rather than in each of them.
 type ownedListSync struct {
 	// fields is the path to the list, e.g. "spec", "blocks".
 	fields []string
@@ -73,7 +69,7 @@ type ownedListSync struct {
 // syncOwnedList reconciles one shared list field, reporting whether the object
 // was written.
 //
-// The invariants it maintains, each of which was a bug at some point:
+// The invariants it maintains:
 //
 //   - Entries the operator did not write are preserved, whatever they look like.
 //   - An entry the user already pinned stays theirs even where it coincides with

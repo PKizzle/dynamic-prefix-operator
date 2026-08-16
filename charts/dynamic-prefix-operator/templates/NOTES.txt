@@ -69,6 +69,19 @@ Metrics are available at port {{ .Values.config.metrics.bindAddress }}
 {{- if .Values.serviceMonitor.enabled }}
 A ServiceMonitor has been created for Prometheus Operator.
 {{- end }}
+{{- if .Values.config.metrics.secure }}
+
+Metrics are served over HTTPS and every scrape is authorized, so the scraping
+ServiceAccount needs the ClusterRole:
+
+  {{ include "dynamic-prefix-operator.fullname" . }}-metrics-reader
+
+{{- if not .Values.serviceMonitor.scraperServiceAccount.name }}
+Set serviceMonitor.scraperServiceAccount.name (and .namespace) to have this
+chart bind it, or bind it yourself. Without that binding, scrapes authenticate
+and are then denied with 403.
+{{- end }}
+{{- end }}
 {{- end }}
 
 == Documentation ==
