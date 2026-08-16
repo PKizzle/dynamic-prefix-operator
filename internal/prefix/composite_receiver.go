@@ -131,6 +131,22 @@ func (c *CompositeReceiver) CurrentPrefix() *Prefix {
 	return c.fallback.CurrentPrefix()
 }
 
+// LastError reports the primary's failure in preference to the fallback's. A
+// composite serving an RA-derived prefix because DHCPv6-PD keeps failing is
+// working, but not the way it was configured to, and the primary's error is
+// what explains that.
+func (c *CompositeReceiver) LastError() error {
+	if h, ok := c.primary.(AcquisitionHealth); ok {
+		if err := h.LastError(); err != nil {
+			return err
+		}
+	}
+	if h, ok := c.fallback.(AcquisitionHealth); ok {
+		return h.LastError()
+	}
+	return nil
+}
+
 // Source returns the source of the active receiver.
 func (c *CompositeReceiver) Source() Source {
 	c.mu.RLock()

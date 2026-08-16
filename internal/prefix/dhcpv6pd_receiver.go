@@ -53,6 +53,8 @@ func defaultDHCPv6Dial(iface string) (dhcpv6Client, error) {
 // It actively requests prefix delegation from an upstream DHCPv6 server
 // and handles lease renewals.
 type DHCPv6PDReceiver struct {
+	// health carries its own lock; it is read by reconcile, not by the loop.
+	health                healthTracker
 	mu                    sync.RWMutex
 	iface                 string
 	requestedPrefixLength int
@@ -164,6 +166,9 @@ func (r *DHCPv6PDReceiver) CurrentPrefix() *Prefix {
 	defer r.mu.RUnlock()
 	return r.currentPrefix
 }
+
+// LastError implements AcquisitionHealth.
+func (r *DHCPv6PDReceiver) LastError() error { return r.health.LastError() }
 
 // Source returns SourceDHCPv6PD.
 func (r *DHCPv6PDReceiver) Source() Source {
@@ -699,6 +704,7 @@ func (r *DHCPv6PDReceiver) processIAPDReply(reply *dhcpv6.Message, expectedIAID 
 	}
 	r.lease = newLease
 	r.mu.Unlock()
+	r.health.recordSuccess()
 
 	// Determine event type
 	var eventType EventType
@@ -731,8 +737,11 @@ func (r *DHCPv6PDReceiver) sendEvent(eventType EventType, prefix *Prefix) {
 	}
 }
 
-// sendError sends a failed event.
+// sendError sends a failed event and remembers it, since the event itself is
+// not forwarded to the reconciler.
 func (r *DHCPv6PDReceiver) sendError(err error) {
+	r.health.recordFailure(err)
+
 	select {
 	case r.events <- Event{Type: EventTypeFailed, Error: err}:
 	default:

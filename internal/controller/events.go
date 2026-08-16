@@ -35,11 +35,20 @@ const (
 	eventReasonReceiverCreationFailed = "ReceiverCreationFailed"
 	eventReasonReceiverRebuilt        = "ReceiverRebuilt"
 	eventReasonPrefixRejected         = "PrefixRejected"
+	eventReasonAcquisitionFailed      = "AcquisitionFailed"
 )
 
-// reasonPrefixRejected is the status-condition reason matching
-// eventReasonPrefixRejected.
-const reasonPrefixRejected = "PrefixRejected"
+// Status-condition reasons matching the event reasons above.
+const (
+	reasonPrefixRejected = "PrefixRejected"
+	// reasonAcquisitionFailed says the receiver has tried and failed, as
+	// opposed to reasonWaitingForPrefix, which says it is still waiting.
+	reasonAcquisitionFailed = "AcquisitionFailed"
+	reasonWaitingForPrefix  = "WaitingForPrefix"
+	// reasonRenewalFailing marks a resource still serving a prefix whose lease
+	// the upstream has stopped extending.
+	reasonRenewalFailing = "RenewalFailing"
+)
 
 func emitNormalEvent(recorder events.EventRecorder, object runtime.Object, reason, message string) {
 	emitEvent(recorder, object, corev1.EventTypeNormal, reason, message)

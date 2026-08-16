@@ -74,6 +74,19 @@ const (
 	EventTypeFailed   EventType = "failed"
 )
 
+// AcquisitionHealth is implemented by receivers that can say why acquisition
+// is failing. Reconcile asks rather than being told: failure events are not
+// forwarded to it, because a down interface produces one every second and none
+// of them carry anything reconcile acts on. Without this a resource that can
+// never acquire -- no such interface, no server answering, no permission to
+// bind -- is indistinguishable from one still waiting for its first
+// advertisement.
+type AcquisitionHealth interface {
+	// LastError returns the most recent acquisition failure, or nil if the
+	// last attempt succeeded.
+	LastError() error
+}
+
 // Receiver is the interface for prefix acquisition implementations
 type Receiver interface {
 	// Start begins receiving prefixes
