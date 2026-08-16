@@ -57,8 +57,10 @@ spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       securityContext:
-        # NOTE: This operator requires root and NET_RAW capability for raw socket access
-        # needed by RA monitoring (ICMPv6) and DHCPv6-PD client functionality.
+        # NOTE: This operator requires root for raw socket access. The capability
+        # set the container needs is on the container securityContext below:
+        # NET_RAW for RA monitoring (ICMPv6) and NET_BIND_SERVICE for the
+        # DHCPv6-PD client's UDP 546 bind.
         runAsNonRoot: false
         runAsUser: 0
         seccompProfile:
@@ -82,7 +84,12 @@ spec:
             drop:
             - "ALL"
             add:
+            # ICMPv6 socket for Router Advertisement monitoring.
             - "NET_RAW"
+            # UDP 546, the port RFC 8415 gives DHCPv6 clients. `drop: ALL` takes
+            # this away from root too, so without it the bind fails with EACCES
+            # and no prefix is ever delegated.
+            - "NET_BIND_SERVICE"
         livenessProbe:
           httpGet:
             path: /healthz
