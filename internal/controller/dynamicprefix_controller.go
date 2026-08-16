@@ -392,11 +392,11 @@ func (r *DynamicPrefixReconciler) getOrCreateReceiver(ctx context.Context, dp *d
 // forwardPrefixEvents turns receiver events into reconcile requests for one
 // DynamicPrefix.
 //
-// Renewals are deliberately not forwarded: they change only the lease expiry,
-// which the periodic requeue already refreshes, and a chatty DHCPv6 server would
-// otherwise reconcile on every renewal for no state change. Everything that can
-// alter the prefix, or report that acquisition is failing, wakes the controller
-// immediately.
+// Only events that can change the prefix are forwarded. Renewals move just the
+// lease expiry, which the periodic requeue already refreshes. Failures are not
+// forwarded either: reconcile reads the receiver's current prefix and has no
+// access to the error, so a failed receive produces no state change, while the
+// RA loop reports one failure per second for as long as an interface is down.
 func (r *DynamicPrefixReconciler) forwardPrefixEvents(ctx context.Context, name string, received <-chan prefix.Event) {
 	log := logf.Log.WithName("dynamicprefix").WithValues("name", name)
 
@@ -409,8 +409,7 @@ func (r *DynamicPrefixReconciler) forwardPrefixEvents(ctx context.Context, name 
 				return
 			}
 			switch ev.Type {
-			case prefix.EventTypeAcquired, prefix.EventTypeChanged,
-				prefix.EventTypeExpired, prefix.EventTypeFailed:
+			case prefix.EventTypeAcquired, prefix.EventTypeChanged, prefix.EventTypeExpired:
 			default:
 				continue
 			}
@@ -423,9 +422,11 @@ func (r *DynamicPrefixReconciler) forwardPrefixEvents(ctx context.Context, name 
 			}:
 				log.V(1).Info("Woke the reconciler for a prefix event", "eventType", ev.Type)
 			default:
-				// A wake-up is already queued for this resource; reconcile reads
-				// the receiver's current state, so a second one would be a no-op.
-				log.V(1).Info("Reconcile already pending, not queueing another", "eventType", ev.Type)
+				// The queue is shared by every DynamicPrefix and is only this full
+				// when reconciles are already backed up. Each reconcile reads the
+				// receiver's current state, so the pending wake-ups carry whatever
+				// this one would have said.
+				log.V(1).Info("Prefix event queue is full, not queueing another", "eventType", ev.Type)
 			}
 		}
 	}
@@ -549,8 +550,8 @@ func (r *DynamicPrefixReconciler) handlePrefixChange(ctx context.Context, dp *dy
 	if dp.Status.CurrentPrefix != "" {
 		// The PrefixAcquired condition last flipped when this prefix arrived,
 		// which is the closest recorded acquisition time. dp.CreationTimestamp
-		// is the CR's own creation, so every history entry used to report the
-		// same wrong instant.
+		// is the CR's own creation, which would stamp every history entry with
+		// the same wrong instant.
 		acquiredAt := dp.CreationTimestamp
 		if cond := meta.FindStatusCondition(dp.Status.Conditions,
 			dynamicprefixiov1alpha1.ConditionTypePrefixAcquired); cond != nil && !cond.LastTransitionTime.IsZero() {

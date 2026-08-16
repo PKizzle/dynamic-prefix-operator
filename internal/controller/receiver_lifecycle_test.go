@@ -207,25 +207,29 @@ func TestOffsetBelowRangeStartIsRejected(t *testing.T) {
 	}
 }
 
-// TestLastAddressIn pins the upper bound used for subnet mode.
-func TestLastAddressIn(t *testing.T) {
+// TestLastAddrOfPrefix pins the upper bound used for subnet mode.
+func TestLastAddrOfPrefix(t *testing.T) {
 	for _, tt := range []struct{ prefix, want string }{
 		{"2001:db8:abcd::/64", "2001:db8:abcd:0:ffff:ffff:ffff:ffff"},
 		{"2001:db8:abcd::/48", "2001:db8:abcd:ffff:ffff:ffff:ffff:ffff"},
 		{"2001:db8:abcd::1/128", "2001:db8:abcd::1"},
+		// IPv4 is answered in its own width rather than through a 4-in-6 form.
+		{"192.168.1.0/24", "192.168.1.255"},
 	} {
-		got := lastAddressIn(netip.MustParsePrefix(tt.prefix))
+		got, err := lastAddrOfPrefix(netip.MustParsePrefix(tt.prefix))
+		if err != nil {
+			t.Errorf("lastAddrOfPrefix(%s) error = %v", tt.prefix, err)
+			continue
+		}
 		if want := netip.MustParseAddr(tt.want); got != want {
-			t.Errorf("lastAddressIn(%s) = %s, want %s", tt.prefix, got, want)
+			t.Errorf("lastAddrOfPrefix(%s) = %s, want %s", tt.prefix, got, want)
 		}
 	}
 }
 
-// TestPrefixEventsWakeTheReconciler covers the push path. Every receiver
-// populated an events channel that nothing in the controller package ever read,
-// so a rotation reached status only via the periodic requeue -- capped at five
-// minutes -- and each receiver's channel filled up and then dropped events
-// permanently.
+// TestPrefixEventsWakeTheReconciler covers the push path: a prefix change has to
+// reach the controller immediately rather than waiting for the periodic requeue,
+// which is capped at five minutes.
 func TestPrefixEventsWakeTheReconciler(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -253,21 +257,24 @@ func TestPrefixEventsWakeTheReconciler(t *testing.T) {
 		{prefix.EventTypeAcquired, "acquiring a prefix"},
 		{prefix.EventTypeChanged, "a prefix change"},
 		{prefix.EventTypeExpired, "a lease expiring"},
-		{prefix.EventTypeFailed, "an acquisition failure"},
 	} {
 		events <- prefix.Event{Type: tc.eventType}
 		waitForWake(t, tc.what)
 	}
 
-	// A renewal changes only the lease expiry, which the periodic requeue
-	// already refreshes; forwarding it would reconcile on every DHCPv6 renewal
-	// for no change in state.
-	events <- prefix.Event{Type: prefix.EventTypeRenewed}
+	// Neither a renewal nor a failure is forwarded. A renewal moves only the
+	// lease expiry, which the periodic requeue already refreshes. A failure
+	// carries an error the reconcile cannot see, and reconcile reads the
+	// receiver's last prefix, so it produces no state change -- while a down
+	// interface reports one failure per second for as long as it is down.
+	for _, quiet := range []prefix.EventType{prefix.EventTypeRenewed, prefix.EventTypeFailed} {
+		events <- prefix.Event{Type: quiet}
+	}
 	events <- prefix.Event{Type: prefix.EventTypeChanged}
-	waitForWake(t, "a change following a renewal")
+	waitForWake(t, "a change following a renewal and a failure")
 	select {
 	case extra := <-r.prefixEvents:
-		t.Errorf("a renewal also woke the reconciler (got %v)", extra.Object.GetName())
+		t.Errorf("a renewal or failure also woke the reconciler (got %v)", extra.Object.GetName())
 	default:
 	}
 }
