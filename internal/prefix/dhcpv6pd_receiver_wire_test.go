@@ -158,9 +158,10 @@ const testDelegatedPrefix = "2001:db8:beef::/56"
 const leaseLifetime = time.Hour
 
 // iaPDFor builds the IA_PD a server sends back, echoing the IAID the client
-// asked about so the reply matches the client's association.
-func iaPDFor(req *dhcpv6.Message, cidr string, extra ...dhcpv6.Option) (*dhcpv6.OptIAPD, error) {
-	valid := leaseLifetime
+// asked about so the reply matches the client's association. renewAfter sets
+// T1, so a test can have a lease fall due without waiting out its lifetime --
+// the prefix's own lifetimes travel as whole seconds and cannot be that short.
+func iaPDFor(req *dhcpv6.Message, cidr string, renewAfter time.Duration, extra ...dhcpv6.Option) (*dhcpv6.OptIAPD, error) {
 	iaid := wireTestIAID()
 	if opt := req.GetOneOption(dhcpv6.OptionIAPD); opt != nil {
 		if pd, ok := opt.(*dhcpv6.OptIAPD); ok {
@@ -168,9 +169,9 @@ func iaPDFor(req *dhcpv6.Message, cidr string, extra ...dhcpv6.Option) (*dhcpv6.
 		}
 	}
 
-	iapd := &dhcpv6.OptIAPD{IaId: iaid, T1: valid / 2, T2: valid * 4 / 5}
+	iapd := &dhcpv6.OptIAPD{IaId: iaid, T1: renewAfter, T2: 2 * renewAfter}
 	if cidr != "" {
-		p, err := iaPrefixFor(cidr, valid/2, valid)
+		p, err := iaPrefixFor(cidr, leaseLifetime/2, leaseLifetime)
 		if err != nil {
 			return nil, err
 		}
@@ -200,8 +201,14 @@ func answer(req *dhcpv6.Message, mt dhcpv6.MessageType, opts ...dhcpv6.Option) *
 // prefix on an hour's lease and, like a provider that hands out no WAN address,
 // offers no IA_NA.
 func delegating(cidr string) respondFunc {
+	return delegatingFor(cidr, leaseLifetime/2)
+}
+
+// delegatingFor is the same server with a renewal time short enough that a
+// test can watch the lease fall due.
+func delegatingFor(cidr string, renewAfter time.Duration) respondFunc {
 	return func(req *dhcpv6.Message) (*dhcpv6.Message, error) {
-		iapd, err := iaPDFor(req, cidr)
+		iapd, err := iaPDFor(req, cidr, renewAfter)
 		if err != nil {
 			return nil, err
 		}
@@ -338,7 +345,7 @@ func TestDHCPv6PDAcquireRejectsUnusableAdvertisements(t *testing.T) {
 		{
 			name: "advertisement without a server identity",
 			respond: func(req *dhcpv6.Message) (*dhcpv6.Message, error) {
-				iapd, err := iaPDFor(req, "2001:db8::/56")
+				iapd, err := iaPDFor(req, "2001:db8::/56", leaseLifetime)
 				if err != nil {
 					return nil, err
 				}
@@ -388,7 +395,7 @@ func TestDHCPv6PDAcquireSurfacesServerStatus(t *testing.T) {
 			name: "status on the association",
 			respond: func(req *dhcpv6.Message) (*dhcpv6.Message, error) {
 				status := &dhcpv6.OptStatusCode{StatusCode: iana.StatusNoPrefixAvail, StatusMessage: "no prefixes left"}
-				iapd, err := iaPDFor(req, "", status)
+				iapd, err := iaPDFor(req, "", leaseLifetime, status)
 				if err != nil {
 					return nil, err
 				}
@@ -402,7 +409,7 @@ func TestDHCPv6PDAcquireSurfacesServerStatus(t *testing.T) {
 		{
 			name: "status on the message",
 			respond: func(req *dhcpv6.Message) (*dhcpv6.Message, error) {
-				iapd, err := iaPDFor(req, "2001:db8::/56")
+				iapd, err := iaPDFor(req, "2001:db8::/56", leaseLifetime)
 				if err != nil {
 					return nil, err
 				}

@@ -20,6 +20,7 @@ package prefix
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -228,6 +229,18 @@ func (b *acquireBackoff) failed() { b.cur = nextBackoff(b.cur, b.max) }
 // noticed as quickly as the first one would have been.
 func (b *acquireBackoff) succeeded() { b.cur = b.min }
 
+// dropLease gives up the delegation and says so. The prefix goes with it: a
+// lease the server will not extend is one whose prefix is no longer routed,
+// and reporting it as still held would keep it in the pools.
+func (r *DHCPv6PDReceiver) dropLease() {
+	r.mu.Lock()
+	r.currentPrefix = nil
+	r.lease = nil
+	r.mu.Unlock()
+
+	r.sendEvent(EventTypeExpired, nil)
+}
+
 // waitFor blocks for d, reporting false if the receiver was stopped instead.
 // Every wait in the loop goes through this so a Stop is not held up by a sleep.
 func (r *DHCPv6PDReceiver) waitFor(ctx context.Context, stopCh <-chan struct{}, d time.Duration) bool {
@@ -292,21 +305,24 @@ func (r *DHCPv6PDReceiver) runLoop(ctx context.Context, stopCh <-chan struct{}) 
 		if elapsed >= lease.T1 {
 			if err := r.renewPrefix(ctx); err != nil {
 				r.sendError(fmt.Errorf("prefix renewal failed: %w", err))
-				// If T2 has passed, try rebind
-				if elapsed >= lease.T2 {
+				switch {
+				case errors.Is(err, errNoBinding):
+					// The server has disowned this delegation, so it will
+					// refuse the rebind at T2 for the same reason. Holding the
+					// prefix until then means advertising one nothing upstream
+					// routes; the acquisition branch re-solicits at once.
+					r.dropLease()
+					continue
+				case elapsed >= lease.T2:
+					// If T2 has passed, try rebind
 					if err := r.rebindPrefix(ctx); err != nil {
 						r.sendError(fmt.Errorf("prefix rebind failed: %w", err))
-						// Lease expired, clear and reacquire
-						r.mu.Lock()
-						r.currentPrefix = nil
-						r.lease = nil
-						r.mu.Unlock()
-						r.sendEvent(EventTypeExpired, nil)
 						// The lease is gone; the acquisition branch above owns
 						// the retry pacing from here.
+						r.dropLease()
 						continue
 					}
-				} else if !r.waitFor(ctx, stopCh, renewRetryInterval) {
+				case !r.waitFor(ctx, stopCh, renewRetryInterval):
 					// Renewal failed before T2, so the lease still stands and
 					// the next iteration would re-enter this branch at once.
 					// Renewals fail exactly when the WAN interface is down,
@@ -411,11 +427,19 @@ func iaPDForLease(lease *dhcpv6Lease) *dhcpv6.OptIAPD {
 	}
 }
 
+// errNoBinding marks the one refusal the client can act on rather than just
+// report: the server does not know about this delegation, so no amount of
+// renewing or rebinding will bring it back and only a new SOLICIT will.
+var errNoBinding = errors.New("the server holds no binding for this delegation")
+
 // statusError reports a server's refusal in the server's own words, which is
 // almost always more specific than anything the client could infer.
 func statusError(status *dhcpv6.OptStatusCode) error {
 	if status == nil || status.StatusCode == iana.StatusSuccess {
 		return nil
+	}
+	if status.StatusCode == iana.StatusNoBinding {
+		return fmt.Errorf("%w: %s", errNoBinding, status.StatusMessage)
 	}
 	return fmt.Errorf("server reported %s: %s", status.StatusCode, status.StatusMessage)
 }
