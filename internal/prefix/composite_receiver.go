@@ -156,6 +156,15 @@ func (c *CompositeReceiver) LastError() error {
 	return nil
 }
 
+// RARejections reports the fallback's drops: the Router Advertisement half is
+// the only one that validates advertisements.
+func (c *CompositeReceiver) RARejections() (uint64, string) {
+	if stats, ok := c.fallback.(RARejectionStats); ok {
+		return stats.RARejections()
+	}
+	return 0, ""
+}
+
 // Source returns the source of the active receiver.
 func (c *CompositeReceiver) Source() Source {
 	c.mu.RLock()

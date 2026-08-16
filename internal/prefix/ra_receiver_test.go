@@ -215,10 +215,12 @@ func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 
 	tests := []struct {
 		name           string
+		policy         RAPolicy
 		from           string
 		cm             *ipv6.ControlMessage
 		verifyHopLimit bool
 		wantRejected   bool
+		wantReason     string
 	}{
 		{
 			name:           "a link-local router at hop limit 255 is accepted",
@@ -232,6 +234,7 @@ func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 			cm:             &ipv6.ControlMessage{HopLimit: 255},
 			verifyHopLimit: true,
 			wantRejected:   true,
+			wantReason:     rejectReasonNotLinkLocal,
 		},
 		{
 			name:           "a unique-local source is rejected too",
@@ -239,6 +242,7 @@ func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 			cm:             &ipv6.ControlMessage{HopLimit: 255},
 			verifyHopLimit: true,
 			wantRejected:   true,
+			wantReason:     rejectReasonNotLinkLocal,
 		},
 		{
 			// A forwarding router must decrement the hop limit, so anything below
@@ -248,6 +252,7 @@ func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 			cm:             &ipv6.ControlMessage{HopLimit: 64},
 			verifyHopLimit: true,
 			wantRejected:   true,
+			wantReason:     rejectReasonForwarded,
 		},
 		{
 			name:           "a missing control message cannot be verified",
@@ -255,6 +260,7 @@ func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 			cm:             nil,
 			verifyHopLimit: true,
 			wantRejected:   true,
+			wantReason:     rejectReasonHopLimitUnknown,
 		},
 		{
 			// When the socket refused to report hop limits the receiver still
@@ -270,16 +276,49 @@ func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 			cm:             nil,
 			verifyHopLimit: false,
 			wantRejected:   true,
+			wantReason:     rejectReasonNotLinkLocal,
+		},
+		{
+			// Everything on the segment is on-link and one hop away, so the
+			// RFC 4861 checks alone cannot tell a router from anything else
+			// that decides to advertise. Naming the routers is what does.
+			name:           "an untrusted link-local source is rejected when routers are named",
+			policy:         RAPolicy{TrustedRouters: []netip.Addr{netip.MustParseAddr("fe80::1")}},
+			from:           "fe80::dead",
+			cm:             &ipv6.ControlMessage{HopLimit: 255},
+			verifyHopLimit: true,
+			wantRejected:   true,
+			wantReason:     rejectReasonUntrustedSource,
+		},
+		{
+			name:           "a trusted router is still accepted",
+			policy:         RAPolicy{TrustedRouters: []netip.Addr{netip.MustParseAddr("fe80::1")}},
+			from:           linkLocal,
+			cm:             &ipv6.ControlMessage{HopLimit: 255},
+			verifyHopLimit: true,
+		},
+		{
+			name:           "an empty list trusts any router that passes the other checks",
+			policy:         RAPolicy{},
+			from:           "fe80::dead",
+			cm:             &ipv6.ControlMessage{HopLimit: 255},
+			verifyHopLimit: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := &RAReceiver{}
-			reason := r.rejectRouterAdvertisement(netip.MustParseAddr(tt.from), tt.cm, tt.verifyHopLimit)
+			r := &RAReceiver{policy: tt.policy}
+			reason, detail := r.rejectRouterAdvertisement(netip.MustParseAddr(tt.from), tt.cm, tt.verifyHopLimit)
 			if rejected := reason != ""; rejected != tt.wantRejected {
-				t.Errorf("rejectRouterAdvertisement(%s) rejected = %v (%q), want %v",
-					tt.from, rejected, reason, tt.wantRejected)
+				t.Errorf("rejectRouterAdvertisement(%s) rejected = %v (%q: %s), want %v",
+					tt.from, rejected, reason, detail, tt.wantRejected)
+			}
+			if tt.wantReason != "" && reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
+			}
+			if tt.wantRejected && detail == "" {
+				t.Error("a rejection must carry a description for the log")
 			}
 		})
 	}
@@ -311,8 +350,8 @@ func TestRAReceiver_StartDegradesWithoutHopLimitReporting(t *testing.T) {
 	if r.verifyHopLimit {
 		t.Error("expected hop-limit verification to be disabled after the socket refused it")
 	}
-	if reason := r.rejectRouterAdvertisement(netip.MustParseAddr("fe80::1"), nil, r.verifyHopLimit); reason != "" {
-		t.Errorf("expected a link-local advertisement to be accepted without hop-limit reporting, got %q", reason)
+	if reason, detail := r.rejectRouterAdvertisement(netip.MustParseAddr("fe80::1"), nil, r.verifyHopLimit); reason != "" {
+		t.Errorf("expected a link-local advertisement to be accepted without hop-limit reporting, got %q: %s", reason, detail)
 	}
 }
 

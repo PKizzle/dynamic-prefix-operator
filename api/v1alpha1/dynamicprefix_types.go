@@ -66,6 +66,7 @@ type AcquisitionSpec struct {
 }
 
 // PrefixFilterSpec constrains which acquired prefixes the operator will accept.
+// +kubebuilder:validation:XValidation:rule="!has(self.minPrefixLength) || !has(self.maxPrefixLength) || self.minPrefixLength <= self.maxPrefixLength",message="minPrefixLength must not be greater than maxPrefixLength"
 type PrefixFilterSpec struct {
 	// RequireGlobalUnicast rejects any acquired prefix outside 2000::/3, notably
 	// unique-local (fc00::/7) and link-local (fe80::/10).
@@ -84,6 +85,42 @@ type PrefixFilterSpec struct {
 	// +optional
 	// +kubebuilder:default=true
 	RequireGlobalUnicast *bool `json:"requireGlobalUnicast,omitempty"`
+
+	// MinPrefixLength rejects any acquired prefix shorter than this, counted in
+	// bits, so a larger number is a smaller prefix.
+	//
+	// An upstream that hands back something far larger than expected -- or an
+	// advertisement from a router that should not be delegating at all -- is
+	// otherwise taken at face value, and every derived range moves with it.
+	// Bounding the length is the cheapest way to say what a plausible
+	// delegation looks like on this link. Applies to every acquisition source.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=128
+	MinPrefixLength *int `json:"minPrefixLength,omitempty"`
+
+	// MaxPrefixLength rejects any acquired prefix longer than this, counted in
+	// bits. Applies to every acquisition source.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=128
+	MaxPrefixLength *int `json:"maxPrefixLength,omitempty"`
+}
+
+// PrefixLengthBounds reports the accepted prefix-length range, with zero
+// meaning unbounded at that end.
+func (dp *DynamicPrefix) PrefixLengthBounds() (minBits, maxBits int) {
+	filter := dp.Spec.Acquisition.PrefixFilter
+	if filter == nil {
+		return 0, 0
+	}
+	if filter.MinPrefixLength != nil {
+		minBits = *filter.MinPrefixLength
+	}
+	if filter.MaxPrefixLength != nil {
+		maxBits = *filter.MaxPrefixLength
+	}
+	return minBits, maxBits
 }
 
 // DHCPv6PDSpec configures the DHCPv6 Prefix Delegation client
@@ -117,6 +154,25 @@ type RouterAdvertisementSpec struct {
 	// +optional
 	// +kubebuilder:default=true
 	Enabled *bool `json:"enabled,omitempty"`
+
+	// TrustedRouters restricts accepted Router Advertisements to those sent
+	// from these link-local addresses -- the fe80:: address the router uses on
+	// this link, which is what an advertisement's source address carries.
+	//
+	// Anything on the link can send a Router Advertisement, and the RFC 4861
+	// checks the receiver already applies say only that the sender is on-link
+	// and one hop away, which is true of every host on the segment. Naming the
+	// routers that may be believed is what turns that into a trust decision.
+	// Advertisements from anywhere else are dropped, counted and reported.
+	//
+	// Leave empty on a link you control, where switch-side RA Guard does this
+	// job, or where DHCPv6-PD is used instead.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=8
+	// +kubebuilder:validation:items:MaxLength=45
+	// +kubebuilder:validation:items:Pattern=`^[fF][eE][89abAB][0-9a-fA-F]:[0-9a-fA-F:]*$`
+	TrustedRouters []string `json:"trustedRouters,omitempty"`
 }
 
 // RAEnabled reports whether Router Advertisement monitoring is active, applying

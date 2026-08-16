@@ -21,7 +21,7 @@ import (
 	"sync"
 )
 
-type newReceiverFunc func(iface string, requireGlobalUnicast bool) Receiver
+type newReceiverFunc func(iface string, policy RAPolicy) Receiver
 
 type sharedRAReceiverPool struct {
 	mu          sync.Mutex
@@ -39,26 +39,25 @@ func newSharedRAReceiverPool(newReceiver newReceiverFunc) *sharedRAReceiverPool 
 // poolKey identifies a shareable receiver. Receivers are shared per interface,
 // but the acceptance policy is baked into the receiver, so two DynamicPrefixes
 // watching the same interface with different policies must not share one: the
-// stricter subscriber would otherwise see prefixes it rejects. Keying on both
-// gives them separate receivers, which is correct and rare enough not to matter.
-func poolKey(iface string, requireGlobalUnicast bool) string {
-	if requireGlobalUnicast {
-		return iface + "|gua"
-	}
-	return iface + "|any"
+// stricter subscriber would otherwise see prefixes it rejects, and -- once
+// trust entered the policy -- would see advertisements from routers it does
+// not believe. Keying on both gives them separate receivers, which is correct
+// and rare enough not to matter.
+func poolKey(iface string, policy RAPolicy) string {
+	return iface + "|" + policy.Key()
 }
 
-func (p *sharedRAReceiverPool) subscribe(iface string, requireGlobalUnicast bool) Receiver {
+func (p *sharedRAReceiverPool) subscribe(iface string, policy RAPolicy) Receiver {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	key := poolKey(iface, requireGlobalUnicast)
+	key := poolKey(iface, policy)
 	entry := p.entries[key]
 	if entry == nil {
 		entry = &sharedRAReceiverEntry{
 			iface:       iface,
 			key:         key,
-			receiver:    p.newReceiver(iface, requireGlobalUnicast),
+			receiver:    p.newReceiver(iface, policy),
 			subscribers: make(map[*sharedRAReceiverSubscription]struct{}),
 		}
 		p.entries[key] = entry
@@ -249,6 +248,15 @@ func (s *sharedRAReceiverSubscription) LastError() error {
 		return h.LastError()
 	}
 	return nil
+}
+
+// RARejections reports the shared receiver's drops. Subscribers to one
+// interface all see the same count, because there is one socket behind them.
+func (s *sharedRAReceiverSubscription) RARejections() (uint64, string) {
+	if stats, ok := s.entry.receiver.(RARejectionStats); ok {
+		return stats.RARejections()
+	}
+	return 0, ""
 }
 
 func (s *sharedRAReceiverSubscription) Source() Source {

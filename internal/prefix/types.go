@@ -87,6 +87,16 @@ type AcquisitionHealth interface {
 	LastError() error
 }
 
+// RARejectionStats is implemented by receivers that validate Router
+// Advertisements, so the drops can be reported on the resource. A rising count
+// is the only outward sign that something on the link is advertising when it
+// should not be.
+type RARejectionStats interface {
+	// RARejections returns how many advertisements have been dropped and the
+	// most recent reason.
+	RARejections() (total uint64, lastReason string)
+}
+
 // Receiver is the interface for prefix acquisition implementations
 type Receiver interface {
 	// Start begins receiving prefixes

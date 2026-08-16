@@ -65,7 +65,7 @@ type DHCPv6PDReceiver struct {
 	started               bool
 	ctx                   context.Context
 	cancel                context.CancelFunc
-	requireGlobalUnicast  bool
+	policy                Policy
 	// dial and lookupInterface are fixed at construction and never reassigned,
 	// so the exchange goroutine can read them without the lock.
 	dial            dhcpv6DialFunc
@@ -96,19 +96,19 @@ type dhcpv6Lease struct {
 // NewDHCPv6PDReceiver creates a new DHCPv6-PD receiver for the given interface.
 // The requestedPrefixLength is a hint to the server (typically 48-64).
 func NewDHCPv6PDReceiver(iface string, requestedPrefixLength int) *DHCPv6PDReceiver {
-	return NewDHCPv6PDReceiverWithPolicy(iface, requestedPrefixLength, true)
+	return NewDHCPv6PDReceiverWithPolicy(iface, requestedPrefixLength, DefaultPolicy())
 }
 
 // NewDHCPv6PDReceiverWithPolicy creates a DHCPv6-PD client with an explicit
 // acceptance policy for the delegated prefix.
-func NewDHCPv6PDReceiverWithPolicy(iface string, requestedPrefixLength int, requireGlobalUnicast bool) *DHCPv6PDReceiver {
+func NewDHCPv6PDReceiverWithPolicy(iface string, requestedPrefixLength int, policy Policy) *DHCPv6PDReceiver {
 	if requestedPrefixLength == 0 {
 		requestedPrefixLength = 56 // Common default
 	}
 	return &DHCPv6PDReceiver{
 		iface:                 iface,
 		requestedPrefixLength: requestedPrefixLength,
-		requireGlobalUnicast:  requireGlobalUnicast,
+		policy:                policy,
 		events:                make(chan Event, 10),
 		stopCh:                make(chan struct{}),
 		dial:                  defaultDHCPv6Dial,
@@ -688,7 +688,7 @@ func (r *DHCPv6PDReceiver) processIAPDReply(reply *dhcpv6.Message, expectedIAID 
 
 	// Delegated prefixes carry no address-class guarantee on the wire, so apply
 	// the same acceptance rule the RA path uses rather than trusting the server.
-	if err := ValidateDelegatedPrefix(prefix, r.requireGlobalUnicast); err != nil {
+	if err := r.policy.Validate(prefix); err != nil {
 		return fmt.Errorf("rejecting delegated prefix from IA_PD: %w", err)
 	}
 

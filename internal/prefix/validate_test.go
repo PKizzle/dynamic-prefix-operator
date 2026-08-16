@@ -88,7 +88,7 @@ func TestRAReceiverRejectsULAOnlyAdvertisement(t *testing.T) {
 }
 
 func TestRAReceiverAcceptsULAOnlyWhenPolicyAllows(t *testing.T) {
-	r := NewRAReceiverWithPolicy("eth0", false)
+	r := NewRAReceiverWithPolicy("eth0", RAPolicy{})
 
 	r.handleRouterAdvertisement(ulaOnlyRouterAdvertisement())
 
@@ -160,21 +160,21 @@ func TestProcessIAPDReplyRejectsULAWhenGUARequired(t *testing.T) {
 
 func TestSharedRAPoolSeparatesReceiversByPolicy(t *testing.T) {
 	created := 0
-	pool := newSharedRAReceiverPool(func(iface string, requireGlobalUnicast bool) Receiver {
+	pool := newSharedRAReceiverPool(func(iface string, policy RAPolicy) Receiver {
 		created++
-		return NewRAReceiverWithPolicy(iface, requireGlobalUnicast)
+		return NewRAReceiverWithPolicy(iface, policy)
 	})
 
 	// Same interface, same policy: one receiver, shared.
-	pool.subscribe("eth0", true)
-	pool.subscribe("eth0", true)
+	pool.subscribe("eth0", DefaultRAPolicy())
+	pool.subscribe("eth0", DefaultRAPolicy())
 	if created != 1 {
 		t.Fatalf("created %d receivers for one interface and policy, want 1", created)
 	}
 
 	// Same interface, different policy: a second receiver, because the policy is
 	// baked in and the stricter subscriber must not see what the looser one accepts.
-	pool.subscribe("eth0", false)
+	pool.subscribe("eth0", RAPolicy{})
 	if created != 2 {
 		t.Fatalf("created %d receivers after adding a second policy, want 2", created)
 	}

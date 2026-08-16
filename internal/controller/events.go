@@ -36,6 +36,11 @@ const (
 	eventReasonReceiverRebuilt        = "ReceiverRebuilt"
 	eventReasonPrefixRejected         = "PrefixRejected"
 	eventReasonAcquisitionFailed      = "AcquisitionFailed"
+
+	// eventReasonRouterAdvertisementsRejected reports advertisements dropped by
+	// validation, which is how a rogue or misconfigured router on the link
+	// becomes visible on the resource rather than only in the operator's log.
+	eventReasonRouterAdvertisementsRejected = "RouterAdvertisementsRejected"
 )
 
 // Status-condition reasons matching the event reasons above.
