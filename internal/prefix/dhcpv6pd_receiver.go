@@ -31,6 +31,22 @@ import (
 	"github.com/insomniacslk/dhcp/iana"
 )
 
+// dhcpv6Client is the transport half of an exchange: send one message, wait for
+// the matching answer. nclient6.Client satisfies it. Taking it as a dependency
+// is what lets the tests script a server, so the messages this client puts on
+// the wire are checked rather than assumed.
+type dhcpv6Client interface {
+	SendAndRead(ctx context.Context, dest *net.UDPAddr, msg *dhcpv6.Message, match nclient6.Matcher) (*dhcpv6.Message, error)
+	Close() error
+}
+
+// dhcpv6DialFunc opens a client bound to an interface.
+type dhcpv6DialFunc func(iface string) (dhcpv6Client, error)
+
+func defaultDHCPv6Dial(iface string) (dhcpv6Client, error) {
+	return nclient6.New(iface)
+}
+
 // DHCPv6PDReceiver implements a DHCPv6 Prefix Delegation client.
 // It actively requests prefix delegation from an upstream DHCPv6 server
 // and handles lease renewals.
@@ -46,6 +62,10 @@ type DHCPv6PDReceiver struct {
 	ctx                   context.Context
 	cancel                context.CancelFunc
 	requireGlobalUnicast  bool
+	// dial and lookupInterface are fixed at construction and never reassigned,
+	// so the exchange goroutine can read them without the lock.
+	dial            dhcpv6DialFunc
+	lookupInterface func(name string) (*net.Interface, error)
 }
 
 // dhcpv6Lease contains DHCPv6-PD lease information.
@@ -78,6 +98,8 @@ func NewDHCPv6PDReceiverWithPolicy(iface string, requestedPrefixLength int, requ
 		requireGlobalUnicast:  requireGlobalUnicast,
 		events:                make(chan Event, 10),
 		stopCh:                make(chan struct{}),
+		dial:                  defaultDHCPv6Dial,
+		lookupInterface:       net.InterfaceByName,
 	}
 }
 
@@ -169,7 +191,7 @@ func (r *DHCPv6PDReceiver) waitFor(ctx context.Context, stopCh <-chan struct{}, 
 // runLoop handles prefix acquisition and renewal.
 func (r *DHCPv6PDReceiver) runLoop(ctx context.Context, stopCh <-chan struct{}) {
 	// Initial acquisition
-	if err := r.acquirePrefix(); err != nil {
+	if err := r.acquirePrefix(ctx); err != nil {
 		r.sendError(fmt.Errorf("initial prefix acquisition failed: %w", err))
 	}
 
@@ -191,7 +213,7 @@ func (r *DHCPv6PDReceiver) runLoop(ctx context.Context, stopCh <-chan struct{}) 
 			if !r.waitFor(ctx, stopCh, acquireRetryInterval) {
 				return
 			}
-			if err := r.acquirePrefix(); err != nil {
+			if err := r.acquirePrefix(ctx); err != nil {
 				r.sendError(fmt.Errorf("prefix acquisition failed: %w", err))
 			}
 			continue
@@ -203,11 +225,11 @@ func (r *DHCPv6PDReceiver) runLoop(ctx context.Context, stopCh <-chan struct{}) 
 
 		// Renew at T1 (typically 50% of valid lifetime)
 		if elapsed >= lease.T1 {
-			if err := r.renewPrefix(); err != nil {
+			if err := r.renewPrefix(ctx); err != nil {
 				r.sendError(fmt.Errorf("prefix renewal failed: %w", err))
 				// If T2 has passed, try rebind
 				if elapsed >= lease.T2 {
-					if err := r.rebindPrefix(); err != nil {
+					if err := r.rebindPrefix(ctx); err != nil {
 						r.sendError(fmt.Errorf("prefix rebind failed: %w", err))
 						// Lease expired, clear and reacquire
 						r.mu.Lock()
@@ -246,27 +268,49 @@ func (r *DHCPv6PDReceiver) runLoop(ctx context.Context, stopCh <-chan struct{}) 
 	}
 }
 
-// acquirePrefix performs initial prefix acquisition using SOLICIT-ADVERTISE-REQUEST-REPLY.
-func (r *DHCPv6PDReceiver) acquirePrefix() error {
-	ifi, err := net.InterfaceByName(r.iface)
+// exchangeTimeout bounds one send-and-wait. nclient6 retransmits within it.
+const exchangeTimeout = 30 * time.Second
+
+// openClient dials the configured interface, returning the interface too: its
+// hardware address is what the client's DUID is built from.
+func (r *DHCPv6PDReceiver) openClient() (dhcpv6Client, *net.Interface, error) {
+	ifi, err := r.lookupInterface(r.iface)
 	if err != nil {
-		return fmt.Errorf("failed to get interface %s: %w", r.iface, err)
+		return nil, nil, fmt.Errorf("failed to get interface %s: %w", r.iface, err)
 	}
 
-	// Create a new DHCPv6 client
-	client, err := nclient6.New(r.iface)
+	client, err := r.dial(r.iface)
 	if err != nil {
-		return fmt.Errorf("failed to create DHCPv6 client: %w", err)
+		return nil, nil, fmt.Errorf("failed to create DHCPv6 client: %w", err)
 	}
-	defer func() { _ = client.Close() }()
+	return client, ifi, nil
+}
 
-	// Generate IAID from interface index. The IAID is four bytes of identity
-	// rather than a number, so it is written as an explicit big-endian encoding.
+// iaidForInterface derives the association's identifier from the interface
+// index. The IAID is four bytes of identity rather than a number, so it is
+// written as an explicit big-endian encoding.
+func iaidForInterface(ifi *net.Interface) [4]byte {
 	var iaid [4]byte
 	binary.BigEndian.PutUint32(iaid[:], uint32(ifi.Index)) // #nosec G115 -- interface indexes are small positive integers
+	return iaid
+}
 
-	// Create IA_PD option with prefix hint
-	iaPD := &dhcpv6.OptIAPD{
+// newPDMessage starts a message carrying the identity every exchange needs.
+func (r *DHCPv6PDReceiver) newPDMessage(mt dhcpv6.MessageType, ifi *net.Interface) (*dhcpv6.Message, error) {
+	msg, err := dhcpv6.NewMessage()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create %s: %w", mt, err)
+	}
+	msg.MessageType = mt
+	msg.AddOption(dhcpv6.OptClientID(r.generateDUID(ifi)))
+	msg.AddOption(dhcpv6.OptElapsedTime(0))
+	return msg, nil
+}
+
+// iaPDHint asks for a prefix of the configured length without naming one --
+// the form RFC 8415 §21.21 gives a client that holds no prefix yet.
+func (r *DHCPv6PDReceiver) iaPDHint(iaid [4]byte) *dhcpv6.OptIAPD {
+	return &dhcpv6.OptIAPD{
 		IaId: iaid,
 		Options: dhcpv6.PDOptions{
 			Options: dhcpv6.Options{
@@ -281,51 +325,90 @@ func (r *DHCPv6PDReceiver) acquirePrefix() error {
 			},
 		},
 	}
+}
 
-	// Build SOLICIT message with IA_PD
-	solicitMods := []dhcpv6.Modifier{
-		dhcpv6.WithClientID(r.generateDUID(ifi)),
-		dhcpv6.WithRequestedOptions(
-			dhcpv6.OptionDNSRecursiveNameServer,
-		),
+// iaPDForLease restates the delegation being renewed or rebound.
+func iaPDForLease(lease *dhcpv6Lease) *dhcpv6.OptIAPD {
+	return &dhcpv6.OptIAPD{
+		IaId: lease.IAID,
+		Options: dhcpv6.PDOptions{
+			Options: dhcpv6.Options{
+				&dhcpv6.OptIAPrefix{
+					PreferredLifetime: lease.PreferredLifetime,
+					ValidLifetime:     lease.ValidLifetime,
+					Prefix: &net.IPNet{
+						IP:   lease.Prefix.Addr().AsSlice(),
+						Mask: net.CIDRMask(lease.Prefix.Bits(), 128),
+					},
+				},
+			},
+		},
 	}
+}
 
-	// Perform 4-message exchange
-	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
+// statusError reports a server's refusal in the server's own words, which is
+// almost always more specific than anything the client could infer.
+func statusError(status *dhcpv6.OptStatusCode) error {
+	if status == nil || status.StatusCode == iana.StatusSuccess {
+		return nil
+	}
+	return fmt.Errorf("server reported %s: %s", status.StatusCode, status.StatusMessage)
+}
+
+// acquirePrefix performs initial prefix acquisition using SOLICIT-ADVERTISE-REQUEST-REPLY.
+func (r *DHCPv6PDReceiver) acquirePrefix(ctx context.Context) error {
+	client, ifi, err := r.openClient()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+
+	iaid := iaidForInterface(ifi)
+
+	// This client delegates and nothing else, so it asks for a prefix and not
+	// for an address as well. Soliciting an IA_NA it never reads would leave a
+	// lease nothing renews or releases, and -- because the helper that built
+	// the REQUEST out of the ADVERTISE required one to come back -- made every
+	// exchange with a delegation-only server fail outright.
+	solicit, err := r.newPDMessage(dhcpv6.MessageTypeSolicit, ifi)
+	if err != nil {
+		return err
+	}
+	solicit.AddOption(r.iaPDHint(iaid))
+
+	ctx, cancel := context.WithTimeout(ctx, exchangeTimeout)
 	defer cancel()
 
-	// Custom SOLICIT with IA_PD
-	solicit, err := dhcpv6.NewSolicit(ifi.HardwareAddr, solicitMods...)
-	if err != nil {
-		return fmt.Errorf("failed to create SOLICIT: %w", err)
-	}
-	solicit.AddOption(iaPD)
-
-	// Send SOLICIT and receive ADVERTISE
 	advertise, err := client.SendAndRead(ctx, nclient6.AllDHCPRelayAgentsAndServers, solicit, nclient6.IsMessageType(dhcpv6.MessageTypeAdvertise))
 	if err != nil {
 		return fmt.Errorf("failed to receive ADVERTISE: %w", err)
 	}
 
-	// Check for IA_PD in ADVERTISE
 	advIAPD := advertise.GetOneOption(dhcpv6.OptionIAPD)
 	if advIAPD == nil {
 		return fmt.Errorf("ADVERTISE did not contain IA_PD")
 	}
+	// A server with nothing to delegate says so here. Requesting anyway costs a
+	// round trip to be told the same thing.
+	if pd, ok := advIAPD.(*dhcpv6.OptIAPD); ok {
+		if err := statusError(pd.Options.Status()); err != nil {
+			return fmt.Errorf("ADVERTISE offered no delegation: %w", err)
+		}
+	}
 
-	// Get Server ID
 	serverID := advertise.Options.ServerID()
 	if serverID == nil {
 		return fmt.Errorf("ADVERTISE did not contain Server ID")
 	}
 
-	// Build REQUEST message
-	request, err := dhcpv6.NewRequestFromAdvertise(advertise)
+	// Accept the advertised delegation from the server that offered it.
+	request, err := r.newPDMessage(dhcpv6.MessageTypeRequest, ifi)
 	if err != nil {
-		return fmt.Errorf("failed to create REQUEST: %w", err)
+		return err
 	}
+	request.AddOption(dhcpv6.OptServerID(serverID))
+	request.AddOption(advIAPD)
 
-	// Send REQUEST and receive REPLY
 	reply, err := client.SendAndRead(ctx, nclient6.AllDHCPRelayAgentsAndServers, request, nclient6.IsMessageType(dhcpv6.MessageTypeReply))
 	if err != nil {
 		return fmt.Errorf("failed to receive REPLY: %w", err)
@@ -336,7 +419,7 @@ func (r *DHCPv6PDReceiver) acquirePrefix() error {
 }
 
 // renewPrefix sends a RENEW message to extend the lease.
-func (r *DHCPv6PDReceiver) renewPrefix() error {
+func (r *DHCPv6PDReceiver) renewPrefix(ctx context.Context) error {
 	r.mu.RLock()
 	lease := r.lease
 	r.mu.RUnlock()
@@ -345,49 +428,21 @@ func (r *DHCPv6PDReceiver) renewPrefix() error {
 		return fmt.Errorf("no lease to renew")
 	}
 
-	ifi, err := net.InterfaceByName(r.iface)
+	client, ifi, err := r.openClient()
 	if err != nil {
-		return fmt.Errorf("failed to get interface %s: %w", r.iface, err)
-	}
-
-	client, err := nclient6.New(r.iface)
-	if err != nil {
-		return fmt.Errorf("failed to create DHCPv6 client: %w", err)
+		return err
 	}
 	defer func() { _ = client.Close() }()
 
-	// Build RENEW message
-	renew, err := dhcpv6.NewMessage()
+	// A RENEW goes to the server holding the binding, so it names it.
+	renew, err := r.newPDMessage(dhcpv6.MessageTypeRenew, ifi)
 	if err != nil {
-		return fmt.Errorf("failed to create RENEW message: %w", err)
+		return err
 	}
-	renew.MessageType = dhcpv6.MessageTypeRenew
-
-	renew.AddOption(dhcpv6.OptClientID(r.generateDUID(ifi)))
 	renew.AddOption(dhcpv6.OptServerID(lease.ServerID))
+	renew.AddOption(iaPDForLease(lease))
 
-	// Add current IA_PD
-	ip := lease.Prefix.Addr().AsSlice()
-	bits := lease.Prefix.Bits()
-	iaPD := &dhcpv6.OptIAPD{
-		IaId: lease.IAID,
-		Options: dhcpv6.PDOptions{
-			Options: dhcpv6.Options{
-				&dhcpv6.OptIAPrefix{
-					PreferredLifetime: lease.PreferredLifetime,
-					ValidLifetime:     lease.ValidLifetime,
-					Prefix: &net.IPNet{
-						IP:   ip,
-						Mask: net.CIDRMask(bits, 128),
-					},
-				},
-			},
-		},
-	}
-	renew.AddOption(iaPD)
-
-	// Send RENEW and receive REPLY
-	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, exchangeTimeout)
 	defer cancel()
 
 	reply, err := client.SendAndRead(ctx, nclient6.AllDHCPRelayAgentsAndServers, renew, nclient6.IsMessageType(dhcpv6.MessageTypeReply))
@@ -399,7 +454,7 @@ func (r *DHCPv6PDReceiver) renewPrefix() error {
 }
 
 // rebindPrefix sends a REBIND message when the server is unreachable.
-func (r *DHCPv6PDReceiver) rebindPrefix() error {
+func (r *DHCPv6PDReceiver) rebindPrefix(ctx context.Context) error {
 	r.mu.RLock()
 	lease := r.lease
 	r.mu.RUnlock()
@@ -408,48 +463,21 @@ func (r *DHCPv6PDReceiver) rebindPrefix() error {
 		return fmt.Errorf("no lease to rebind")
 	}
 
-	ifi, err := net.InterfaceByName(r.iface)
+	client, ifi, err := r.openClient()
 	if err != nil {
-		return fmt.Errorf("failed to get interface %s: %w", r.iface, err)
-	}
-
-	client, err := nclient6.New(r.iface)
-	if err != nil {
-		return fmt.Errorf("failed to create DHCPv6 client: %w", err)
+		return err
 	}
 	defer func() { _ = client.Close() }()
 
-	// Build REBIND message (no server ID)
-	rebind, err := dhcpv6.NewMessage()
+	// A REBIND names no server: it is addressed to whichever one still holds
+	// the binding, and the answer decides who that is.
+	rebind, err := r.newPDMessage(dhcpv6.MessageTypeRebind, ifi)
 	if err != nil {
-		return fmt.Errorf("failed to create REBIND message: %w", err)
+		return err
 	}
-	rebind.MessageType = dhcpv6.MessageTypeRebind
+	rebind.AddOption(iaPDForLease(lease))
 
-	rebind.AddOption(dhcpv6.OptClientID(r.generateDUID(ifi)))
-
-	// Add current IA_PD
-	ip := lease.Prefix.Addr().AsSlice()
-	bits := lease.Prefix.Bits()
-	iaPD := &dhcpv6.OptIAPD{
-		IaId: lease.IAID,
-		Options: dhcpv6.PDOptions{
-			Options: dhcpv6.Options{
-				&dhcpv6.OptIAPrefix{
-					PreferredLifetime: lease.PreferredLifetime,
-					ValidLifetime:     lease.ValidLifetime,
-					Prefix: &net.IPNet{
-						IP:   ip,
-						Mask: net.CIDRMask(bits, 128),
-					},
-				},
-			},
-		},
-	}
-	rebind.AddOption(iaPD)
-
-	// Send REBIND and receive REPLY
-	ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, exchangeTimeout)
 	defer cancel()
 
 	reply, err := client.SendAndRead(ctx, nclient6.AllDHCPRelayAgentsAndServers, rebind, nclient6.IsMessageType(dhcpv6.MessageTypeReply))
@@ -468,6 +496,13 @@ func (r *DHCPv6PDReceiver) rebindPrefix() error {
 
 // processIAPDReply extracts the delegated prefix from a DHCPv6 REPLY.
 func (r *DHCPv6PDReceiver) processIAPDReply(reply *dhcpv6.Message, expectedIAID [4]byte, serverID dhcpv6.DUID) error {
+	// A refusal that applies to the whole message carries no IA_PD to hang a
+	// status on, so checking only the association's status reported the reply
+	// as missing a delegation rather than as the refusal it was.
+	if err := statusError(reply.Options.Status()); err != nil {
+		return fmt.Errorf("REPLY was refused: %w", err)
+	}
+
 	// Find IA_PD option
 	var iaPD *dhcpv6.OptIAPD
 	for _, opt := range reply.Options.Get(dhcpv6.OptionIAPD) {
@@ -490,8 +525,8 @@ func (r *DHCPv6PDReceiver) processIAPDReply(reply *dhcpv6.Message, expectedIAID 
 	}
 
 	// Check for status code indicating error
-	if status := iaPD.Options.Status(); status != nil && status.StatusCode != iana.StatusSuccess {
-		return fmt.Errorf("IA_PD status error: %s - %s", status.StatusCode, status.StatusMessage)
+	if err := statusError(iaPD.Options.Status()); err != nil {
+		return fmt.Errorf("IA_PD was refused: %w", err)
 	}
 
 	// Extract prefix information
