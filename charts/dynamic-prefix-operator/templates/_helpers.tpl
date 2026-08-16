@@ -77,37 +77,3 @@ actually listens on.
 {{- define "dynamic-prefix-operator.metricsPort" -}}
 {{- (splitList ":" .Values.config.metrics.bindAddress | last) | default "8443" }}
 {{- end }}
-
-{{/*
-Generate watch configuration as JSON for ConfigMap
-*/}}
-{{- define "dynamic-prefix-operator.watchConfig" -}}
-{{- $config := dict }}
-{{- $_ := set $config "namespaces" .Values.watch.namespaces }}
-{{- $_ := set $config "ciliumLoadBalancerIPPool" .Values.watch.ciliumLoadBalancerIPPool }}
-{{- $_ := set $config "ciliumCIDRGroup" .Values.watch.ciliumCIDRGroup }}
-{{- $_ := set $config "ingress" .Values.watch.ingress }}
-{{- $_ := set $config "service" .Values.watch.service }}
-{{- $config | toJson }}
-{{- end }}
-
-{{/*
-Check if any Cilium resources are being watched
-*/}}
-{{- define "dynamic-prefix-operator.watchesCilium" -}}
-{{- or .Values.watch.ciliumLoadBalancerIPPool.enabled .Values.watch.ciliumCIDRGroup.enabled }}
-{{- end }}
-
-{{/*
-Check if Ingress resources are being watched
-*/}}
-{{- define "dynamic-prefix-operator.watchesIngress" -}}
-{{- .Values.watch.ingress.enabled }}
-{{- end }}
-
-{{/*
-Check if Service resources are being watched
-*/}}
-{{- define "dynamic-prefix-operator.watchesService" -}}
-{{- .Values.watch.service.enabled }}
-{{- end }}

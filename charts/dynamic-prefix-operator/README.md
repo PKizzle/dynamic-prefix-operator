@@ -123,11 +123,20 @@ ServiceAccount must hold it, or scrapes are denied with 403. Set
 |-----------|-------------|---------|
 | `rbac.create` | Create RBAC resources | `true` |
 | `serviceAccount.create` | Create ServiceAccount | `true` |
-| `podSecurityContext.runAsNonRoot` | Run as non-root | `true` |
+| `podSecurityContext.runAsNonRoot` | Run as non-root. False by design: raw ICMPv6 sockets need UID 0 even with `NET_RAW` | `false` |
+| `securityContext.capabilities.add` | `NET_RAW` for Router Advertisement monitoring, `NET_BIND_SERVICE` for the DHCPv6-PD client's UDP 546 bind | `[NET_RAW, NET_BIND_SERVICE]` |
+| `network.hostNetwork` | Share the host network namespace. Required by both acquisition methods; without it the operator installs cleanly and never acquires a prefix | `true` |
+| `kubevip.enabled` | Manage the kube-vip cloud provider's pool ConfigMap. Grants a namespaced Role over ConfigMaps in `kubevip.configMap.namespace` | `false` |
+| `kubevip.configMap.namespace` | Namespace holding the kube-vip pool ConfigMap | `kube-system` |
+| `kubevip.configMap.name` | Name of the kube-vip pool ConfigMap | `kubevip` |
 
 ## Usage
 
 After installation, create a DynamicPrefix resource:
+
+The defaults above are what DHCPv6-PD needs; if you have overridden
+`network.hostNetwork` or the capability list, restore them before using this
+example.
 
 ```yaml
 apiVersion: dynamic-prefix.io/v1alpha1

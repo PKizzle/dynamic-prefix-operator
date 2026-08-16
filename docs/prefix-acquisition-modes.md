@@ -185,6 +185,94 @@ spec:
 
 ---
 
+## How the prefix is acquired
+
+The two modes above describe what the operator does with a prefix. This section
+is about where it comes from, which is a separate choice.
+
+| | Router Advertisements | DHCPv6-PD |
+|---|---|---|
+| Spec | `acquisition.routerAdvertisement` | `acquisition.dhcpv6pd` |
+| What it sees | The `/64` the router advertises to this VLAN | The prefix the upstream delegates, typically a `/56` or `/48` |
+| Capability | `NET_RAW` | `NET_BIND_SERVICE` |
+| Works behind switch-side RA Guard | No | Yes |
+| Trust | Unauthenticated; anything on the link can send one | The exchange is addressed to a server, and a rogue reply has to win a race |
+
+Configure both and the operator runs DHCPv6-PD as the primary source with
+Router Advertisements as a fallback, reporting `Degraded` while it is serving an
+advertisement-derived prefix because the DHCPv6 client is failing.
+
+### DHCPv6-PD mode
+
+```yaml
+apiVersion: dynamic-prefix.io/v1alpha1
+kind: DynamicPrefix
+metadata:
+  name: home-ipv6
+spec:
+  acquisition:
+    dhcpv6pd:
+      # The interface facing the upstream. The client sources from this
+      # interface's link-local address, which is why the operator runs with
+      # hostNetwork.
+      interface: eth0
+      # A hint, not a demand: the server may delegate something shorter.
+      requestedPrefixLength: 56
+  subnets:
+    - name: services
+      prefixLength: 64
+      offset: 1
+```
+
+The client identifies itself with a DUID derived from the interface's hardware
+address and an IAID derived from its index. Both are stable across restarts, so
+a restarted operator is offered the same delegation without needing to persist a
+lease. It follows the ordinary lease lifecycle: SOLICIT and REQUEST to acquire,
+RENEW at T1, REBIND at T2, and a fresh SOLICIT if the server reports it holds no
+binding. Failed acquisitions back off from ten seconds to five minutes and
+return to ten seconds as soon as one succeeds.
+
+**Only one DynamicPrefix may run a DHCPv6-PD client on a given interface.** Two
+would present the same DUID and IAID, and each would overwrite the other's
+lease; the second is refused with `PrefixAcquired=False` and reason
+`ReceiverCreationFailed`. One delegation is one DynamicPrefix, and it can carry
+as many `addressRanges` and `subnets` as you need.
+
+**Nothing else on the node may hold UDP 546 on that interface.** `dhcpcd`,
+`systemd-networkd` and NetworkManager all bind it when DHCPv6 is enabled.
+Either disable DHCPv6 on that interface host-side, or let the host client do the
+delegation and have the operator watch the resulting Router Advertisements
+instead.
+
+Known limits, none of which have caused a problem in practice:
+
+- Where an upstream delegates several prefixes in one IA_PD, only the first
+  usable one is taken.
+- Reconfigure is not supported, so a server cannot push a change; the next
+  renewal picks it up.
+- Rapid Commit is not used, so acquisition is the full four-message exchange.
+- No RELEASE is sent on shutdown. That is deliberate: keeping the binding is
+  what lets a restarted operator come back to the same prefix.
+
+### Operating behind switch-side RA Guard
+
+RA Guard (RFC 6105) drops Router Advertisements that did not come from a
+designated port, which is the right thing to run on a segment you do not fully
+control — it protects every host on it, not just this operator. It also means
+advertisements never reach the nodes, so RA monitoring cannot work there.
+
+DHCPv6-PD is the answer: it is a solicited exchange with a server, and DHCPv6
+relays pass through RA Guard untouched. Configure `acquisition.dhcpv6pd` alone
+and leave `routerAdvertisement` out entirely — a spec with only DHCPv6-PD is
+valid, and the operator will not open an NDP socket at all.
+
+Where the switch cannot filter, the operator can apply its own trust rules
+instead. See "Naming the routers you believe" in the README: it takes a list of
+link-local router addresses and a plausible range of prefix lengths, and reports
+what it drops.
+
+---
+
 ## Further Reading
 
 - [IPv6 Prefix Delegation (RFC 8415)](https://datatracker.ietf.org/doc/html/rfc8415)

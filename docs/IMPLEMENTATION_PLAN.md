@@ -624,7 +624,10 @@ rules:
 
 ## Security
 
-- Requires `CAP_NET_RAW` for DHCPv6/NDP sockets
+- Requires `CAP_NET_RAW` for NDP sockets and `CAP_NET_BIND_SERVICE` for the
+  DHCPv6 client's UDP 546 bind (this document originally listed only the first,
+  which is why the shipped manifests granted only the first; see README
+  "Requirements" for the current list)
 - Host network for interface binding
 - Non-root where possible
 - Minimal RBAC permissions

@@ -470,12 +470,50 @@ that forwards a packet must decrement the hop limit, so 255 on arrival proves th
 packet originated on this link. Advertisements failing either check are counted
 and dropped.
 
-**This does not make RA-based delegation a trusted channel.** Anyone with access
-to the link can still send a conforming advertisement and move the prefix; that is
-inherent to taking delegation from Router Advertisements, and the same exposure
-every SLAAC host on the link has. The checks restore the floor that a conforming
-NDP implementation provides and rule out remote sources. If the link is not
-trusted, use RA Guard on the switch, or DHCPv6-PD instead.
+**On their own, these checks do not make RA-based delegation a trusted channel.**
+Every host on the segment satisfies both, so anyone with access to the link can
+send a conforming advertisement and move the prefix. That is inherent to taking
+delegation from Router Advertisements, and the same exposure every SLAAC host on
+the link has. What the checks do is restore the floor a conforming NDP
+implementation provides and rule out senders that are not on the link at all.
+
+### Naming the routers you believe
+
+On a link you do not control, say which routers may be believed:
+
+```yaml
+spec:
+  acquisition:
+    routerAdvertisement:
+      interface: eth0
+      # The router's link-local address on this link, which is what an
+      # advertisement's source address carries. Anything else is dropped.
+      trustedRouters:
+        - fe80::1
+    prefixFilter:
+      # What a plausible delegation looks like here. Applies to DHCPv6-PD too:
+      # a server handing back something far larger is taken just as much on
+      # faith as a router advertising it.
+      minPrefixLength: 48
+      maxPrefixLength: 64
+```
+
+Advertisements from anywhere else, and prefixes outside the bounds, are dropped,
+counted in `dynamic_prefix_rejected_router_advertisements_total{interface,reason}`,
+and reported on the resource as a `RouterAdvertisementsRejected` warning at most
+once every five minutes. A rising count is the outward sign of something on the
+link advertising when it should not be.
+
+There are three ways to handle an untrusted link, and they combine:
+
+1. **Name the routers**, as above. Useful where the switch cannot filter.
+2. **Run RA Guard on the switch** (RFC 6105), which drops rogue advertisements
+   before they reach any host. Better where it is available, because it protects
+   everything on the segment rather than only this operator.
+3. **Use DHCPv6-PD instead**, which does not take delegation from advertisements
+   at all. This is the right answer behind switch-side RA Guard, since the
+   advertisements would not reach the operator anyway. See
+   [docs/prefix-acquisition-modes.md](docs/prefix-acquisition-modes.md).
 
 ## Supported Resources
 
@@ -483,6 +521,7 @@ trusted, use RA Guard on the switch, or DHCPv6-PD instead.
 - **CiliumCIDRGroup** — for network policies (`spec.externalCIDRs`)
 - **MetalLB IPAddressPool** — for MetalLB LoadBalancer pools (`spec.addresses` with CIDR or start-end entries)
 - **Calico IPPool** — for Calico LoadBalancer IPAM (`spec.cidr`; address ranges must align to one exact CIDR)
+- **kube-vip pool ConfigMap** — for the kube-vip cloud provider (one `cidr-*` or `range-*` key; opt-in, see below)
 
 ### Backend Notes
 
@@ -492,6 +531,57 @@ trusted, use RA Guard on the switch, or DHCPv6-PD instead.
 | Cilium | `CiliumCIDRGroup` | Approximate containing CIDR | CIDR entries | Intended for network policy CIDR groups |
 | MetalLB | `IPAddressPool` | Precise `start-end` entries | CIDR entries | `L2Advertisement`/`BGPAdvertisement` remain user-managed |
 | Calico | `IPPool` | Exact CIDR-aligned ranges only | `spec.cidr` | Requires Calico LoadBalancer IPAM and, for BGP, user-managed `BGPConfiguration` |
+| kube-vip | pool `ConfigMap` | `range-*` keys take `start-end`; `cidr-*` keys need CIDR-aligned ranges | CIDR or range entries | Off by default. Set `kubevip.enabled=true` (or pass `--kubevip-configmap=<ns>/<name>`) and annotate the ConfigMap with `dynamic-prefix.io/kubevip-key` |
+
+### kube-vip
+
+The kube-vip cloud provider keeps every pool in one ConfigMap, conventionally
+`kube-system/kubevip`, keyed by name. Enabling the backend grants the operator
+write access to ConfigMaps in that namespace, which nothing else it does needs,
+so it is off by default and its RBAC is a namespaced Role rather than part of
+the cluster-wide grant.
+
+```yaml
+# values.yaml
+kubevip:
+  enabled: true
+  configMap:
+    namespace: kube-system
+    name: kubevip
+```
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubevip
+  namespace: kube-system
+  annotations:
+    dynamic-prefix.io/name: home-ipv6
+    # Which key to manage. Required: one ConfigMap holds every pool in the
+    # cluster, and cidr- and range- keys are allocated from differently.
+    dynamic-prefix.io/kubevip-key: cidr-global
+data:
+  # The operator maintains its own entries here and leaves everything else --
+  # including the whole IPv4 half of a dual-stack pool -- alone.
+  cidr-global: 192.168.1.220/29
+```
+
+For HA mode on a kube-vip cluster, mark the Service so the operator writes
+`kube-vip.io/loadbalancerIPs` rather than Cilium's annotation:
+
+```yaml
+metadata:
+  annotations:
+    dynamic-prefix.io/name: home-ipv6
+    dynamic-prefix.io/lb-provider: kube-vip
+```
+
+Services without that annotation keep using `lbipam.cilium.io/ips`, so nothing
+changes for existing installs. During a rotation the annotation carries the
+current address and the historical ones; check that your kube-vip version
+announces all of them before relying on the drain window, or use simple mode,
+which is unaffected.
 
 ## Configuration Reference
 
@@ -503,11 +593,27 @@ kind: DynamicPrefix
 metadata:
   name: home-ipv6
 spec:
-  # How to receive the prefix
+  # How to receive the prefix. At least one method is required; configuring
+  # both runs DHCPv6-PD as primary with Router Advertisements as fallback.
   acquisition:
+    # Act as a DHCPv6-PD client. The only method that works behind switch-side
+    # RA Guard, and the one to prefer where the upstream offers it.
+    dhcpv6pd:
+      interface: eth0
+      requestedPrefixLength: 56   # hint to the server, 48-64
+
     routerAdvertisement:
       interface: eth0    # Interface to monitor for RAs
       enabled: true
+      # Optional: believe only these routers, by link-local source address.
+      trustedRouters:
+        - fe80::1
+
+    # Optional, applies to every acquisition method above.
+    prefixFilter:
+      requireGlobalUnicast: true  # reject anything outside 2000::/3
+      minPrefixLength: 48         # reject implausibly large delegations
+      maxPrefixLength: 64         # reject implausibly small ones
 
   # Address ranges within the /64 (recommended for home/SOHO)
   addressRanges:
@@ -543,9 +649,17 @@ status:
 ## Requirements
 
 - Kubernetes 1.28+
-- At least one supported pool backend CRD: Cilium, MetalLB, or Calico
-- `hostNetwork: true` for the operator pod (to see Router Advertisements)
-- `NET_RAW` capability (for raw ICMPv6 sockets)
+- At least one supported pool backend: Cilium, MetalLB or Calico CRDs, or the
+  kube-vip cloud provider's pool ConfigMap
+- `hostNetwork: true` for the operator pod. Both acquisition methods read the
+  uplink directly: advertisements arrive on the host's interfaces, and the
+  DHCPv6-PD client sources from the host interface's link-local address. This is
+  the chart default.
+- `NET_RAW`, for the raw ICMPv6 socket Router Advertisement monitoring reads
+- `NET_BIND_SERVICE`, for the UDP 546 bind DHCPv6-PD needs. Dropping all
+  capabilities takes this from root too, so it has to be added back explicitly;
+  without it the client fails with `bind: permission denied` and the resource
+  reports `PrefixAcquired=False` with reason `AcquisitionFailed`.
 
 ## Prefix Change Behavior
 
@@ -587,6 +701,8 @@ The operator exports controller-runtime metrics plus dynamic-prefix specific Pro
 | `dynamic_prefix_changes_total` | Prefix changes after an initial prefix was active |
 | `dynamic_prefix_lease_expiry_seconds` | Current lease expiry as a Unix timestamp, or `0` when unknown |
 | `dynamic_prefix_pools_synced` | Successful pool sync state labeled by backend, DynamicPrefix, and pool |
+| `dynamic_prefix_receiver_healthy` | 1 while the receiver's last acquisition attempt succeeded, 0 while acquisition or renewal is failing |
+| `dynamic_prefix_rejected_router_advertisements_total` | Advertisements dropped by validation, labeled by interface and reason |
 
 It also emits Kubernetes events for prefix acquisition, prefix changes, transition history pruning, receiver failures, and pool updates.
 

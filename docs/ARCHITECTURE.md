@@ -420,6 +420,8 @@ Minimal permissions:
 | `dynamic_prefix_changes_total` | Counter | Prefix changes after an initial prefix was already active |
 | `dynamic_prefix_lease_expiry_seconds` | Gauge | Unix timestamp for the current prefix lease expiry, or `0` when unknown |
 | `dynamic_prefix_pools_synced` | Gauge | Successful pool sync state labeled by backend, DynamicPrefix, and pool |
+| `dynamic_prefix_receiver_healthy` | Gauge | 1 while the receiver's last acquisition attempt succeeded, 0 while acquisition or renewal is failing |
+| `dynamic_prefix_rejected_router_advertisements_total` | Counter | Advertisements dropped by validation, labeled by interface and reason |
 
 ### Events
 
@@ -431,18 +433,36 @@ Minimal permissions:
 | `TransitionStarted` | A replaced prefix is added to history for draining |
 | `TransitionCompleted` | A historical prefix is pruned after `maxPrefixHistory` |
 | `ReceiverCreationFailed` | A prefix receiver cannot be created or started |
+| `AcquisitionFailed` | The receiver has tried to acquire a prefix and failed, as opposed to still waiting for a first advertisement |
+| `RouterAdvertisementsRejected` | Advertisements were dropped by validation; reported at most once every five minutes |
+| `InvalidLBProvider` | A Service names a load-balancer provider the operator does not write addresses for |
 
 ## Extensibility
 
 ### Adding New Pool Types
 
 1. Add or extend a `poolBackend` implementation used by `PoolSyncReconciler`
-2. Add discovery for the backend GVK so the controller only watches installed CRDs
-3. Add RBAC markers and regenerate manifests
-4. Add preservation/idempotency tests
-5. Document annotation usage and backend-specific caveats
+2. Add a case to `backendForGVK` so the GVK resolves to it
+3. Add discovery for the backend GVK so the controller only watches installed CRDs
+4. Add an ownership record annotation, and register it in **both**
+   `hasOwnershipRecord` and the stray-record list in `releasePool` — a record
+   missing from either is silently mishandled. Name it for the backend rather
+   than for what the entries are: `managed-cidrs` and `managed-cidr` already
+   differ by one character and mean different things.
+5. Add RBAC markers and regenerate manifests
+6. Add preservation/idempotency tests, including that a rotation replaces the
+   operator's entries rather than accumulating them
+7. Document annotation usage and backend-specific caveats
 
-Current pool backends include Cilium `CiliumLoadBalancerIPPool`, Cilium `CiliumCIDRGroup`, MetalLB `IPAddressPool`, and Calico `IPPool`.
+Current pool backends include Cilium `CiliumLoadBalancerIPPool`, Cilium `CiliumCIDRGroup`, MetalLB `IPAddressPool`, Calico `IPPool`, and the kube-vip cloud provider's pool `ConfigMap`.
+
+**Core types are the exception to steps 3 and 5.** The kube-vip backend manages
+a `ConfigMap`, which exists in every cluster, so there is nothing to discover
+and watching them unconditionally would put a cluster-wide ConfigMap informer in
+every deployment. It is enabled by naming the object with `--kubevip-configmap`,
+which also scopes the informer to it, and its RBAC is a namespaced Role rendered
+only when the backend is on rather than a rule in the generated ClusterRole. A
+backend for another core type should follow the same shape.
 
 ### Adding New Prefix Sources
 
