@@ -149,6 +149,10 @@ func iaPrefixFor(cidr string, preferred, valid time.Duration) (*dhcpv6.OptIAPref
 	return opt, nil
 }
 
+// testDelegatedPrefix is what the scripted servers hand out unless a test
+// needs a second one to rotate to.
+const testDelegatedPrefix = "2001:db8:beef::/56"
+
 // leaseLifetime is what the scripted servers delegate for. The exchanges under
 // test never wait it out; only the T1/T2 split derived from it is asserted on.
 const leaseLifetime = time.Hour
@@ -235,7 +239,7 @@ func lastEvent(t *testing.T, r *DHCPv6PDReceiver) Event {
 // present in it, so against those servers acquisition failed on every attempt
 // with "IA_NA cannot be nil", ten seconds apart, forever.
 func TestDHCPv6PDAcquiresFromAServerThatOnlyDelegates(t *testing.T) {
-	r, client := newWireTestReceiver(t, delegating("2001:db8:beef::/56"))
+	r, client := newWireTestReceiver(t, delegating(testDelegatedPrefix))
 
 	if err := r.acquirePrefix(context.Background()); err != nil {
 		t.Fatalf("acquirePrefix() = %v", err)
@@ -245,8 +249,8 @@ func TestDHCPv6PDAcquiresFromAServerThatOnlyDelegates(t *testing.T) {
 	if got == nil {
 		t.Fatal("expected a delegated prefix to be recorded")
 	}
-	if got.Network.String() != "2001:db8:beef::/56" {
-		t.Fatalf("prefix = %v, want 2001:db8:beef::/56", got.Network)
+	if got.Network.String() != testDelegatedPrefix {
+		t.Fatalf("prefix = %v, want %s", got.Network, testDelegatedPrefix)
 	}
 	if got.Source != SourceDHCPv6PD {
 		t.Fatalf("source = %v, want %v", got.Source, SourceDHCPv6PD)
@@ -431,7 +435,7 @@ func TestDHCPv6PDAcquireSurfacesServerStatus(t *testing.T) {
 }
 
 func TestDHCPv6PDRenewKeepsTheSamePrefix(t *testing.T) {
-	r, client := newWireTestReceiver(t, delegating("2001:db8:beef::/56"))
+	r, client := newWireTestReceiver(t, delegating(testDelegatedPrefix))
 
 	if err := r.acquirePrefix(context.Background()); err != nil {
 		t.Fatalf("acquirePrefix() = %v", err)
@@ -452,7 +456,7 @@ func TestDHCPv6PDRenewKeepsTheSamePrefix(t *testing.T) {
 	if e := lastEvent(t, r); e.Type != EventTypeRenewed {
 		t.Fatalf("event = %v, want %v", e.Type, EventTypeRenewed)
 	}
-	if got := r.CurrentPrefix(); got == nil || got.Network.String() != "2001:db8:beef::/56" {
+	if got := r.CurrentPrefix(); got == nil || got.Network.String() != testDelegatedPrefix {
 		t.Fatalf("prefix after renewal = %v, want it unchanged", got)
 	}
 }
@@ -486,7 +490,7 @@ func TestDHCPv6PDRenewReportsANewPrefixAsChanged(t *testing.T) {
 // gone away, so it carries no server ID and takes the identity of whoever
 // answers.
 func TestDHCPv6PDRebindAcceptsAnotherServer(t *testing.T) {
-	r, client := newWireTestReceiver(t, delegating("2001:db8:beef::/56"))
+	r, client := newWireTestReceiver(t, delegating(testDelegatedPrefix))
 	if err := r.acquirePrefix(context.Background()); err != nil {
 		t.Fatalf("acquirePrefix() = %v", err)
 	}
@@ -497,7 +501,7 @@ func TestDHCPv6PDRebindAcceptsAnotherServer(t *testing.T) {
 		if req.MessageType == dhcpv6.MessageTypeRenew {
 			return nil, errors.New("timed out")
 		}
-		return delegating("2001:db8:beef::/56")(req)
+		return delegating(testDelegatedPrefix)(req)
 	}
 	client.mu.Unlock()
 

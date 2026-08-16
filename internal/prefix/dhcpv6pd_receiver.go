@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"sync"
@@ -66,6 +67,10 @@ type DHCPv6PDReceiver struct {
 	// so the exchange goroutine can read them without the lock.
 	dial            dhcpv6DialFunc
 	lookupInterface func(name string) (*net.Interface, error)
+	// acquireBackoffMin and acquireBackoffMax bound the retry pace and are
+	// likewise fixed at construction.
+	acquireBackoffMin time.Duration
+	acquireBackoffMax time.Duration
 }
 
 // dhcpv6Lease contains DHCPv6-PD lease information.
@@ -100,6 +105,8 @@ func NewDHCPv6PDReceiverWithPolicy(iface string, requestedPrefixLength int, requ
 		stopCh:                make(chan struct{}),
 		dial:                  defaultDHCPv6Dial,
 		lookupInterface:       net.InterfaceByName,
+		acquireBackoffMin:     defaultAcquireBackoffMin,
+		acquireBackoffMax:     defaultAcquireBackoffMax,
 	}
 }
 
@@ -163,14 +170,63 @@ func (r *DHCPv6PDReceiver) Source() Source {
 }
 
 const (
-	// acquireRetryInterval spaces out attempts while no lease is held.
-	acquireRetryInterval = 10 * time.Second
+	// defaultAcquireBackoffMin is the first pause after a failed acquisition.
+	defaultAcquireBackoffMin = 10 * time.Second
+	// defaultAcquireBackoffMax caps it. An uplink that has been down for an hour
+	// is not about to come back because it was asked a 360th time, but the delay
+	// still has to be short enough that a rotation is picked up promptly.
+	defaultAcquireBackoffMax = 5 * time.Minute
 	// renewRetryInterval spaces out RENEW attempts between T1 and T2. Without
 	// it the loop reruns immediately -- the lease is unchanged, so the T1 test
 	// still passes -- burning a core and opening a socket per iteration for the
 	// whole T1..T2 window, which is typically hours.
 	renewRetryInterval = 30 * time.Second
 )
+
+// nextBackoff doubles a delay without passing a ceiling. Doubling near the end
+// of the duration range wraps negative, and a negative timer fires at once --
+// the busy loop the ceiling exists to prevent -- so the overflow is checked.
+func nextBackoff(cur, max time.Duration) time.Duration {
+	if cur >= max || cur > max/2 {
+		return max
+	}
+	return cur * 2
+}
+
+// jittered spreads a delay by up to a fifth either way, so a fleet of operators
+// that lost the same uplink does not solicit in lockstep when it returns.
+func jittered(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	spread := int64(d) / 5
+	if spread == 0 {
+		return d
+	}
+	// #nosec G404 -- spreading retry timing, not generating a secret
+	return d + time.Duration(rand.Int64N(2*spread+1)-spread)
+}
+
+// acquireBackoff paces attempts while no lease is held.
+type acquireBackoff struct {
+	min, max, cur time.Duration
+}
+
+func newAcquireBackoff(minDelay, maxDelay time.Duration) acquireBackoff {
+	return acquireBackoff{min: minDelay, max: maxDelay, cur: minDelay}
+}
+
+// current is the delay before the next attempt, before jitter.
+func (b *acquireBackoff) current() time.Duration { return b.cur }
+
+// wait is how long to actually sleep for.
+func (b *acquireBackoff) wait() time.Duration { return jittered(b.cur) }
+
+func (b *acquireBackoff) failed() { b.cur = nextBackoff(b.cur, b.max) }
+
+// succeeded returns to the shortest delay, so the rotation after a recovery is
+// noticed as quickly as the first one would have been.
+func (b *acquireBackoff) succeeded() { b.cur = b.min }
 
 // waitFor blocks for d, reporting false if the receiver was stopped instead.
 // Every wait in the loop goes through this so a Stop is not held up by a sleep.
@@ -190,9 +246,15 @@ func (r *DHCPv6PDReceiver) waitFor(ctx context.Context, stopCh <-chan struct{}, 
 
 // runLoop handles prefix acquisition and renewal.
 func (r *DHCPv6PDReceiver) runLoop(ctx context.Context, stopCh <-chan struct{}) {
+	// The pace belongs to this generation of the loop, like its context and
+	// stop channel: a restart is a fresh start, not a continuation of whatever
+	// the previous one had backed off to.
+	backoff := newAcquireBackoff(r.acquireBackoffMin, r.acquireBackoffMax)
+
 	// Initial acquisition
 	if err := r.acquirePrefix(ctx); err != nil {
 		r.sendError(fmt.Errorf("initial prefix acquisition failed: %w", err))
+		backoff.failed()
 	}
 
 	for {
@@ -210,11 +272,14 @@ func (r *DHCPv6PDReceiver) runLoop(ctx context.Context, stopCh <-chan struct{}) 
 
 		if lease == nil {
 			// No lease, try to acquire
-			if !r.waitFor(ctx, stopCh, acquireRetryInterval) {
+			if !r.waitFor(ctx, stopCh, backoff.wait()) {
 				return
 			}
 			if err := r.acquirePrefix(ctx); err != nil {
 				r.sendError(fmt.Errorf("prefix acquisition failed: %w", err))
+				backoff.failed()
+			} else {
+				backoff.succeeded()
 			}
 			continue
 		}
