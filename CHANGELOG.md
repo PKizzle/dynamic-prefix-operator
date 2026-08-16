@@ -4,10 +4,24 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
-## Unreleased
+## v0.0.15 - 2026-08-16
+
+A follow-up to the v0.0.14 audit: the lifecycle defects that round left behind,
+one reachable-vulnerability fix in the Go toolchain, and a chart fix without
+which the secure metrics endpoint v0.0.14 introduced cannot actually be scraped.
+
+**Upgrading from v0.0.14 with metrics enabled:** the chart now ships the
+ClusterRole a scraper needs, and takes the NetworkPolicy port from the metrics
+bind address. If you pin `config.metrics.bindAddress`, check it matches the
+secure listener before upgrading.
 
 ### Fixed
 
+- **Security:** the pinned Go toolchain carried six standard-library
+  vulnerabilities reachable from this module — in `net/http`, `crypto/tls`,
+  `net/url`, `html/template` and `encoding/asn1` — all fixed in go1.26.6. The
+  vulnerability gate had been running an analyzer about two years older than the
+  toolchain it was checking, and reported them as absent.
 - **Security (chart):** secure metrics authenticated every scrape and authorized none of them. `config.metrics.secure` defaults to true, so the operator asks the API server whether the caller may read `/metrics`, but the chart shipped no ClusterRole granting that to anyone — every authenticated scrape was denied, and an upgrade silently stopped all `dynamic_prefix_*` metrics. The chart now ships a `metrics-reader` ClusterRole, binds it when `serviceMonitor.scraperServiceAccount.name` is set, and the NetworkPolicy takes the metrics port from the bind address instead of the 8080 it stopped listening on.
 - `PoolsSynced` never cleared once a failing pool stopped being managed. Releasing a pool (de-annotated, or its DynamicPrefix deleted) or deleting it outright left the failure recorded in memory, so the condition went on naming a pool the operator no longer touches and `kubectl wait --for=condition=PoolsSynced` never returned. The same state is now keyed per backend as well as per name: several pool kinds are cluster-scoped and can share one, and a healthy pool could clear a broken sibling's entry and report the whole set as synced.
 - A pool bound to a DynamicPrefix that had not acquired a prefix yet was reported as a sync failure — a Warning on every pool, `PoolsSynced=False`, and exponential backoff toward a quarter of an hour through the whole of a fresh install. Waiting for the first advertisement now requeues quietly, on both the pool and HA-mode Service paths.
