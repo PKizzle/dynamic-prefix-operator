@@ -175,6 +175,19 @@ serviceMonitor:
   metricRelabelings: []
   # -- Relabeling configs
   relabelings: []
+  # -- TLS settings for the scrape when config.metrics.secure is true. The
+  # operator serves a self-signed certificate by default, which is why
+  # verification is off; point this at a CA bundle (for example one issued by
+  # cert-manager) to verify it instead.
+  tlsConfig:
+    insecureSkipVerify: true
+  # -- ServiceAccount Prometheus scrapes with. Setting it makes the chart bind
+  # the metrics-reader ClusterRole to that identity, which authenticated scrapes
+  # need when config.metrics.secure is true. Leave the name empty to create the
+  # role without a binding and grant it yourself.
+  scraperServiceAccount:
+    name: ""
+    namespace: ""
 
 # ==============================================================================
 # CRD Installation

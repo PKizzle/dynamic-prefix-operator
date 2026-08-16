@@ -1,0 +1,40 @@
+{{- if and .Values.rbac.create .Values.config.metrics.enabled .Values.config.metrics.secure -}}
+# Authorization for whoever *scrapes* the metrics endpoint, which is a different
+# identity from the operator's own. With --metrics-secure the operator asks the
+# API server whether the caller may read metrics, and that question is answered
+# by this role: without it every authenticated scrape is denied.
+#
+# The binding is optional because the scraper's ServiceAccount is not knowable
+# from here -- set serviceMonitor.scraperServiceAccount to have the chart bind it,
+# or bind this role yourself.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "dynamic-prefix-operator.fullname" . }}-metrics-reader
+  labels:
+    {{- include "dynamic-prefix-operator.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+{{- with .Values.serviceMonitor.scraperServiceAccount }}
+{{- if .name }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "dynamic-prefix-operator.fullname" $ }}-metrics-reader
+  labels:
+    {{- include "dynamic-prefix-operator.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "dynamic-prefix-operator.fullname" $ }}-metrics-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ .name }}
+    namespace: {{ .namespace | default $.Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- end }}

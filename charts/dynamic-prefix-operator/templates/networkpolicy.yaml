@@ -15,9 +15,11 @@ spec:
     - Egress
   ingress:
     {{- if .Values.config.metrics.enabled }}
-    # Allow metrics scraping
+    # Allow metrics scraping. Taken from the bind address rather than fixed, or
+    # enabling the policy blocks every scrape the moment the port is changed --
+    # or, as with the move to a secure listener, changes underneath it.
     - ports:
-        - port: 8080
+        - port: {{ include "dynamic-prefix-operator.metricsPort" . | int }}
           protocol: TCP
     {{- end }}
     # Allow health probes
