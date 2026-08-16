@@ -94,6 +94,12 @@ func (c *CompositeReceiver) Stop() error {
 	defer c.mu.Unlock()
 
 	if !c.started {
+		// A composite that was built and never started still holds whatever its
+		// receivers took at construction -- the DHCPv6-PD half claims its
+		// interface there -- so the stop is forwarded regardless. Stopping a
+		// receiver that never ran is a no-op beyond that release.
+		_ = c.primary.Stop()
+		_ = c.fallback.Stop()
 		return nil
 	}
 

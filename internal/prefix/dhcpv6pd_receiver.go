@@ -74,6 +74,11 @@ type DHCPv6PDReceiver struct {
 	// likewise fixed at construction.
 	acquireBackoffMin time.Duration
 	acquireBackoffMax time.Duration
+	// releaseInterface hands this receiver's interface back to the factory that
+	// claimed it, so the next receiver built for that interface can have it. It
+	// is nil for receivers built directly, which claim nothing.
+	releaseInterface func()
+	releaseOnce      sync.Once
 }
 
 // dhcpv6Lease contains DHCPv6-PD lease information.
@@ -137,8 +142,24 @@ func (r *DHCPv6PDReceiver) Start(ctx context.Context) error {
 	return nil
 }
 
+// releaseClaimedInterface hands the interface back to the factory. Safe to call
+// more than once, and on a receiver that never claimed one.
+//
+// Deliberately outside the started check in Stop: a receiver can be built and
+// then discarded without ever running -- a spec that fails validation on the
+// way to being started, say -- and a claim left behind would make the interface
+// unusable for the rest of the process.
+func (r *DHCPv6PDReceiver) releaseClaimedInterface() {
+	if r.releaseInterface == nil {
+		return
+	}
+	r.releaseOnce.Do(r.releaseInterface)
+}
+
 // Stop stops the DHCPv6-PD client.
 func (r *DHCPv6PDReceiver) Stop() error {
+	r.releaseClaimedInterface()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 

@@ -30,11 +30,29 @@ type ReceiverFactory interface {
 	CreateReceiver(spec dynamicprefixiov1alpha1.AcquisitionSpec) (Receiver, error)
 }
 
+// InterfaceBusyError reports a second DHCPv6-PD client asked for on an
+// interface that already has one.
+type InterfaceBusyError struct {
+	Interface string
+}
+
+func (e *InterfaceBusyError) Error() string {
+	return fmt.Sprintf(
+		"interface %s already has a DHCPv6-PD client: two clients on one interface send the same DUID and IAID, "+
+			"so each would overwrite the other's lease. Model one delegation as one DynamicPrefix and give it "+
+			"several addressRanges or subnets instead", e.Interface)
+}
+
 // DefaultReceiverFactory is the default implementation of ReceiverFactory.
 type DefaultReceiverFactory struct {
 	mu            sync.Mutex
 	raReceivers   *sharedRAReceiverPool
 	newRAReceiver newReceiverFunc
+	// pdInterfaces records which interfaces already run a DHCPv6-PD client.
+	// Router Advertisement receivers are shared per interface and policy, which
+	// is safe because listening twice costs nothing; a DHCPv6 client holds a
+	// lease, and two of them on one interface fight over it.
+	pdInterfaces map[string]struct{}
 }
 
 // NewReceiverFactory creates a new DefaultReceiverFactory.
@@ -82,6 +100,27 @@ func (f *DefaultReceiverFactory) CreateReceiver(spec dynamicprefixiov1alpha1.Acq
 	}
 }
 
+// claimPDInterface reserves an interface for one DHCPv6-PD client, returning
+// the function that hands it back.
+func (f *DefaultReceiverFactory) claimPDInterface(iface string) (func(), error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if _, taken := f.pdInterfaces[iface]; taken {
+		return nil, &InterfaceBusyError{Interface: iface}
+	}
+	if f.pdInterfaces == nil {
+		f.pdInterfaces = make(map[string]struct{})
+	}
+	f.pdInterfaces[iface] = struct{}{}
+
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		delete(f.pdInterfaces, iface)
+	}, nil
+}
+
 // createDHCPv6PDReceiver creates a DHCPv6-PD receiver from the spec.
 func (f *DefaultReceiverFactory) createDHCPv6PDReceiver(spec *dynamicprefixiov1alpha1.DHCPv6PDSpec, requireGlobalUnicast bool) (*DHCPv6PDReceiver, error) {
 	if spec.Interface == "" {
@@ -93,7 +132,14 @@ func (f *DefaultReceiverFactory) createDHCPv6PDReceiver(spec *dynamicprefixiov1a
 		prefixLength = *spec.RequestedPrefixLength
 	}
 
-	return NewDHCPv6PDReceiverWithPolicy(spec.Interface, prefixLength, requireGlobalUnicast), nil
+	release, err := f.claimPDInterface(spec.Interface)
+	if err != nil {
+		return nil, err
+	}
+
+	receiver := NewDHCPv6PDReceiverWithPolicy(spec.Interface, prefixLength, requireGlobalUnicast)
+	receiver.releaseInterface = release
+	return receiver, nil
 }
 
 // createRAReceiver creates a Router Advertisement receiver from the spec.
@@ -116,6 +162,11 @@ func (f *DefaultReceiverFactory) createCompositeReceiver(spec dynamicprefixiov1a
 
 	fallback, err := f.createRAReceiver(spec.RouterAdvertisement, requireGUA)
 	if err != nil {
+		// The primary already claimed the interface, and nothing will ever stop
+		// a receiver that was never returned to the caller. Left behind, the
+		// claim would outlive the misconfiguration that caused it and report
+		// the interface busy to the very resource that is being corrected.
+		primary.releaseClaimedInterface()
 		return nil, fmt.Errorf("failed to create fallback RA receiver: %w", err)
 	}
 
