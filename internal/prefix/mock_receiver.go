@@ -47,6 +47,11 @@ func NewMockReceiver(source Source) *MockReceiver {
 func (m *MockReceiver) Start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Fresh stop channel per run, as the real receivers take: Stop closes this
+	// one, so reusing it made a restart hand out an already-closed channel.
+	if !m.started {
+		m.stopCh = make(chan struct{})
+	}
 	m.started = true
 	return nil
 }
@@ -55,6 +60,12 @@ func (m *MockReceiver) Start(ctx context.Context) error {
 func (m *MockReceiver) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Guarded like the real receivers. Without it a second Stop -- which a
+	// composite performs on children it never started -- panicked on a double
+	// close, so a test double behaved worse than the thing it stands in for.
+	if !m.started {
+		return nil
+	}
 	m.started = false
 	close(m.stopCh)
 	return nil
