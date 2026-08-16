@@ -133,14 +133,21 @@ func (r *PoolSyncReconciler) cidrGroupGVK() schema.GroupVersionKind {
 //
 // A reconcile.Request carries only a name, so every backend of matching scope is
 // synced rather than just the first one found. Several backends are cluster-scoped,
-// and stopping at the first match meant a pool whose name it shared with another
-// kind was never reconciled at all -- invisibly, because the other Get succeeded.
+// and stopping at the first match would leave a pool sharing its name with another
+// kind unreconciled -- invisibly, because the other Get succeeds.
 func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	pools, err := r.getPools(ctx, req.NamespacedName)
 	if err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if len(pools) == 0 {
+		// No backend object of any kind answers to this name any more, so nothing
+		// will ever reconcile it through the success path. Drop whatever failure
+		// state it left behind, or the condition goes on naming a pool that is
+		// gone.
+		r.releasePoolsSyncedEntries(ctx, func(key poolStateKey) bool {
+			return key.pool == req.String()
+		})
 		return ctrl.Result{}, nil
 	}
 
@@ -189,6 +196,8 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 
 	log.Info("Syncing pool", "backend", backend.name(), "pool", req.Name, "dynamicPrefix", dpName, "subnet", subnetName, "addressRange", addressRangeName)
 
+	stateKey := poolStateKey{backend: backend.name(), pool: req.String()}
+
 	// Fetch the referenced DynamicPrefix
 	var dp dynamicprefixiov1alpha1.DynamicPrefix
 	if err := r.Get(ctx, types.NamespacedName{Name: dpName}, &dp); err != nil {
@@ -212,6 +221,17 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 		return ctrl.Result{}, err
 	}
 
+	if dp.Status.CurrentPrefix == "" {
+		// Waiting for the first advertisement, not failing. Treated as an error it
+		// would raise a Warning on every pool, park the condition at False and back
+		// off exponentially through the whole of a fresh install. The DynamicPrefix
+		// watch re-enqueues this pool when the prefix lands; the requeue is only a
+		// backstop.
+		log.V(1).Info("DynamicPrefix has not acquired a prefix yet",
+			"pool", req.Name, "dynamicPrefix", dpName)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	// Build pool configurations for current prefix and historical prefixes
 	configs, err := r.buildPoolConfigurations(ctx, &dp, hasAddressRange, addressRangeName, hasSubnet, subnetName)
 	if err != nil {
@@ -224,17 +244,8 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 			fmt.Sprintf("Cannot build configurations for %s pool %s from DynamicPrefix %s: %v",
 				backend.name(), req.Name, dpName, err))
 		recordPoolSyncFailedMetric(backend.name(), dpName, req.String())
-		r.updatePoolsSyncedCondition(ctx, dpName, req.String(), err)
+		r.updatePoolsSyncedCondition(ctx, dpName, stateKey, err)
 		return ctrl.Result{}, fmt.Errorf("failed to build pool configurations for %s: %w", req.Name, err)
-	}
-
-	if len(configs) == 0 {
-		// Nothing to write yet -- typically a DynamicPrefix that has not acquired
-		// a prefix. That is a wait, not a failure, so it requeues rather than
-		// erroring; but it is reported on the pool so an empty pool is
-		// explicable.
-		log.V(1).Info("No pool configurations generated", "pool", req.Name, "dynamicPrefix", dpName)
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	// Collect all managed prefixes for block preservation logic
@@ -247,7 +258,7 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 		// Surfaced so conflicts retry promptly with backoff and rejected
 		// updates (immutable fields, webhooks) become visible in the metrics.
 		recordPoolSyncFailedMetric(backend.name(), dpName, req.String())
-		r.updatePoolsSyncedCondition(ctx, dpName, req.String(), updateErr)
+		r.updatePoolsSyncedCondition(ctx, dpName, stateKey, updateErr)
 		return ctrl.Result{}, updateErr
 	}
 
@@ -259,7 +270,7 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 		log.Info("Pool already up-to-date", "backend", backend.name(), "pool", req.Name, "blockCount", len(configs))
 	}
 	recordPoolSyncedMetric(backend.name(), dpName, req.String())
-	r.updatePoolsSyncedCondition(ctx, dpName, req.String(), nil)
+	r.updatePoolsSyncedCondition(ctx, dpName, stateKey, nil)
 	return ctrl.Result{}, nil
 }
 
@@ -278,26 +289,44 @@ func (r *PoolSyncReconciler) releasePool(
 	log := logf.FromContext(ctx)
 
 	// Dispatch on the backend that matched, not on which record annotation
-	// happens to be present. The two disagree when a pool carries a record from
-	// another backend, and the old form then read and wrote spec.blocks on
-	// objects that have no such field -- creating an empty list on a CIDR group
-	// or a MetalLB pool.
+	// happens to be present: the two disagree when a pool carries another
+	// backend's record, and only the backend knows which field its record
+	// describes.
 	changed, err := backend.release(ctx, r, pool)
 	if err != nil {
 		return fmt.Errorf("failed to release %s pool %s: %w", backend.name(), pool.GetName(), err)
 	}
-	if !changed {
+
+	// Records belonging to other backends are dropped too. Only the matched
+	// backend can undo its own writes, but any record left behind keeps the
+	// object inside the watch filter for a binding that no longer exists.
+	annotations := pool.GetAnnotations()
+	strayRecords := false
+	for _, key := range []string{
+		AnnotationManagedBlocks,
+		AnnotationManagedCIDRs,
+		AnnotationManagedAddresses,
+		AnnotationManagedCIDR,
+		AnnotationLastSync,
+	} {
+		if _, ok := annotations[key]; ok {
+			delete(annotations, key)
+			strayRecords = true
+		}
+	}
+	if !changed && !strayRecords {
 		return nil
 	}
-
-	annotations := pool.GetAnnotations()
-	delete(annotations, AnnotationLastSync)
 	pool.SetAnnotations(annotations)
 
+	poolKey := client.ObjectKeyFromObject(pool).String()
 	if err := r.Update(ctx, pool); err != nil {
 		return fmt.Errorf("failed to release pool %s: %w", pool.GetName(), err)
 	}
-	forgetPoolMetrics(backend.name(), pool.GetAnnotations()[AnnotationName], client.ObjectKeyFromObject(pool).String())
+	forgetPoolMetrics(backend.name(), poolKey)
+	r.releasePoolsSyncedEntries(ctx, func(key poolStateKey) bool {
+		return key.backend == backend.name() && key.pool == poolKey
+	})
 	log.Info("Released pool entries", "pool", pool.GetName(), "backend", backend.name(), "reason", reason)
 	emitNormalEvent(r.Recorder, pool, eventReasonPoolReleased,
 		fmt.Sprintf("Released the entries this operator wrote to %s pool %s: %s", backend.name(), pool.GetName(), reason))
@@ -320,9 +349,9 @@ type poolMatch struct {
 //
 // Within a scope the name is still ambiguous: several backends are cluster-scoped,
 // and nothing stops a CiliumLoadBalancerIPPool and a CiliumCIDRGroup from sharing
-// a name. Returning the first match meant whichever kind lost the discovery-order
-// race was never reconciled, with no error to show for it. All matches are
-// returned instead, and each is synced independently.
+// a name. Returning only the first match would leave whichever kind lost the
+// discovery-order race unreconciled, with no error to show for it, so all matches
+// are returned and each is synced independently.
 func (r *PoolSyncReconciler) getPools(ctx context.Context, name types.NamespacedName) ([]poolMatch, error) {
 	var matches []poolMatch
 	var lastErr error
@@ -385,10 +414,7 @@ func (r *PoolSyncReconciler) getMaxHistory(dp *dynamicprefixiov1alpha1.DynamicPr
 // subnet: the current prefix first, then one per historical prefix.
 //
 // Address-range mode and subnet mode differ only in which spec they look up and
-// which calculation they run, so they share this. Written out twice, the two
-// copies were an invitation for a fix to land in one of them -- which is how
-// MetalLB came to spend a release with a defect the other backends had already
-// had fixed.
+// which calculation they run, so they share this.
 func buildModeConfigs[S any](
 	ctx context.Context,
 	dp *dynamicprefixiov1alpha1.DynamicPrefix,
@@ -649,7 +675,7 @@ func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstruct
 		fields:    []string{"spec", "externalCIDRs"},
 		recordKey: AnnotationManagedCIDRs,
 		desired:   desired,
-		keyOf:     func(existing interface{}) string { return canonicalEntry(stringKeyOf(existing)) },
+		keyOf:     cidrKeyOf,
 		owned: func(existing interface{}) bool {
 			cidr, ok := existing.(string)
 			if !ok {
