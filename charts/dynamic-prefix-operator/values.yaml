@@ -130,6 +130,22 @@ config:
     cacheLabelSelector: ""
 
 # ==============================================================================
+# kube-vip cloud provider integration
+# ==============================================================================
+kubevip:
+  # -- Manage the kube-vip cloud provider's pool ConfigMap.
+  # Off by default: enabling it grants the operator write access to ConfigMaps
+  # in the namespace below, which nothing else it does requires. Bind a pool by
+  # annotating that ConfigMap with dynamic-prefix.io/name and
+  # dynamic-prefix.io/kubevip-key (for example cidr-global).
+  enabled: false
+  configMap:
+    # -- Namespace holding the kube-vip pool ConfigMap.
+    namespace: kube-system
+    # -- Name of the kube-vip pool ConfigMap.
+    name: kubevip
+
+# ==============================================================================
 # Network Configuration
 # ==============================================================================
 network:

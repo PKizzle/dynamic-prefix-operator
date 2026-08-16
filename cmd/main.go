@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -31,7 +32,9 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -80,6 +83,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var serviceCacheLabelSelector string
+	var kubevipConfigMap string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -100,6 +104,9 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&serviceCacheLabelSelector, "service-cache-label-selector", "",
 		"Optional Kubernetes label selector limiting the Service informer cache, for example dynamic-prefix.io/name")
+	flag.StringVar(&kubevipConfigMap, "kubevip-configmap", "",
+		"Manage the kube-vip cloud provider's pool ConfigMap, given as namespace/name, for example kube-system/kubevip. "+
+			"Empty disables the kube-vip backend, and the operator then needs no access to ConfigMaps at all.")
 	opts := defaultZapOptions()
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -173,6 +180,16 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	var kubevipRef *types.NamespacedName
+	if kubevipConfigMap != "" {
+		namespace, name, found := strings.Cut(kubevipConfigMap, "/")
+		if !found || namespace == "" || name == "" {
+			setupLog.Error(nil, "invalid kube-vip ConfigMap reference; expected namespace/name", "value", kubevipConfigMap)
+			os.Exit(1)
+		}
+		kubevipRef = &types.NamespacedName{Namespace: namespace, Name: name}
+	}
+
 	cacheOptions := cache.Options{}
 	if serviceCacheLabelSelector != "" {
 		selector, err := labels.Parse(serviceCacheLabelSelector)
@@ -185,6 +202,24 @@ func main() {
 			&corev1.Service{}: {Label: selector},
 		}
 		setupLog.Info("restricting Service informer cache", "selector", serviceCacheLabelSelector)
+	}
+
+	if kubevipRef != nil {
+		// Scope the informer to the one ConfigMap named. Every cluster has
+		// ConfigMaps, many of them large, and caching all of them to watch one
+		// pool would cost more memory than the rest of the operator.
+		if cacheOptions.ByObject == nil {
+			cacheOptions.ByObject = map[client.Object]cache.ByObject{}
+		}
+		cacheOptions.ByObject[&corev1.ConfigMap{}] = cache.ByObject{
+			Namespaces: map[string]cache.Config{
+				kubevipRef.Namespace: {
+					FieldSelector: fields.OneTermEqualSelector("metadata.name", kubevipRef.Name),
+				},
+			},
+		}
+		setupLog.Info("managing the kube-vip pool ConfigMap",
+			"namespace", kubevipRef.Namespace, "name", kubevipRef.Name)
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -297,6 +332,13 @@ func main() {
 		}
 
 		return nil
+	}
+
+	// The kube-vip ConfigMap is not discovered -- ConfigMaps always exist, so
+	// there is nothing to detect -- and naming it is what enables the backend.
+	// It also means the pool controller can start with no CRD backend present.
+	if kubevipRef != nil {
+		poolBackendGVKs = append(poolBackendGVKs, controller.KubevipConfigMapGVK)
 	}
 
 	// Set up pool backends immediately or defer to background poller.

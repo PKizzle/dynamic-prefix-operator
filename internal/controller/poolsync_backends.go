@@ -503,6 +503,8 @@ func backendForGVK(gvk schema.GroupVersionKind) poolBackend {
 		return metalLBIPAddressPoolBackend{resourceGVK: gvk}
 	case gvk.Group == "projectcalico.org" && gvk.Kind == "IPPool":
 		return calicoIPPoolBackend{resourceGVK: gvk}
+	case gvk.Group == "" && gvk.Kind == "ConfigMap":
+		return kubevipConfigMapBackend{resourceGVK: gvk}
 	default:
 		return nil
 	}

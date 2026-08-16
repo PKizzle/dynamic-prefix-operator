@@ -49,6 +49,10 @@ const (
 	AnnotationSubnet = "dynamic-prefix.io/subnet"
 	// AnnotationAddressRange specifies which address range from status.addressRanges to use (Mode 1).
 	AnnotationAddressRange = "dynamic-prefix.io/address-range"
+	// AnnotationKubevipKey names which key of the kube-vip pool ConfigMap this
+	// binding manages, e.g. "cidr-global" or "range-production".
+	AnnotationKubevipKey = "dynamic-prefix.io/kubevip-key"
+
 	// AnnotationLastSync is the timestamp set by operator after update.
 	AnnotationLastSync = "dynamic-prefix.io/last-sync"
 )
@@ -307,6 +311,7 @@ func (r *PoolSyncReconciler) releasePool(
 		AnnotationManagedCIDRs,
 		AnnotationManagedAddresses,
 		AnnotationManagedCIDR,
+		AnnotationManagedKubevipEntries,
 		AnnotationLastSync,
 	} {
 		if _, ok := annotations[key]; ok {
