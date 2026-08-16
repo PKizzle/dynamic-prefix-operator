@@ -245,7 +245,10 @@ ENVTEST_ESC = $(subst $(space),\ ,$(ENVTEST))
 GOLANGCI_LINT_ESC = $(subst $(space),\ ,$(GOLANGCI_LINT))
 
 ## Tool Versions
-KUSTOMIZE_VERSION ?= v5.7.1
+# The single pin for kustomize: CI installs it through `make kustomize` so the
+# manifests a release publishes are rendered by the same version `make
+# build-installer` uses locally.
+KUSTOMIZE_VERSION ?= v5.8.1
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
 
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)

@@ -34,9 +34,10 @@ jobs:
         env:
           # Pinned rather than @latest: an unpinned tool install is an
           # unreviewed dependency fetched into every run, including scheduled
-          # ones nobody is watching. Dependabot cannot bump this, so revisit it
-          # when x/vuln releases.
-          GOVULNCHECK_VERSION: v1.1.4
+          # ones nobody is watching. Dependabot cannot see a version in a run
+          # step, so this needs bumping by hand -- and it has to keep pace with
+          # the toolchain in go.mod, since the analyzer loads these sources.
+          GOVULNCHECK_VERSION: v1.6.0
         run: |
           go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
           govulncheck ./...
