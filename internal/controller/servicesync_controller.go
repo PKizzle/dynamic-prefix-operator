@@ -31,6 +31,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -108,7 +109,8 @@ const (
 // annotations to ensure graceful transitions when prefixes change.
 type ServiceSyncReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
 
 	// l2Nudge decides whether the running Cilium still needs the L2 announcer
 	// nudge. Populated by SetupWithManager; a nil decider nudges unconditionally,
@@ -184,36 +186,21 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 
+	if dp.Status.CurrentPrefix == "" {
+		// Waiting for the first advertisement, which is the same kind of "not ready
+		// yet" as the paths above, not a failure to report and back off from.
+		log.V(1).Info("DynamicPrefix has not acquired a prefix yet, will retry", "name", dpName)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
 	log.V(1).Info("Syncing Service for HA mode", "service", req.NamespacedName, "dynamicPrefix", dpName)
 
-	var allIPs []string
-	var currentIP string
-
-	if suffix, ok := annotations[AnnotationSuffix]; ok && suffix != "" {
-		// Suffix-based mode: calculate full IPv6 from prefix + suffix directly.
-		// This is the preferred path — no need to wait for Cilium to assign an IP first.
-		var err error
-		allIPs, currentIP, err = r.calculateSuffixIPs(&dp, suffix)
-		if err != nil {
-			// A malformed suffix annotation never fixes itself. Retrying flat and
-			// silently every 10 seconds left the Service unmanaged with nothing
-			// to point at; this backs off and is counted.
-			return ctrl.Result{}, fmt.Errorf("failed to calculate IPs from suffix %q: %w", suffix, err)
-		}
-		log.V(1).Info("Using suffix-based IP calculation", "suffix", suffix, "currentIP", currentIP)
-	} else {
-		// Legacy mode: infer suffix from the Service's currently assigned IP.
-		currentServiceIP := r.getCurrentServiceIP(&svc)
-		if currentServiceIP == "" {
-			log.V(1).Info("Service has no IP assigned yet, skipping")
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-		}
-
-		var err error
-		allIPs, currentIP, err = r.calculateServiceIPs(ctx, &dp, &svc, currentServiceIP)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to calculate Service IPs: %w", err)
-		}
+	allIPs, currentIP, wait, err := r.addressesForService(ctx, &dp, &svc, annotations)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if wait > 0 {
+		return ctrl.Result{RequeueAfter: wait}, nil
 	}
 
 	// Never rewrite the annotations from an empty calculation. Writing an empty
@@ -335,8 +322,8 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if err := r.Update(ctx, &svc); err != nil {
 			// A conflict means another writer won and the annotations have to be
 			// recomputed against the new state; anything else needs to back off
-			// and be counted. Both were previously flat 5s retries, invisible to
-			// controller_runtime_reconcile_errors_total.
+			// and be counted, which returning the error does and a flat retry
+			// does not.
 			return ctrl.Result{}, fmt.Errorf("failed to update Service annotations: %w", err)
 		}
 		log.Info("Service annotations updated", "service", req.NamespacedName,
@@ -519,7 +506,49 @@ func (r *ServiceSyncReconciler) releaseService(ctx context.Context, svc *corev1.
 	}
 	log.Info("Released Service annotations",
 		"service", client.ObjectKeyFromObject(svc), "reason", reason)
+	emitNormalEvent(r.Recorder, svc, eventReasonServiceReleased,
+		fmt.Sprintf("Released the annotations this operator wrote to Service %s: %s",
+			client.ObjectKeyFromObject(svc), reason))
 	return ctrl.Result{}, nil
+}
+
+// addressesForService calculates the addresses this Service should carry, in
+// whichever of the two modes it is configured for. A non-zero wait means the
+// answer is not available yet and the reconcile should requeue rather than
+// treat the absence as an error.
+func (r *ServiceSyncReconciler) addressesForService(
+	ctx context.Context,
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	svc *corev1.Service,
+	annotations map[string]string,
+) (allIPs []string, currentIP string, wait time.Duration, err error) {
+	log := logf.FromContext(ctx)
+
+	if suffix, ok := annotations[AnnotationSuffix]; ok && suffix != "" {
+		// Suffix-based mode: calculate full IPv6 from prefix + suffix directly.
+		// This is the preferred path -- no need to wait for Cilium to assign an IP first.
+		allIPs, currentIP, err = r.calculateSuffixIPs(dp, suffix)
+		if err != nil {
+			// A malformed suffix annotation never fixes itself, so this is returned
+			// to back off and be counted rather than retried flat and silently.
+			return nil, "", 0, fmt.Errorf("failed to calculate IPs from suffix %q: %w", suffix, err)
+		}
+		log.V(1).Info("Using suffix-based IP calculation", "suffix", suffix, "currentIP", currentIP)
+		return allIPs, currentIP, 0, nil
+	}
+
+	// Legacy mode: infer suffix from the Service's currently assigned IP.
+	currentServiceIP := r.getCurrentServiceIP(svc)
+	if currentServiceIP == "" {
+		log.V(1).Info("Service has no IP assigned yet, skipping")
+		return nil, "", 5 * time.Second, nil
+	}
+
+	allIPs, currentIP, err = r.calculateServiceIPs(ctx, dp, svc, currentServiceIP)
+	if err != nil {
+		return nil, "", 0, fmt.Errorf("failed to calculate Service IPs: %w", err)
+	}
+	return allIPs, currentIP, 0, nil
 }
 
 // collectManagedPrefixes returns all prefixes the operator manages for a
@@ -856,8 +885,8 @@ func (r *ServiceSyncReconciler) calculateAddressRangeIPs(
 	}
 	if rangeSpec == nil {
 		// Must be an error, not an empty result: the caller only falls back to
-		// the Service's current IP when err != nil, so returning ("", nil, nil)
-		// used to propagate an empty IP list all the way to the annotations.
+		// the Service's current IP when err != nil, so ("", nil, nil) would
+		// propagate an empty IP list all the way to the annotations.
 		return "", nil, fmt.Errorf("address range %q is not defined in DynamicPrefix %q", addressRangeName, dp.Name)
 	}
 
@@ -988,7 +1017,12 @@ func (r *ServiceSyncReconciler) calculateSubnetIPs(
 			continue
 		}
 
-		histIP, ok := r.offsetAddressWithin(histSubnet.CIDR.Addr(), lastAddressIn(histSubnet.CIDR), offset)
+		histLast, err := lastAddrOfPrefix(histSubnet.CIDR)
+		if err != nil {
+			continue
+		}
+
+		histIP, ok := r.offsetAddressWithin(histSubnet.CIDR.Addr(), histLast, offset)
 		if !ok {
 			continue
 		}
@@ -1045,28 +1079,13 @@ func (r *ServiceSyncReconciler) applyIPOffset(base netip.Addr, offset [16]byte) 
 	return netip.AddrFrom16(result), carry == 0
 }
 
-// lastAddressIn returns the highest address a prefix contains, by setting every
-// host bit. It bounds the offset arithmetic for subnet mode, where the managed
-// window is a CIDR rather than an explicit start/end pair.
-func lastAddressIn(p netip.Prefix) netip.Addr {
-	// Indexed rather than shifted, so there is no width conversion to reason
-	// about: entry i is the mask for the i-th bit within a byte.
-	bitMask := [8]byte{0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01}
-
-	bytes := p.Masked().Addr().As16()
-	for bit := p.Bits(); bit < 128; bit++ {
-		bytes[bit/8] |= bitMask[bit%8]
-	}
-	return netip.AddrFrom16(bytes)
-}
-
 // offsetAddressWithin applies an offset to base and keeps the result only if it
 // is still inside the window the operator manages, given by base and last
 // inclusive.
 //
-// netip.AddrFrom16 always returns a valid address, so validity was never the
-// question the callers thought they were asking: an address outside the
-// historical range is well-formed and completely wrong.
+// netip.AddrFrom16 always returns a valid address, so validity is not the
+// question worth asking here: an address outside the managed window is
+// well-formed and still wrong.
 func (r *ServiceSyncReconciler) offsetAddressWithin(base, last netip.Addr, offset [16]byte) (netip.Addr, bool) {
 	addr, ok := r.applyIPOffset(base, offset)
 	if !ok {
