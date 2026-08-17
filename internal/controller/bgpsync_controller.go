@@ -23,7 +23,6 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
+	acdynamicprefixv1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1/applyconfiguration/api/v1alpha1"
 )
 
 // DefaultCiliumBGPAdvertisementGVK is the default GVK used when CiliumVersions is not injected.
@@ -151,6 +151,15 @@ func (r *BGPSyncReconciler) getSubnetsWithBGP(dp *dynamicprefixiov1alpha1.Dynami
 
 // advertisementName generates the name for a CiliumBGPAdvertisement resource.
 func (r *BGPSyncReconciler) advertisementName(dpName, subnetName string) string {
+	return advertisementName(dpName, subnetName)
+}
+
+// advertisementName is the name of the CiliumBGPAdvertisement managed for one
+// subnet. Package-level because two controllers derive it: BGPSync to manage
+// the object, and the DynamicPrefix reconciler to publish it in status --
+// status.subnets is an atomic list with a single owner, so the field has to
+// come from the list's writer, and the name is pure spec.
+func advertisementName(dpName, subnetName string) string {
 	return fmt.Sprintf("dp-%s-%s", dpName, subnetName)
 }
 
@@ -346,52 +355,34 @@ func (r *BGPSyncReconciler) deleteOrphanedAdvertisements(
 	return nil
 }
 
-// updateStatus updates the DynamicPrefix status with BGP advertisement information.
+// updateStatus reflects the advertisements' state in the BGPAdvertisementReady
+// condition.
+//
+// Applied under this controller's own field manager, so the write owns exactly
+// that condition entry -- conditions merge per type -- and cannot collide with
+// the other status writers. The bgpAdvertisement field on subnets is not
+// written here: status.subnets is an atomic list with a single owner, the
+// DynamicPrefix reconciler, which derives the name the same way this
+// controller does.
 func (r *BGPSyncReconciler) updateStatus(
 	ctx context.Context,
 	dp *dynamicprefixiov1alpha1.DynamicPrefix,
 	subnetsWithBGP []dynamicprefixiov1alpha1.SubnetSpec,
 ) error {
-	// Build a map of subnet name to advertisement name
-	advNames := make(map[string]string)
-	for _, subnet := range subnetsWithBGP {
-		advNames[subnet.Name] = r.advertisementName(dp.Name, subnet.Name)
-	}
-
-	// Update subnet status with advertisement names
-	statusChanged := false
-	for i := range dp.Status.Subnets {
-		advName, hasBGP := advNames[dp.Status.Subnets[i].Name]
-		if hasBGP {
-			if dp.Status.Subnets[i].BGPAdvertisement != advName {
-				dp.Status.Subnets[i].BGPAdvertisement = advName
-				statusChanged = true
-			}
-		} else {
-			if dp.Status.Subnets[i].BGPAdvertisement != "" {
-				dp.Status.Subnets[i].BGPAdvertisement = ""
-				statusChanged = true
-			}
-		}
-	}
-
-	// Update BGPAdvertisementReady condition.
-	//
-	// meta.SetStatusCondition rather than a hand-rolled equivalent: it preserves
-	// LastTransitionTime across an unchanged status, which is the whole point of
-	// the field, and it reports whether anything actually changed -- including a
-	// change of Reason, which the previous comparison ignored, so a
-	// reason-only transition was computed and then silently dropped.
+	// LastTransitionTime is carried over while the status value is unchanged --
+	// apply requires the writer to state the whole entry, so the timestamp
+	// cannot be left to the server.
 	condition := r.buildBGPCondition(ctx, dp, subnetsWithBGP)
-	condition.ObservedGeneration = dp.Generation
-	if meta.SetStatusCondition(&dp.Status.Conditions, condition) {
-		statusChanged = true
+	entry, changed := conditionApplyEntry(dp,
+		condition.Type, condition.Status, condition.Reason, condition.Message)
+	if !changed {
+		return nil
 	}
 
-	if statusChanged {
-		if err := r.Status().Update(ctx, dp); err != nil {
-			return fmt.Errorf("failed to update status: %w", err)
-		}
+	ac := acdynamicprefixv1alpha1.DynamicPrefix(dp.Name).
+		WithStatus(acdynamicprefixv1alpha1.DynamicPrefixStatus().WithConditions(entry))
+	if err := r.Status().Apply(ctx, ac, client.FieldOwner(fieldOwnerBGPSync), client.ForceOwnership); err != nil {
+		return fmt.Errorf("failed to update status: %w", err)
 	}
 
 	return nil

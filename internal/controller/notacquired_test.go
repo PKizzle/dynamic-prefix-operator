@@ -64,6 +64,7 @@ func TestPoolWaitsForFirstPrefix(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp, pool).
 		WithStatusSubresource(dp).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 	recorder := events.NewFakeRecorder(8)
 	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme, Recorder: recorder}
@@ -125,6 +126,7 @@ func TestSuffixServiceWaitsForFirstPrefix(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp, svc).
 		WithStatusSubresource(dp, svc).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 	r := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme}
 

@@ -86,6 +86,7 @@ func TestPoolsSyncedClearedWhenFailingPoolIsReleased(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp, pool).
 		WithStatusSubresource(dp).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 
@@ -126,6 +127,7 @@ func TestPoolsSyncedKeyedByBackend(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp).
 		WithStatusSubresource(dp).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 
@@ -168,6 +170,7 @@ func TestPoolsSyncedClearedWhenPoolIsDeleted(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp).
 		WithStatusSubresource(dp).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 
