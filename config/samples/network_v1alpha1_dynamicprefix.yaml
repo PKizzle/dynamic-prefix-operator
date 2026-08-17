@@ -89,9 +89,9 @@ spec:
   acquisition:
     # DHCPv6-PD to request a larger prefix from upstream
     # WARNING: conflicts with a host DHCPv6 client bound to UDP 546 on this
-  # interface (dhcpcd, systemd-networkd, NetworkManager). Disable DHCPv6 on the
-  # interface host-side, or let the host do the delegation and watch its Router
-  # Advertisements instead on the interface
+    # interface (dhcpcd, systemd-networkd, NetworkManager). Disable DHCPv6 on the
+    # interface host-side, or let the host do the delegation and watch its Router
+    # Advertisements instead on the interface
     dhcpv6pd:
       interface: eth0
       requestedPrefixLength: 56
