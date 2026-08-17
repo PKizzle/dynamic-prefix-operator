@@ -27,7 +27,7 @@ make test-e2e         # Run e2e tests with Kind cluster
 
 ### Core Components
 
-1. **Prefix Receiver Interface** (`internal/prefix/types.go`): Abstraction for prefix acquisition with channel-based events for prefix changes. Currently implements Router Advertisement monitoring.
+1. **Prefix Receiver Interface** (`internal/prefix/types.go`): Abstraction for prefix acquisition with channel-based events for prefix changes. Implementations: `RAReceiver` (Router Advertisements, pooled per interface *and* acceptance policy via `shared_ra_receiver.go`), `DHCPv6PDReceiver` (a DHCPv6-PD client; one per interface, enforced by the factory), `CompositeReceiver` (DHCPv6-PD primary with RA fallback), and `MockReceiver`. Acceptance rules live in `internal/prefix/policy.go` (`Policy`, `RAPolicy`) and are fixed at construction, so a spec edit rebuilds the receiver. Receivers implement two optional interfaces reconcile polls: `AcquisitionHealth` (why acquisition is failing — failure events are deliberately *not* forwarded to the reconciler) and `RARejectionStats` (dropped advertisements).
 
 2. **DynamicPrefix CRD** (`api/v1alpha1/dynamicprefix_types.go`): Custom resource defining prefix acquisition settings, address range definitions, and transition configuration. Status tracks current prefix, calculated ranges, and conditions (PrefixAcquired, PoolsSynced, Degraded).
 
@@ -35,16 +35,19 @@ make test-e2e         # Run e2e tests with Kind cluster
 
 4. **Address Range Calculation** (`internal/prefix/addressrange.go`): Combines prefix with start/end suffixes to calculate full address ranges within the /64.
 
-5. **PoolSyncReconciler** (`internal/controller/poolsync_controller.go`): Syncs annotated supported pool backends with calculated address ranges/subnets. Supports multi-block or multi-entry mode where the backend can represent it, keeping entries for current prefix plus historical prefixes. Also writes the referenced DynamicPrefix's `PoolsSynced` condition (`internal/controller/poolsync_condition.go`), aggregated across every pool bound to it — so `DynamicPrefix.status` has two writers, this one and the DynamicPrefixReconciler.
+5. **BGPSyncReconciler** (`internal/controller/bgpsync_controller.go`): Manages `CiliumBGPAdvertisement` for subnets marked `bgp.advertise`, and writes the `BGPAdvertisementReady` condition. Cilium-only; MetalLB and Calico BGP configuration stays user-managed.
 
-6. **ServiceSyncReconciler** (`internal/controller/servicesync_controller.go`): HA mode controller that manages LoadBalancer Services. Sets `lbipam.cilium.io/ips` for multi-IP assignment and `external-dns.alpha.kubernetes.io/target` for DNS targeting (skippable per-Service via `dynamic-prefix.io/skip-external-dns-update: "true"`). Supports two IP calculation modes: **static suffix** (explicit `dynamic-prefix.io/suffix` annotation, preferred for dual-stack) and **dynamically assigned** (inferred from Cilium-assigned IP). Preserves non-managed entries (hostnames, IPv4, static IPv6) in both annotations via `extractUnmanagedIPs()`, supporting dual-stack NAT setups where IPv4 uses a hostname and IPv6 uses direct addresses.
+6. **PoolSyncReconciler** (`internal/controller/poolsync_controller.go`): Syncs annotated supported pool backends with calculated address ranges/subnets. Supports multi-block or multi-entry mode where the backend can represent it, keeping entries for current prefix plus historical prefixes. Backends are unstructured; `backendForGVK` in `poolsync_backends.go` maps GVK to implementation. The kube-vip ConfigMap backend (`kubevip_backend.go`) is opt-in via `--kubevip-configmap` rather than discovered, because ConfigMaps exist everywhere. Also writes the referenced DynamicPrefix's `PoolsSynced` condition (`internal/controller/poolsync_condition.go`), aggregated across every pool bound to it — so `DynamicPrefix.status` has two writers, this one and the DynamicPrefixReconciler.
+
+7. **ServiceSyncReconciler** (`internal/controller/servicesync_controller.go`): HA mode controller that manages LoadBalancer Services. Writes the load-balancer address annotation named by `dynamic-prefix.io/lb-provider` (`cilium` by default, `kube-vip` also supported) for multi-IP assignment and `external-dns.alpha.kubernetes.io/target` for DNS targeting (skippable per-Service via `dynamic-prefix.io/skip-external-dns-update: "true"`). Supports two IP calculation modes: **static suffix** (explicit `dynamic-prefix.io/suffix` annotation, preferred for dual-stack) and **dynamically assigned** (inferred from Cilium-assigned IP). Preserves non-managed entries (hostnames, IPv4, static IPv6) in both annotations via `extractUnmanagedIPs()`, supporting dual-stack NAT setups where IPv4 uses a hostname and IPv6 uses direct addresses. Also nudges Cilium's L2 announcer (`ciliuml2nudge.go`) after an address change, skipped when the provider is not Cilium.
 
 ### Data Flow
 
 ```
-ISP/Router → RA Receiver → DynamicPrefix CR (status.currentPrefix)
+ISP/Router → RA Receiver or DHCPv6-PD client → DynamicPrefix CR (status.currentPrefix)
     → Pool Controller (watches annotated pools, builds multi-block configs)
-    → Supported pool backends (Cilium, MetalLB, Calico specs updated with current + historical entries where supported)
+    → Supported pool backends (Cilium, MetalLB, Calico, kube-vip ConfigMap updated with current + historical entries where supported)
+    → BGP Controller (subnets marked bgp.advertise → CiliumBGPAdvertisement)
     → Service Controller (HA mode: manages Service IPs and DNS targeting)
 
 Pool Controller → DynamicPrefix CR (status PoolsSynced condition)
@@ -56,7 +59,9 @@ Uses annotation-based binding (inspired by 1Password Operator):
 - `dynamic-prefix.io/name`: References the DynamicPrefix CR
 - `dynamic-prefix.io/address-range`: Specifies which address range to use
 
-The operator watches annotated Cilium, MetalLB, and Calico resources and auto-updates backend-specific fields: Cilium `spec.blocks`/`spec.externalCIDRs`, MetalLB `spec.addresses`, or Calico `spec.cidr`.
+- `dynamic-prefix.io/kubevip-key`: kube-vip only — which pool key of the ConfigMap to manage
+
+The operator watches annotated Cilium, MetalLB, Calico and (when enabled) kube-vip resources and auto-updates backend-specific fields: Cilium `spec.blocks`/`spec.externalCIDRs`, MetalLB `spec.addresses`, Calico `spec.cidr`, or one `cidr-*`/`range-*` key of the kube-vip ConfigMap.
 
 ### Transition Modes
 

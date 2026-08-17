@@ -4,6 +4,98 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## Unreleased
+
+DHCPv6-PD could not work in either shipped install, and had never been able to:
+the client binds UDP 546 and neither install granted the capability for it. This
+release makes that method work, gives Router Advertisement monitoring a way to
+say which routers it believes, and adds the kube-vip cloud provider as a pool
+backend.
+
+**Upgrading:** the chart now defaults `network.hostNetwork` to `true` and adds
+`NET_BIND_SERVICE` to the container's capabilities. Both are what the kustomize
+install and the README already required; if you pin either value, restore them
+before relying on prefix acquisition. If you run two DynamicPrefix resources
+with a DHCPv6-PD client on the same interface, the second is now refused rather
+than quietly fighting the first for the lease — model one delegation as one
+DynamicPrefix carrying several `addressRanges` or `subnets`.
+
+### Added
+
+- **kube-vip cloud provider backend.** The pool ConfigMap can now follow the
+  prefix, bound the same way as every other backend and with the key to manage
+  named by `dynamic-prefix.io/kubevip-key`. Off by default: enabling it
+  (`kubevip.enabled`, or `--kubevip-configmap=<ns>/<name>`) grants a namespaced
+  Role over ConfigMaps in one namespace, and scopes the informer to that single
+  object. Nothing that is not using kube-vip carries the grant.
+- HA mode is no longer Cilium-only. `dynamic-prefix.io/lb-provider` on a Service
+  selects between `cilium` (the default, so existing Services are unaffected)
+  and `kube-vip`; flipping it moves the operator's addresses to the other
+  annotation instead of leaving them behind, and the Cilium L2-announcer nudge
+  is skipped where there is no announcer to nudge.
+- `acquisition.routerAdvertisement.trustedRouters` restricts which routers may
+  be believed, by link-local source address. The RFC 4861 checks rule out
+  senders that are not on the link; every host that *is* on the link passes
+  them, so naming the routers is what turns that into a trust decision.
+- `acquisition.prefixFilter.minPrefixLength` and `maxPrefixLength` bound what a
+  plausible delegation looks like, for every acquisition source rather than only
+  for advertisements.
+- `dynamic_prefix_receiver_healthy` and
+  `dynamic_prefix_rejected_router_advertisements_total{interface,reason}`, plus
+  `AcquisitionFailed` and `RouterAdvertisementsRejected` events.
+- A "DHCPv6-PD mode" section and an "Operating behind switch-side RA Guard"
+  section in `docs/prefix-acquisition-modes.md`; the mode had no documentation
+  of its own despite being listed as supported.
+
+### Fixed
+
+- **DHCPv6-PD could not bind its port in either install.** `drop: ALL` takes
+  `CAP_NET_BIND_SERVICE` from root as well, so the client's UDP 546 bind failed
+  with `EACCES` on every install that used it, and the resource then sat at
+  `PrefixAcquired=False/WaitingForPrefix` indefinitely with the cause only in
+  the pod log. The chart also defaulted `hostNetwork` off, against its own
+  DHCPv6-PD usage example, which could not have worked as written.
+- **Acquisition failures were invisible.** A receiver that can never acquire --
+  no such interface, nothing answering, no permission to bind -- reported the
+  same thing as one still waiting for its first advertisement. Reconcile now
+  asks the receiver why, reporting `AcquisitionFailed` with the receiver's own
+  error, or `Degraded`/`RenewalFailing` where a prefix is still held but nothing
+  has extended its lease. Failure events are still not forwarded to the
+  reconciler: a down interface reports one per second and none of them carry
+  anything to act on.
+- **A server that only delegates a prefix could not be used at all.** The
+  REQUEST was built from the ADVERTISE by a helper that requires an address
+  association to be present in it, so against a delegation-only server -- which
+  is what a provider running prefix delegation usually looks like -- every
+  exchange failed with "IA_NA cannot be nil", ten seconds apart, forever. The
+  SOLICIT no longer asks for that address either; it was a lease nothing renewed
+  or released.
+- Failed acquisitions retried every ten seconds for as long as the condition
+  lasted. They now back off to five minutes, with jitter, and return to ten
+  seconds on the first success.
+- A RENEW answered with NoBinding was treated as an ordinary failure, so the
+  operator kept publishing a prefix nothing upstream routed until T2 and a
+  rebind on a lease the server had already disowned. It now re-solicits at once.
+- A refusal that applied to a whole REPLY was reported as a reply missing its
+  delegation, because only the status on the association was read.
+- The composite receiver's merge loop read its context and stop channel from the
+  receiver while the next `Start` replaced them -- the race c03e9a7 fixed in the
+  RA receive loop, one layer up. `MockReceiver` had the same defect: a second
+  `Stop` panicked on a double close.
+- The DHCPv6-PD exchanges took their deadline from a context field written under
+  the lock and read without it.
+- Two DynamicPrefix resources could run DHCPv6-PD clients on one interface,
+  presenting the same DUID and IAID so that each overwrote the other's lease,
+  with nothing on either resource to show it.
+
+### Changed
+
+- The install-parity script asserts the chart's `hostNetwork` default, both
+  capabilities in both installs, and that ConfigMap access stays namespaced and
+  opt-in.
+- Removed four Helm helpers that referenced a `.Values.watch` tree the chart has
+  never had; rendering any of them would have failed on a nil pointer.
+
 ## v0.0.15 - 2026-08-16
 
 A follow-up to the v0.0.14 audit: the lifecycle defects that round left behind,
