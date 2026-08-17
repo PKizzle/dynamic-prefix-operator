@@ -110,4 +110,31 @@ for f in "$chart" "$kustomize_out"; do
 done
 pass "both installs grant NET_RAW and NET_BIND_SERVICE"
 
+# 7. ConfigMap access is for the kube-vip backend alone, and stays namespaced
+#    and opt-in. In a ClusterRole it would be write access to every ConfigMap in
+#    the cluster, for every install, including the ones not using kube-vip.
+if awk '/^kind: ClusterRole$/,/^---$/' "$chart" | grep -q 'configmaps'; then
+  fail "the chart grants configmaps in a ClusterRole; the kube-vip backend uses a namespaced Role"
+else
+  pass "configmaps are not granted cluster-wide by the chart"
+fi
+
+kubevip_chart="$(mktemp)"
+trap 'rm -f "$chart" "$kustomize_out" "$kubevip_chart"' EXIT
+helm template parity charts/dynamic-prefix-operator \
+  --namespace dynamic-prefix-operator-system \
+  --set kubevip.enabled=true > "$kubevip_chart"
+
+if awk '/^kind: Role$/,/^---$/' "$kubevip_chart" | grep -q 'configmaps'; then
+  pass "enabling kube-vip renders a namespaced Role for the pool ConfigMap"
+else
+  fail "kubevip.enabled=true renders no Role granting configmaps; the backend cannot write its pool"
+fi
+
+if grep -q -- '--kubevip-configmap=' "$kubevip_chart"; then
+  pass "enabling kube-vip names the ConfigMap on the manager's command line"
+else
+  fail "kubevip.enabled=true does not pass --kubevip-configmap; the backend stays off"
+fi
+
 exit "$failed"

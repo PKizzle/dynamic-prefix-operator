@@ -94,6 +94,15 @@ const (
 	// the watch predicate would stop matching it and leave the CIDR pointing at a
 	// prefix nothing maintains.
 	AnnotationManagedCIDR = "dynamic-prefix.io/managed-cidr"
+
+	// AnnotationManagedKubevipEntries records the entries the operator last
+	// wrote into one key of the kube-vip pool ConfigMap.
+	//
+	// Named for the backend rather than for what the entries are, unlike the
+	// records above: a kube-vip key holds CIDRs or start-end ranges depending
+	// on which key it is, and "managed-cidrs" and "managed-cidr" are already
+	// one character apart and mean different things on different backends.
+	AnnotationManagedKubevipEntries = "dynamic-prefix.io/managed-kubevip-entries"
 )
 
 // ownershipRecord is the set of entries the operator wrote on its previous pass.
@@ -238,6 +247,7 @@ func hasOwnershipRecord(annotations map[string]string) bool {
 		AnnotationManagedCIDRs,
 		AnnotationManagedCIDR,
 		AnnotationManagedAddresses,
+		AnnotationManagedKubevipEntries,
 	} {
 		if _, ok := annotations[key]; ok {
 			return true

@@ -48,6 +48,20 @@ const (
 	// AnnotationCiliumIPs is the Cilium LB-IPAM annotation for requesting specific IPs.
 	AnnotationCiliumIPs = "lbipam.cilium.io/ips"
 
+	// AnnotationKubevipLBIPs is kube-vip's request-specific-addresses
+	// annotation, the equivalent of AnnotationCiliumIPs for clusters whose
+	// LoadBalancer addresses come from the kube-vip cloud provider.
+	AnnotationKubevipLBIPs = "kube-vip.io/loadbalancerIPs"
+
+	// AnnotationLBProvider selects which load-balancer annotation the operator
+	// maintains on a Service: "cilium" (the default, so nothing changes for
+	// existing installs) or "kube-vip".
+	//
+	// Per-Service rather than per-cluster because that is the level at which it
+	// actually differs -- a cluster mid-migration runs both -- and because every
+	// other ServiceSync toggle is already a Service annotation.
+	AnnotationLBProvider = "dynamic-prefix.io/lb-provider"
+
 	// AnnotationExternalDNSTarget is the external-dns annotation for overriding DNS target.
 	AnnotationExternalDNSTarget = "external-dns.alpha.kubernetes.io/target"
 
@@ -219,10 +233,16 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// ownership.go for why geometry alone cannot answer "is this entry mine?".
 	managedPrefixes := r.collectManagedPrefixes(&dp)
 
+	provider, lbAddressField, err := lbAddressAnnotationFor(annotations)
+	if err != nil {
+		emitWarningEvent(r.Recorder, &svc, eventReasonInvalidLBProvider, err.Error())
+		return ctrl.Result{}, err
+	}
+
 	ipsRecordValue, ipsRecordExists := annotations[AnnotationManagedIPs]
 	ipsRecord := parseOwnershipRecord(ipsRecordValue, ipsRecordExists)
 
-	existingIPs := annotations[AnnotationCiliumIPs]
+	existingIPs := annotations[lbAddressField]
 	preservedIPs := preserveUnownedIPs(existingIPs, ipsRecord, managedPrefixes)
 
 	// An address already present and unowned is the user's, even where it matches
@@ -241,10 +261,8 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		newAnnotations[k] = v
 	}
 
-	// Set lbipam.cilium.io/ips with preserved IPs + all managed IPv6 IPs
 	finalIPsStr := strings.Join(finalIPs, ",")
-	if annotations[AnnotationCiliumIPs] != finalIPsStr {
-		newAnnotations[AnnotationCiliumIPs] = finalIPsStr
+	if writeLBAddresses(annotations, newAnnotations, lbAddressField, finalIPsStr, ipsRecord, managedPrefixes) {
 		updated = true
 	}
 
@@ -331,7 +349,76 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			"preservedCount", len(preservedIPs), "managedCount", len(allIPs))
 	}
 
+	if provider != lbProviderCilium {
+		// The nudge works around a bug in Cilium's L2 announcer. On a cluster
+		// whose addresses come from somewhere else there is no announcer to
+		// nudge, and the fingerprint annotation would be noise on every change.
+		return ctrl.Result{}, nil
+	}
+
 	return r.nudgeL2Announcer(ctx, &svc, currentIP)
+}
+
+// writeLBAddresses puts the calculated addresses into the annotation this
+// Service's provider reads, and takes the operator's entries out of the other
+// provider's. Flipping the provider annotation otherwise leaves them behind,
+// requesting a prefix that stops existing at the next rotation.
+func writeLBAddresses(
+	annotations, newAnnotations map[string]string,
+	field, addresses string,
+	record ownershipRecord,
+	managedPrefixes []netip.Prefix,
+) bool {
+	updated := false
+
+	if annotations[field] != addresses {
+		newAnnotations[field] = addresses
+		updated = true
+	}
+
+	abandoned := otherLBAddressAnnotation(field)
+	if annotations[abandoned] == "" {
+		return updated
+	}
+
+	remaining := strings.Join(preserveUnownedIPs(annotations[abandoned], record, managedPrefixes), ",")
+	if remaining == "" {
+		delete(newAnnotations, abandoned)
+	} else {
+		newAnnotations[abandoned] = remaining
+	}
+	return true
+}
+
+// Load-balancer providers the operator can write addresses for.
+const (
+	lbProviderCilium  = "cilium"
+	lbProviderKubevip = "kube-vip"
+)
+
+// lbAddressAnnotationFor reports which annotation carries this Service's
+// requested addresses, defaulting to Cilium's so existing Services are
+// unaffected.
+func lbAddressAnnotationFor(annotations map[string]string) (provider, field string, err error) {
+	switch value := strings.TrimSpace(annotations[AnnotationLBProvider]); value {
+	case "", lbProviderCilium:
+		return lbProviderCilium, AnnotationCiliumIPs, nil
+	case lbProviderKubevip:
+		return lbProviderKubevip, AnnotationKubevipLBIPs, nil
+	default:
+		return "", "", fmt.Errorf("%s=%q is not a load-balancer provider this operator writes addresses for; use %q or %q",
+			AnnotationLBProvider, value, lbProviderCilium, lbProviderKubevip)
+	}
+}
+
+// otherLBAddressAnnotation is the field the selected provider is not using.
+// Flipping the annotation has to take the addresses with it, or they stay
+// behind requesting a prefix that will not exist after the next rotation.
+func otherLBAddressAnnotation(field string) string {
+	if field == AnnotationCiliumIPs {
+		return AnnotationKubevipLBIPs
+	}
+	return AnnotationCiliumIPs
 }
 
 // nudgeL2Announcer makes Cilium re-read a Service's assigned LoadBalancer
@@ -485,7 +572,10 @@ func (r *ServiceSyncReconciler) releaseService(ctx context.Context, svc *corev1.
 		changed = true
 	}
 
+	// Both provider fields, because the record names addresses rather than the
+	// field they went into, and the Service may have been flipped between them.
 	release(AnnotationCiliumIPs, AnnotationManagedIPs)
+	release(AnnotationKubevipLBIPs, AnnotationManagedIPs)
 	release(AnnotationExternalDNSTarget, AnnotationManagedTargets)
 	if changed {
 		delete(newAnnotations, AnnotationLastSync)

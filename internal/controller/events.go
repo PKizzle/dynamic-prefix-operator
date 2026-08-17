@@ -41,6 +41,10 @@ const (
 	// validation, which is how a rogue or misconfigured router on the link
 	// becomes visible on the resource rather than only in the operator's log.
 	eventReasonRouterAdvertisementsRejected = "RouterAdvertisementsRejected"
+
+	// eventReasonInvalidLBProvider reports a Service asking for a
+	// load-balancer provider this operator does not write addresses for.
+	eventReasonInvalidLBProvider = "InvalidLBProvider"
 )
 
 // Status-condition reasons matching the event reasons above.
