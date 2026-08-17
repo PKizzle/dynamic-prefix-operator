@@ -49,6 +49,20 @@ DynamicPrefix carrying several `addressRanges` or `subnets`.
 
 ### Fixed
 
+- The three DynamicPrefix status writers no longer race each other. The prefix
+  reconciler, PoolSync and BGPSync each wrote the whole status object back, so
+  simultaneous writers conflicted even though their fields are disjoint — a
+  rotation fanning out to N pools could produce N−1 conflicts against one
+  object. Each controller now applies exactly the fields it owns under its own
+  field manager (visible in `managedFields`); conditions merge per entry, and
+  disjoint writes cannot conflict at all. Along the way `status.subnets` gained
+  a single owner: the advertisement name is derived from spec by the prefix
+  reconciler together with the rest of the entry, and BGPSync reports only its
+  condition. Status-only updates also stop waking the prefix reconciler, which
+  previously ran a no-op pass for every condition write across the cluster.
+- A pool update rejected by the API server (an immutable field, a webhook) now
+  raises a Warning event on the pool, as a misspelled range name already did;
+  it was visible only in the log, a metric and the condition.
 - **DHCPv6-PD could not bind its port in either install.** `drop: ALL` takes
   `CAP_NET_BIND_SERVICE` from root as well, so the client's UDP 546 bind failed
   with `EACCES` on every install that used it, and the resource then sat at

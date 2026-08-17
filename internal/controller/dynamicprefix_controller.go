@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"sync"
@@ -33,12 +34,14 @@ import (
 	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
@@ -820,8 +823,24 @@ func (r *DynamicPrefixReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
+	// Status-only updates are filtered out. This reconciler's work is driven by
+	// the receiver channel, its own RequeueAfter and metadata changes; the other
+	// two status writers report into the same object, so without the filter
+	// every PoolsSynced or BGPAdvertisementReady write across the cluster woke
+	// this controller for a no-op pass.
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&dynamicprefixiov1alpha1.DynamicPrefix{}).
+		For(&dynamicprefixiov1alpha1.DynamicPrefix{}, builder.WithPredicates(predicate.Funcs{
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				if e.ObjectOld == nil || e.ObjectNew == nil {
+					return true
+				}
+				return e.ObjectNew.GetGeneration() != e.ObjectOld.GetGeneration() ||
+					e.ObjectNew.GetDeletionTimestamp() != nil ||
+					!slices.Equal(e.ObjectNew.GetFinalizers(), e.ObjectOld.GetFinalizers()) ||
+					!maps.Equal(e.ObjectNew.GetAnnotations(), e.ObjectOld.GetAnnotations()) ||
+					!maps.Equal(e.ObjectNew.GetLabels(), e.ObjectOld.GetLabels())
+			},
+		})).
 		WatchesRawSource(source.Channel(r.prefixEvents, &handler.EnqueueRequestForObject{})).
 		Named("dynamicprefix").
 		Complete(r)

@@ -260,7 +260,12 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 	if updateErr != nil {
 		log.Error(updateErr, "Failed to update pool")
 		// Surfaced so conflicts retry promptly with backoff and rejected
-		// updates (immutable fields, webhooks) become visible in the metrics.
+		// updates (immutable fields, webhooks) become visible in the metrics --
+		// and on the object, as the build-configuration failure already is:
+		// a webhook rejection is at least as user-visible a cause as a typo.
+		emitWarningEvent(r.Recorder, pool, eventReasonPoolSyncFailed,
+			fmt.Sprintf("Cannot update %s pool %s from DynamicPrefix %s: %v",
+				backend.name(), req.Name, dpName, updateErr))
 		recordPoolSyncFailedMetric(backend.name(), dpName, req.String())
 		r.updatePoolsSyncedCondition(ctx, dpName, stateKey, updateErr)
 		return ctrl.Result{}, updateErr
