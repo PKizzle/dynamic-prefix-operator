@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/netip"
 	"slices"
 	"sync"
@@ -30,17 +31,21 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	acmetav1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
+	acdynamicprefixv1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1/applyconfiguration/api/v1alpha1"
 	"github.com/pkizzle/dynamic-prefix-operator/internal/prefix"
 )
 
@@ -266,7 +271,7 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Calculate subnets (Mode 2)
-	subnets, err := r.calculateSubnets(currentPrefix.Network, dp.Spec.Subnets, dp.Status.Subnets)
+	subnets, err := r.calculateSubnets(dp.Name, currentPrefix.Network, dp.Spec.Subnets)
 	if err != nil {
 		log.Error(err, "Failed to calculate subnets")
 		r.setCondition(&dp, dynamicprefixiov1alpha1.ConditionTypeDegraded, metav1.ConditionTrue,
@@ -314,15 +319,83 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 // updateStatusIfChanged writes the DynamicPrefix status only when a semantic change occurred.
+//
+// Applied rather than updated, under this reconciler's own field manager. The
+// apply carries every field this reconciler owns -- which is all of status
+// except the two conditions the pool and BGP controllers report -- so those
+// writers cannot be raced and their entries cannot be disturbed: conditions
+// merge per type, and nothing else in status has a second writer.
 func (r *DynamicPrefixReconciler) updateStatusIfChanged(
 	ctx context.Context,
 	dp *dynamicprefixiov1alpha1.DynamicPrefix,
 	originalStatus *dynamicprefixiov1alpha1.DynamicPrefixStatus,
 ) error {
-	if equality.Semantic.DeepEqual(originalStatus, &dp.Status) {
+	desired := ownedDynamicPrefixStatus(&dp.Status)
+	if equality.Semantic.DeepEqual(ownedDynamicPrefixStatus(originalStatus), desired) {
 		return nil
 	}
-	return r.Status().Update(ctx, dp)
+	ac := acdynamicprefixv1alpha1.DynamicPrefix(dp.Name).WithStatus(desired)
+	return r.Status().Apply(ctx, ac, client.FieldOwner(fieldOwnerDynamicPrefix), client.ForceOwnership)
+}
+
+// ownedDynamicPrefixStatus projects a status onto the fields this reconciler
+// owns, as the apply configuration it would write. Conditions belonging to the
+// other status writers are left out: naming them here would take them over,
+// and omitting them on the next apply would then delete them.
+func ownedDynamicPrefixStatus(
+	status *dynamicprefixiov1alpha1.DynamicPrefixStatus,
+) *acdynamicprefixv1alpha1.DynamicPrefixStatusApplyConfiguration {
+	ac := acdynamicprefixv1alpha1.DynamicPrefixStatus()
+	if status.CurrentPrefix != "" {
+		ac.WithCurrentPrefix(status.CurrentPrefix)
+	}
+	if status.PrefixSource != "" {
+		ac.WithPrefixSource(status.PrefixSource)
+	}
+	if status.LeaseExpiresAt != nil {
+		ac.WithLeaseExpiresAt(*status.LeaseExpiresAt)
+	}
+	for _, r := range status.AddressRanges {
+		entry := acdynamicprefixv1alpha1.AddressRangeStatus().
+			WithName(r.Name).WithStart(r.Start).WithEnd(r.End)
+		if r.CIDR != "" {
+			entry.WithCIDR(r.CIDR)
+		}
+		ac.WithAddressRanges(entry)
+	}
+	for _, s := range status.Subnets {
+		entry := acdynamicprefixv1alpha1.SubnetStatus().WithName(s.Name).WithCIDR(s.CIDR)
+		if s.BGPAdvertisement != "" {
+			entry.WithBGPAdvertisement(s.BGPAdvertisement)
+		}
+		ac.WithSubnets(entry)
+	}
+	for _, h := range status.History {
+		entry := acdynamicprefixv1alpha1.PrefixHistoryEntry().
+			WithPrefix(h.Prefix).WithAcquiredAt(h.AcquiredAt)
+		if h.DeprecatedAt != nil {
+			entry.WithDeprecatedAt(*h.DeprecatedAt)
+		}
+		if h.State != "" {
+			entry.WithState(h.State)
+		}
+		ac.WithHistory(entry)
+	}
+	for _, condType := range []string{
+		dynamicprefixiov1alpha1.ConditionTypePrefixAcquired,
+		dynamicprefixiov1alpha1.ConditionTypeDegraded,
+	} {
+		if c := meta.FindStatusCondition(status.Conditions, condType); c != nil {
+			ac.WithConditions(acmetav1.Condition().
+				WithType(c.Type).
+				WithStatus(c.Status).
+				WithObservedGeneration(c.ObservedGeneration).
+				WithLastTransitionTime(c.LastTransitionTime).
+				WithReason(c.Reason).
+				WithMessage(c.Message))
+		}
+	}
+	return ac
 }
 
 // getOrCreateReceiver returns an existing receiver or creates a new one
@@ -496,9 +569,9 @@ func (r *DynamicPrefixReconciler) cleanupReceiver(name string) {
 
 // calculateSubnets calculates subnet CIDRs from the base prefix
 func (r *DynamicPrefixReconciler) calculateSubnets(
+	dpName string,
 	basePrefix netip.Prefix,
 	specs []dynamicprefixiov1alpha1.SubnetSpec,
-	existing []dynamicprefixiov1alpha1.SubnetStatus,
 ) ([]dynamicprefixiov1alpha1.SubnetStatus, error) {
 	if len(specs) == 0 {
 		return nil, nil
@@ -518,14 +591,15 @@ func (r *DynamicPrefixReconciler) calculateSubnets(
 		return nil, err
 	}
 
-	// BGPSync fills in BGPAdvertisement on these entries. Rebuilding them from
-	// scratch dropped it on every reconcile, and BGPSync could not put it back:
-	// the dependent-change predicate projects subnets to name and CIDR only, so
-	// a BGPAdvertisement-only change never re-triggers it. The field was
-	// therefore permanently blank in status.
-	previous := make(map[string]string, len(existing))
-	for _, e := range existing {
-		previous[e.Name] = e.BGPAdvertisement
+	// BGPAdvertisement is derived here, not copied from BGPSync's writes:
+	// status.subnets is an atomic list this reconciler owns, and the name is a
+	// pure function of spec. Whether the advertisement is actually ready stays
+	// BGPSync's to report, through its condition.
+	advertised := make(map[string]string, len(specs))
+	for _, spec := range specs {
+		if spec.BGP != nil && spec.BGP.Advertise {
+			advertised[spec.Name] = advertisementName(dpName, spec.Name)
+		}
 	}
 
 	result := make([]dynamicprefixiov1alpha1.SubnetStatus, len(subnets))
@@ -533,7 +607,7 @@ func (r *DynamicPrefixReconciler) calculateSubnets(
 		result[i] = dynamicprefixiov1alpha1.SubnetStatus{
 			Name:             s.Name,
 			CIDR:             s.CIDR.String(),
-			BGPAdvertisement: previous[s.Name],
+			BGPAdvertisement: advertised[s.Name],
 		}
 	}
 
@@ -749,8 +823,24 @@ func (r *DynamicPrefixReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
+	// Status-only updates are filtered out. This reconciler's work is driven by
+	// the receiver channel, its own RequeueAfter and metadata changes; the other
+	// two status writers report into the same object, so without the filter
+	// every PoolsSynced or BGPAdvertisementReady write across the cluster woke
+	// this controller for a no-op pass.
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&dynamicprefixiov1alpha1.DynamicPrefix{}).
+		For(&dynamicprefixiov1alpha1.DynamicPrefix{}, builder.WithPredicates(predicate.Funcs{
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				if e.ObjectOld == nil || e.ObjectNew == nil {
+					return true
+				}
+				return e.ObjectNew.GetGeneration() != e.ObjectOld.GetGeneration() ||
+					e.ObjectNew.GetDeletionTimestamp() != nil ||
+					!slices.Equal(e.ObjectNew.GetFinalizers(), e.ObjectOld.GetFinalizers()) ||
+					!maps.Equal(e.ObjectNew.GetAnnotations(), e.ObjectOld.GetAnnotations()) ||
+					!maps.Equal(e.ObjectNew.GetLabels(), e.ObjectOld.GetLabels())
+			},
+		})).
 		WatchesRawSource(source.Channel(r.prefixEvents, &handler.EnqueueRequestForObject{})).
 		Named("dynamicprefix").
 		Complete(r)

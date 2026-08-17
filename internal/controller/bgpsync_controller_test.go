@@ -180,9 +180,12 @@ var _ = Describe("BGPSync Controller", func() {
 			var dp dynamicprefixiov1alpha1.DynamicPrefix
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dpName}, &dp)).To(Succeed())
 
-			// Check status has advertisement name
+			// status.subnets is an atomic list owned by the DynamicPrefix
+			// reconciler; BGPSync must leave it as it found it, and the
+			// bgpAdvertisement field is the owner's to derive from spec.
 			Expect(dp.Status.Subnets).To(HaveLen(1))
-			Expect(dp.Status.Subnets[0].BGPAdvertisement).To(Equal("dp-" + dpName + "-" + subnetName))
+			Expect(dp.Status.Subnets[0].BGPAdvertisement).To(BeEmpty())
+			Expect(dp.Status.Subnets[0].CIDR).NotTo(BeEmpty())
 
 			// Check BGPAdvertisementReady condition
 			var bgpCondition *metav1.Condition
@@ -437,6 +440,7 @@ func TestBGPSyncReconciler_Reconcile_CreateAdvertisement(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp).
 		WithStatusSubresource(dp).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 
 	reconciler := &BGPSyncReconciler{
@@ -540,6 +544,7 @@ func TestBGPSyncReconciler_Reconcile_UpdateStatus(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp).
 		WithStatusSubresource(dp).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 
 	reconciler := &BGPSyncReconciler{
@@ -562,13 +567,17 @@ func TestBGPSyncReconciler_Reconcile_UpdateStatus(t *testing.T) {
 		t.Fatalf("Failed to get updated DynamicPrefix: %v", err)
 	}
 
-	// Check status
+	// Check status. status.subnets is an atomic list owned by the DynamicPrefix
+	// reconciler, so BGPSync must leave it exactly as it found it -- including
+	// bgpAdvertisement, which the list's owner derives from spec itself.
 	if len(updatedDP.Status.Subnets) != 1 {
 		t.Fatalf("Expected 1 subnet in status, got %d", len(updatedDP.Status.Subnets))
 	}
-	expectedAdvName := "dp-test-dp-status-lb"
-	if updatedDP.Status.Subnets[0].BGPAdvertisement != expectedAdvName {
-		t.Errorf("BGPAdvertisement = %q, want %q", updatedDP.Status.Subnets[0].BGPAdvertisement, expectedAdvName)
+	if adv := updatedDP.Status.Subnets[0].BGPAdvertisement; adv != "" {
+		t.Errorf("BGPSync wrote BGPAdvertisement = %q into a list it does not own", adv)
+	}
+	if cidr := updatedDP.Status.Subnets[0].CIDR; cidr != "2001:db8::/64" {
+		t.Errorf("BGPSync disturbed the subnet entry: CIDR = %q", cidr)
 	}
 
 	// Check condition
@@ -631,6 +640,7 @@ func TestBGPSyncReconciler_Reconcile_NoBGPSubnets(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp).
 		WithStatusSubresource(dp).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 
 	reconciler := &BGPSyncReconciler{
@@ -739,6 +749,7 @@ func TestBGPSyncReconciler_Reconcile_DeleteOrphaned(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp, orphanedAdv).
 		WithStatusSubresource(dp).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 
 	reconciler := &BGPSyncReconciler{
@@ -831,6 +842,7 @@ func TestBGPSyncReconciler_Reconcile_WithPoolSelector(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp, pool).
 		WithStatusSubresource(dp).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 
 	reconciler := &BGPSyncReconciler{

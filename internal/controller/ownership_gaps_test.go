@@ -943,6 +943,7 @@ func TestLegacyModeFollowsRotation(t *testing.T) {
 		WithScheme(scheme).
 		WithObjects(dp, svc).
 		WithStatusSubresource(dp, svc).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 	r := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme}
 	key := types.NamespacedName{Name: "legacy", Namespace: "network"}

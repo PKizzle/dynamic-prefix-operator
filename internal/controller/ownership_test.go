@@ -100,6 +100,7 @@ func newOwnershipTestFixture(t *testing.T, maxHistory int) (*ServiceSyncReconcil
 		WithScheme(scheme).
 		WithObjects(dp, svc).
 		WithStatusSubresource(dp, svc).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 
 	return &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme},

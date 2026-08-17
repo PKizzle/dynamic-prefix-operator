@@ -25,12 +25,13 @@ import (
 	"sync"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
+	acdynamicprefixv1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1/applyconfiguration/api/v1alpha1"
 )
 
 // poolStateKey identifies one backend object. A reconcile.Request carries only a
@@ -177,10 +178,10 @@ func (r *PoolSyncReconciler) releasePoolsSyncedEntries(ctx context.Context, matc
 
 // writePoolsSyncedCondition persists one rendered condition.
 //
-// A conflict is left for the next reconcile rather than retried here: the
-// condition is a report derived from in-memory state, every pool is reconciled
-// again, and a retry against the cached read would resubmit the same stale
-// object.
+// Applied rather than updated, under this controller's own field manager, so
+// the write owns exactly the PoolsSynced entry and cannot collide with the
+// other status writers -- during a rotation every referencing pool reports here
+// against the same object, and full-object updates made each report a race.
 func (r *PoolSyncReconciler) writePoolsSyncedCondition(
 	ctx context.Context,
 	dpName string,
@@ -192,16 +193,14 @@ func (r *PoolSyncReconciler) writePoolsSyncedCondition(
 	var dp dynamicprefixiov1alpha1.DynamicPrefix
 	err := r.Get(ctx, types.NamespacedName{Name: dpName}, &dp)
 	if err == nil {
-		if !meta.SetStatusCondition(&dp.Status.Conditions, metav1.Condition{
-			Type:               dynamicprefixiov1alpha1.ConditionTypePoolsSynced,
-			Status:             status,
-			ObservedGeneration: dp.Generation,
-			Reason:             reason,
-			Message:            message,
-		}) {
+		entry, changed := conditionApplyEntry(&dp,
+			dynamicprefixiov1alpha1.ConditionTypePoolsSynced, status, reason, message)
+		if !changed {
 			return
 		}
-		err = r.Status().Update(ctx, &dp)
+		ac := acdynamicprefixv1alpha1.DynamicPrefix(dpName).
+			WithStatus(acdynamicprefixv1alpha1.DynamicPrefixStatus().WithConditions(entry))
+		err = r.Status().Apply(ctx, ac, client.FieldOwner(fieldOwnerPoolSync), client.ForceOwnership)
 	}
 
 	switch {

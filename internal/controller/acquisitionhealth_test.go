@@ -69,6 +69,7 @@ func newHealthTestReconciler(t *testing.T, receiver prefix.Receiver) (*DynamicPr
 		WithScheme(scheme).
 		WithObjects(dp).
 		WithStatusSubresource(dp).
+		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 	recorder := events.NewFakeRecorder(8)
 
