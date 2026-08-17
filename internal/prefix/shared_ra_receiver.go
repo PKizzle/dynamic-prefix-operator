@@ -242,6 +242,15 @@ func (s *sharedRAReceiverSubscription) CurrentPrefix() *Prefix {
 	return s.entry.receiver.CurrentPrefix()
 }
 
+// LastError reports the shared receiver's health. Every subscriber to one
+// interface sees the same failure, because there is one socket behind them.
+func (s *sharedRAReceiverSubscription) LastError() error {
+	if h, ok := s.entry.receiver.(AcquisitionHealth); ok {
+		return h.LastError()
+	}
+	return nil
+}
+
 func (s *sharedRAReceiverSubscription) Source() Source {
 	return s.entry.receiver.Source()
 }

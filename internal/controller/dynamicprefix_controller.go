@@ -177,12 +177,30 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
+	// Ask the receiver whether it is failing. Failure events are deliberately
+	// not forwarded to reconcile -- a down interface produces one a second and
+	// none of them carry anything to act on -- so this is where they surface.
+	acquisitionErr := receiverLastError(receiver)
+	recordReceiverHealthMetric(dp.Name, acquisitionErr == nil)
+
 	// Get current prefix from receiver
 	currentPrefix := receiver.CurrentPrefix()
 	if currentPrefix == nil {
-		log.Info("No prefix acquired yet")
-		r.setCondition(&dp, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired, metav1.ConditionFalse,
-			"WaitingForPrefix", "Waiting to receive prefix from upstream")
+		if acquisitionErr != nil {
+			// Trying and failing is not the same state as waiting for a first
+			// advertisement, and reporting both as waiting left a resource that
+			// could never acquire looking like one that simply had not yet.
+			message := fmt.Sprintf("Prefix acquisition is failing: %v", acquisitionErr)
+			log.Info("Prefix acquisition is failing", "error", acquisitionErr.Error())
+			r.warnOnConditionChange(&dp, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired,
+				reasonAcquisitionFailed, message, eventReasonAcquisitionFailed)
+			r.setCondition(&dp, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired, metav1.ConditionFalse,
+				reasonAcquisitionFailed, message)
+		} else {
+			log.Info("No prefix acquired yet")
+			r.setCondition(&dp, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired, metav1.ConditionFalse,
+				reasonWaitingForPrefix, "Waiting to receive prefix from upstream")
+		}
 		if err := r.updateStatusIfChanged(ctx, &dp, originalStatus); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -264,6 +282,15 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			r.setCondition(&dp, dynamicprefixiov1alpha1.ConditionTypeDegraded, metav1.ConditionFalse,
 				"Healthy", "DynamicPrefix is operating normally")
 		}
+	}
+
+	// Holding a prefix is not the same as being healthy: this is the resource
+	// still serving the last delegation while every renewal since has failed.
+	// Set after the calculation conditions so it is not cleared by them.
+	if acquisitionErr != nil {
+		r.setCondition(&dp, dynamicprefixiov1alpha1.ConditionTypeDegraded, metav1.ConditionTrue,
+			reasonRenewalFailing,
+			fmt.Sprintf("Still serving the last prefix; acquisition is failing: %v", acquisitionErr))
 	}
 
 	// Set prefix acquired condition
@@ -613,6 +640,33 @@ func (r *DynamicPrefixReconciler) setCondition(dp *dynamicprefixiov1alpha1.Dynam
 		Message:            message,
 	}
 	meta.SetStatusCondition(&dp.Status.Conditions, condition)
+}
+
+// warnOnConditionChange emits a Warning only when the condition it accompanies
+// is about to say something new.
+//
+// The underlying failure repeats for as long as its cause lasts -- once a
+// second for a down interface -- and reconcile runs on its own schedule on top
+// of that. Tying the event to the message changing means one event per distinct
+// failure, and the comparison is against the persisted condition, so it holds
+// across operator restarts too.
+func (r *DynamicPrefixReconciler) warnOnConditionChange(dp *dynamicprefixiov1alpha1.DynamicPrefix, condType, reason, message, eventReason string) {
+	existing := meta.FindStatusCondition(dp.Status.Conditions, condType)
+	if existing != nil && existing.Reason == reason && existing.Message == message {
+		return
+	}
+	emitWarningEvent(r.Recorder, dp, eventReason, message)
+}
+
+// receiverLastError reports why a receiver is failing, for the receivers that
+// can say. Ones that cannot are treated as healthy: they have no way to
+// contradict it.
+func receiverLastError(receiver prefix.Receiver) error {
+	health, ok := receiver.(prefix.AcquisitionHealth)
+	if !ok {
+		return nil
+	}
+	return health.LastError()
 }
 
 // calculateRequeueTime determines when to requeue based on lease

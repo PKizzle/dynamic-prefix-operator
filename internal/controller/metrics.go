@@ -49,6 +49,14 @@ var (
 		[]string{"name"},
 	)
 
+	receiverHealthy = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dynamic_prefix_receiver_healthy",
+			Help: "Whether the prefix receiver's last acquisition attempt succeeded. A value of 0 means acquisition or renewal is currently failing.",
+		},
+		[]string{"name"},
+	)
+
 	poolsSynced = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dynamic_prefix_pools_synced",
@@ -63,6 +71,7 @@ func init() {
 		prefixReceivedTotal,
 		prefixChangesTotal,
 		prefixLeaseExpirySeconds,
+		receiverHealthy,
 		poolsSynced,
 	)
 }
@@ -81,6 +90,17 @@ func recordPrefixLeaseExpiryMetric(name string, expiresAt *time.Time) {
 		return
 	}
 	prefixLeaseExpirySeconds.WithLabelValues(name).Set(float64(expiresAt.Unix()))
+}
+
+// recordReceiverHealthMetric reports whether acquisition is currently working.
+// A resource can hold a prefix and still be unhealthy: the lease it holds may
+// be one no renewal has extended for hours.
+func recordReceiverHealthMetric(name string, healthy bool) {
+	value := 0.0
+	if healthy {
+		value = 1
+	}
+	receiverHealthy.WithLabelValues(name).Set(value)
 }
 
 func recordPoolSyncedMetric(backend, dynamicPrefix, pool string) {
@@ -114,5 +134,6 @@ func forgetPoolMetrics(backend, pool string) {
 // for a resource that no longer exists.
 func forgetPrefixMetrics(name string) {
 	prefixLeaseExpirySeconds.DeleteLabelValues(name)
+	receiverHealthy.DeleteLabelValues(name)
 	poolsSynced.DeletePartialMatch(prometheus.Labels{"dynamic_prefix": name})
 }

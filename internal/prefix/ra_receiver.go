@@ -61,6 +61,8 @@ func defaultNDPListen(ifi *net.Interface, addr ndp.Addr) (ndpConn, netip.Addr, e
 // This is useful when another service (like Talos or systemd-networkd) is handling
 // DHCPv6-PD and we just need to observe the prefix being used.
 type RAReceiver struct {
+	// health carries its own lock; it is read by reconcile, not by the loop.
+	health                     healthTracker
 	mu                         sync.RWMutex
 	iface                      string
 	conn                       ndpConn
@@ -211,6 +213,9 @@ func (r *RAReceiver) CurrentPrefix() *Prefix {
 	defer r.mu.RUnlock()
 	return r.currentPrefix
 }
+
+// LastError implements AcquisitionHealth.
+func (r *RAReceiver) LastError() error { return r.health.LastError() }
 
 // Source returns SourceRouterAdvertisement.
 func (r *RAReceiver) Source() Source {
@@ -567,6 +572,7 @@ func (r *RAReceiver) updatePrefix(prefix netip.Prefix, validLifetime, preferredL
 		"previousPrefix", previousPrefix)
 
 	r.currentPrefix = newPrefix
+	r.health.recordSuccess()
 
 	// Send event (non-blocking to avoid deadlock)
 	select {
@@ -577,8 +583,11 @@ func (r *RAReceiver) updatePrefix(prefix netip.Prefix, validLifetime, preferredL
 	}
 }
 
-// sendError sends a failed event.
+// sendError sends a failed event and remembers it, since the event itself is
+// not forwarded to the reconciler.
 func (r *RAReceiver) sendError(err error) {
+	r.health.recordFailure(err)
+
 	select {
 	case r.events <- Event{Type: EventTypeFailed, Error: err}:
 	default:

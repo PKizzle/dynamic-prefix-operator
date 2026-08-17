@@ -52,8 +52,11 @@ podSecurityContext:
     type: RuntimeDefault
 
 # -- Container security context
-# NOTE: NET_RAW is required for the operator to function.
-# It's needed for both RA monitoring (ICMPv6) and DHCPv6-PD (raw sockets).
+# Both capabilities are load-bearing, for different acquisition methods:
+# NET_RAW opens the ICMPv6 socket Router Advertisement monitoring reads, and
+# NET_BIND_SERVICE binds UDP 546, the port RFC 8415 gives DHCPv6 clients. Because
+# `drop: ALL` takes CAP_NET_BIND_SERVICE away from root as well, leaving it out
+# fails the bind with EACCES and the operator never acquires a delegated prefix.
 securityContext:
   allowPrivilegeEscalation: false
   capabilities:
@@ -61,6 +64,7 @@ securityContext:
       - ALL
     add:
       - NET_RAW
+      - NET_BIND_SERVICE
   readOnlyRootFilesystem: true
 
 # -- Resource limits and requests
@@ -130,9 +134,13 @@ config:
 # ==============================================================================
 network:
   # -- Use host network namespace.
-  # Required for the operator to see Router Advertisements on host interfaces.
-  # When true, the operator pod runs in the host network namespace.
-  hostNetwork: false
+  # Both acquisition methods read the uplink directly: Router Advertisements
+  # arrive on the host's interfaces, and the DHCPv6-PD client sources from the
+  # host interface's link-local address. In a pod network namespace the operator
+  # installs cleanly and then never acquires a prefix, so this defaults on -- the
+  # kustomize install has always set it, and the README states it as a
+  # requirement. Turn it off only for a deployment that acquires no prefix.
+  hostNetwork: true
 
   # -- DNS policy when using hostNetwork (ClusterFirstWithHostNet recommended)
   dnsPolicy: ""

@@ -26,8 +26,6 @@ import (
 )
 
 func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
-	factory := NewReceiverFactory()
-
 	tests := []struct {
 		name           string
 		spec           dynamicprefixiov1alpha1.AcquisitionSpec
@@ -116,6 +114,12 @@ func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// A factory per case: these are independent scenarios, and one
+			// factory only ever hands out a single DHCPv6-PD client per
+			// interface, so sharing one would make each case depend on the
+			// ones before it.
+			factory := NewReceiverFactory()
+
 			receiver, err := factory.CreateReceiver(tt.spec)
 
 			if (err != nil) != tt.wantErr {
@@ -141,8 +145,6 @@ func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
 }
 
 func TestDefaultReceiverFactory_DHCPv6PDPrefixLength(t *testing.T) {
-	factory := NewReceiverFactory()
-
 	tests := []struct {
 		name           string
 		prefixLength   *int
@@ -174,7 +176,7 @@ func TestDefaultReceiverFactory_DHCPv6PDPrefixLength(t *testing.T) {
 				},
 			}
 
-			receiver, err := factory.CreateReceiver(spec)
+			receiver, err := NewReceiverFactory().CreateReceiver(spec)
 			if err != nil {
 				t.Fatalf("CreateReceiver() error = %v", err)
 			}

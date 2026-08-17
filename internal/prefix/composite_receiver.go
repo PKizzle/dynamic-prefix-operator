@@ -94,6 +94,12 @@ func (c *CompositeReceiver) Stop() error {
 	defer c.mu.Unlock()
 
 	if !c.started {
+		// A composite that was built and never started still holds whatever its
+		// receivers took at construction -- the DHCPv6-PD half claims its
+		// interface there -- so the stop is forwarded regardless. Stopping a
+		// receiver that never ran is a no-op beyond that release.
+		_ = c.primary.Stop()
+		_ = c.fallback.Stop()
 		return nil
 	}
 
@@ -129,6 +135,22 @@ func (c *CompositeReceiver) CurrentPrefix() *Prefix {
 		return prefix
 	}
 	return c.fallback.CurrentPrefix()
+}
+
+// LastError reports the primary's failure in preference to the fallback's. A
+// composite serving an RA-derived prefix because DHCPv6-PD keeps failing is
+// working, but not the way it was configured to, and the primary's error is
+// what explains that.
+func (c *CompositeReceiver) LastError() error {
+	if h, ok := c.primary.(AcquisitionHealth); ok {
+		if err := h.LastError(); err != nil {
+			return err
+		}
+	}
+	if h, ok := c.fallback.(AcquisitionHealth); ok {
+		return h.LastError()
+	}
+	return nil
 }
 
 // Source returns the source of the active receiver.

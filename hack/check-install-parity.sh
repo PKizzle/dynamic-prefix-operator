@@ -35,6 +35,16 @@ fail() {
 }
 pass() { echo "ok: $*"; }
 
+# The checks below that hold for both installs iterate over the two renderings,
+# so name them rather than reporting a temporary path back to the reader.
+name_of() {
+  case "$1" in
+    "$chart") echo "the chart" ;;
+    "$kustomize_out") echo "install.yaml" ;;
+    *) echo "$1" ;;
+  esac
+}
+
 # 1. Leader election must be namespaced in both. A ClusterRole carrying lease
 #    verbs lets the operator delete node heartbeats and control-plane locks.
 if awk '/^kind: ClusterRole$/,/^---$/' "$chart" | grep -q 'leases'; then
@@ -69,22 +79,35 @@ else
   pass "the chart does not disable metrics authentication"
 fi
 
-# 4. The kustomize install must be able to see Router Advertisements at all,
-#    which the README states is required.
-if [[ -s "$kustomize_out" ]]; then
-  if grep -q 'hostNetwork: true' "$kustomize_out"; then
-    pass "install.yaml runs with hostNetwork"
+# 4. Both installs must be able to see Router Advertisements at all, which the
+#    README states is required. The chart shipped without it for long enough
+#    that its own DHCPv6-PD example could not work.
+for f in "$chart" "$kustomize_out"; do
+  [[ -s "$f" ]] || continue
+  if grep -q 'hostNetwork: true' "$f"; then
+    pass "$(name_of "$f") runs with hostNetwork"
   else
-    fail "install.yaml has no hostNetwork; the operator cannot see Router Advertisements"
+    fail "$(name_of "$f") has no hostNetwork; the operator cannot see Router Advertisements or source DHCPv6 from the uplink"
   fi
-fi
+done
 
 # 5. Neither install may drop the container hardening.
 for f in "$chart" "$kustomize_out"; do
   [[ -s "$f" ]] || continue
-  grep -q 'allowPrivilegeEscalation: false' "$f" || fail "$f is missing allowPrivilegeEscalation: false"
-  grep -q 'readOnlyRootFilesystem: true' "$f" || fail "$f is missing readOnlyRootFilesystem: true"
+  grep -q 'allowPrivilegeEscalation: false' "$f" || fail "$(name_of "$f") is missing allowPrivilegeEscalation: false"
+  grep -q 'readOnlyRootFilesystem: true' "$f" || fail "$(name_of "$f") is missing readOnlyRootFilesystem: true"
 done
 pass "container hardening present in both installs"
+
+# 6. Both capabilities are required, for different acquisition methods, and
+#    `drop: ALL` means neither survives being left off the add list -- including
+#    for root. Dropping NET_BIND_SERVICE fails the DHCPv6 client's UDP 546 bind
+#    with EACCES, which surfaces only in the pod log.
+for f in "$chart" "$kustomize_out"; do
+  [[ -s "$f" ]] || continue
+  grep -q 'NET_RAW' "$f" || fail "$(name_of "$f") does not add NET_RAW; Router Advertisement monitoring cannot open its socket"
+  grep -q 'NET_BIND_SERVICE' "$f" || fail "$(name_of "$f") does not add NET_BIND_SERVICE; the DHCPv6-PD client cannot bind UDP 546"
+done
+pass "both installs grant NET_RAW and NET_BIND_SERVICE"
 
 exit "$failed"

@@ -26,6 +26,13 @@ spec:
     - ports:
         - port: 8081
           protocol: TCP
+    # DHCPv6 replies arrive on the client port. Most CNIs do not apply
+    # NetworkPolicy to a hostNetwork pod, so with the default network settings
+    # this rule is inert -- it is here for the deployment that turns hostNetwork
+    # off and relays DHCPv6 into the pod network.
+    - ports:
+        - port: 546
+          protocol: UDP
     {{- with .Values.networkPolicy.additionalIngress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -42,6 +49,11 @@ spec:
           protocol: TCP
         - port: 6443
           protocol: TCP
+    # DHCPv6-PD: SOLICIT/REQUEST/RENEW/REBIND go to servers and relay agents on
+    # the server port. Inert under hostNetwork, as with the matching ingress rule.
+    - ports:
+        - port: 547
+          protocol: UDP
     {{- with .Values.networkPolicy.additionalEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
