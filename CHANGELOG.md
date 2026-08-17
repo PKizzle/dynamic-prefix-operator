@@ -4,13 +4,24 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
-## Unreleased
+## v0.0.16 - 2026-08-17
 
-DHCPv6-PD could not work in either shipped install, and had never been able to:
-the client binds UDP 546 and neither install granted the capability for it. This
-release makes that method work, gives Router Advertisement monitoring a way to
-say which routers it believes, and adds the kube-vip cloud provider as a pool
-backend.
+Two things that were broken for everyone, and two that were missing.
+
+The three controllers reporting into one `DynamicPrefix.status` each wrote the
+whole object back, so writers with entirely disjoint fields still raced for one
+`resourceVersion` -- a rotation fanning out to several pools produced a conflict
+per pool. Each now applies only what it owns, and disjoint writes cannot collide
+at all.
+
+DHCPv6-PD, meanwhile, could not work in either shipped install and never had:
+the client binds UDP 546 and neither install granted the capability for it.
+Testing the exchanges for the first time turned up two further reasons it would
+not have worked even once it could bind.
+
+Beyond the repairs, Router Advertisement monitoring gained a way to say which
+routers it believes, and the kube-vip cloud provider joins Cilium, MetalLB and
+Calico as a pool backend.
 
 **Upgrading:** the chart now defaults `network.hostNetwork` to `true` and adds
 `NET_BIND_SERVICE` to the container's capabilities. Both are what the kustomize
@@ -107,6 +118,10 @@ DynamicPrefix carrying several `addressRanges` or `subnets`.
 - The install-parity script asserts the chart's `hostNetwork` default, both
   capabilities in both installs, and that ConfigMap access stays namespaced and
   opt-in.
+- controller-tools is pinned to v0.21.0, up from v0.19.0, and the API types now
+  generate apply configurations, which Server-Side Apply needs to state a field
+  without stating the whole object. The bump changes nothing in the CRD but the
+  version annotation it stamps.
 - Removed four Helm helpers that referenced a `.Values.watch` tree the chart has
   never had; rendering any of them would have failed on a nil pointer.
 
