@@ -60,6 +60,7 @@ sync-chart-crds: ## Copy the generated CRDs into the Helm chart.
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
 	"$(CONTROLLER_GEN)" object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	"$(CONTROLLER_GEN)" applyconfiguration paths="./api/..."
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -249,7 +250,7 @@ GOLANGCI_LINT_ESC = $(subst $(space),\ ,$(GOLANGCI_LINT))
 # manifests a release publishes are rendered by the same version `make
 # build-installer` uses locally.
 KUSTOMIZE_VERSION ?= v5.8.1
-CONTROLLER_TOOLS_VERSION ?= v0.19.0
+CONTROLLER_TOOLS_VERSION ?= v0.21.0
 
 #ENVTEST_VERSION is the version of controller-runtime release branch to fetch the envtest setup script (i.e. release-0.20)
 ENVTEST_VERSION ?= $(shell v='$(call gomodver,sigs.k8s.io/controller-runtime)'; \

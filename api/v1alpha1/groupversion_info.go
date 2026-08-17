@@ -17,6 +17,7 @@ limitations under the License.
 
 // Package v1alpha1 contains API Schema definitions for the  v1alpha1 API group.
 // +kubebuilder:object:generate=true
+// +kubebuilder:ac:generate=true
 // +groupName=dynamic-prefix.io
 package v1alpha1
 
@@ -26,6 +27,11 @@ import (
 )
 
 var (
+	// SchemeGroupVersion is the name the generated apply configurations expect
+	// for GroupVersion; the two are the same value under the two naming
+	// conventions (kubebuilder's and code-generator's).
+	SchemeGroupVersion = schema.GroupVersion{Group: "dynamic-prefix.io", Version: "v1alpha1"}
+
 	// GroupVersion is group version used to register these objects.
 	GroupVersion = schema.GroupVersion{Group: "dynamic-prefix.io", Version: "v1alpha1"}
 
