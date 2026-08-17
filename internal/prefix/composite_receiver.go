@@ -82,8 +82,11 @@ func (c *CompositeReceiver) Start(ctx context.Context) error {
 	c.stopCh = make(chan struct{})
 	c.started = true
 
-	// Start event merging goroutine
-	go c.mergeEvents()
+	// Hand this generation its own context and stop channel. Reading the
+	// fields from inside the goroutine would race with the next Start, which
+	// replaces both under the lock -- the same defect c03e9a7 fixed in the RA
+	// receive loop, in the receiver that wraps it.
+	go c.mergeEvents(c.ctx, c.stopCh)
 
 	return nil
 }
@@ -153,6 +156,15 @@ func (c *CompositeReceiver) LastError() error {
 	return nil
 }
 
+// RARejections reports the fallback's drops: the Router Advertisement half is
+// the only one that validates advertisements.
+func (c *CompositeReceiver) RARejections() (uint64, string) {
+	if stats, ok := c.fallback.(RARejectionStats); ok {
+		return stats.RARejections()
+	}
+	return 0, ""
+}
+
 // Source returns the source of the active receiver.
 func (c *CompositeReceiver) Source() Source {
 	c.mu.RLock()
@@ -168,16 +180,17 @@ func (c *CompositeReceiver) Source() Source {
 	return c.primary.Source() // Default to primary
 }
 
-// mergeEvents reads from both receivers' event channels and forwards to the composite channel.
-func (c *CompositeReceiver) mergeEvents() {
+// mergeEvents reads from both receivers' event channels and forwards to the
+// composite channel until this generation's context or stop channel closes.
+func (c *CompositeReceiver) mergeEvents(ctx context.Context, stopCh <-chan struct{}) {
 	primaryEvents := c.primary.Events()
 	fallbackEvents := c.fallback.Events()
 
 	for {
 		select {
-		case <-c.stopCh:
+		case <-stopCh:
 			return
-		case <-c.ctx.Done():
+		case <-ctx.Done():
 			return
 
 		case event, ok := <-primaryEvents:

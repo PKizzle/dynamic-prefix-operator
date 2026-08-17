@@ -225,8 +225,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create the receiver factory for prefix acquisition
-	receiverFactory := prefix.NewReceiverFactory()
+	// Create the receiver factory for prefix acquisition. Dropped Router
+	// Advertisements are counted centrally, which is what makes a link with
+	// something on it that should not be advertising visible.
+	receiverFactory := prefix.NewReceiverFactory(
+		prefix.WithRARejectionObserver(controller.RecordRARejection),
+	)
 
 	// Discover available Cilium API versions
 	restConfig := ctrl.GetConfigOrDie()

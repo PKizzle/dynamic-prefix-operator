@@ -81,6 +81,10 @@ type DynamicPrefixReconciler struct {
 	// receiverStops cancels the goroutine forwarding each receiver's events, so
 	// a rebuilt or removed receiver does not leave one behind.
 	receiverStops map[string]context.CancelFunc
+	// rejectionReports remembers what was last reported about each resource's
+	// dropped advertisements, so a link under a flood produces one event per
+	// interval rather than one per reconcile.
+	rejectionReports map[string]rejectionReport
 
 	// receiverCtxMu protects receiverCtx.
 	receiverCtxMu sync.RWMutex
@@ -104,11 +108,12 @@ type DynamicPrefixReconciler struct {
 // NewDynamicPrefixReconciler creates a new reconciler with default configuration
 func NewDynamicPrefixReconciler(c client.Client, scheme *runtime.Scheme) *DynamicPrefixReconciler {
 	return &DynamicPrefixReconciler{
-		Client:        c,
-		Scheme:        scheme,
-		receivers:     make(map[string]prefix.Receiver),
-		receiverSpecs: make(map[string]dynamicprefixiov1alpha1.AcquisitionSpec),
-		receiverStops: make(map[string]context.CancelFunc),
+		Client:           c,
+		Scheme:           scheme,
+		receivers:        make(map[string]prefix.Receiver),
+		receiverSpecs:    make(map[string]dynamicprefixiov1alpha1.AcquisitionSpec),
+		receiverStops:    make(map[string]context.CancelFunc),
+		rejectionReports: make(map[string]rejectionReport),
 	}
 }
 
@@ -182,6 +187,7 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// none of them carry anything to act on -- so this is where they surface.
 	acquisitionErr := receiverLastError(receiver)
 	recordReceiverHealthMetric(dp.Name, acquisitionErr == nil)
+	r.reportRARejections(&dp, receiver)
 
 	// Get current prefix from receiver
 	currentPrefix := receiver.CurrentPrefix()
@@ -216,7 +222,7 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Rejecting is deliberately non-destructive: status keeps the last good
 	// prefix, so nothing derived from it is disturbed while the upstream sorts
 	// itself out.
-	if err := prefix.ValidateDelegatedPrefix(currentPrefix.Network, dp.RequireGlobalUnicast()); err != nil {
+	if err := prefixPolicyFor(&dp).Validate(currentPrefix.Network); err != nil {
 		log.Info("Rejecting acquired prefix", "prefix", currentPrefix.Network, "reason", err.Error())
 		r.setCondition(&dp, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired, metav1.ConditionFalse,
 			reasonPrefixRejected, fmt.Sprintf("Rejected acquired prefix %s: %v", currentPrefix.Network, err))
@@ -469,6 +475,7 @@ func (r *DynamicPrefixReconciler) stopReceiverLocked(name string) {
 	}
 	delete(r.receivers, name)
 	delete(r.receiverSpecs, name)
+	delete(r.rejectionReports, name)
 }
 
 // cleanupReceiver stops and removes a receiver
@@ -656,6 +663,19 @@ func (r *DynamicPrefixReconciler) warnOnConditionChange(dp *dynamicprefixiov1alp
 		return
 	}
 	emitWarningEvent(r.Recorder, dp, eventReason, message)
+}
+
+// prefixPolicyFor resolves the acceptance rules a resource asks for. The
+// receivers apply the same policy, but a receiver is built once and shared per
+// interface, so one built under an earlier configuration can still be feeding
+// prefixes acquired under the old rules.
+func prefixPolicyFor(dp *dynamicprefixiov1alpha1.DynamicPrefix) prefix.Policy {
+	minBits, maxBits := dp.PrefixLengthBounds()
+	return prefix.Policy{
+		RequireGlobalUnicast: dp.RequireGlobalUnicast(),
+		MinPrefixLength:      minBits,
+		MaxPrefixLength:      maxBits,
+	}
 }
 
 // receiverLastError reports why a receiver is failing, for the receivers that

@@ -57,6 +57,14 @@ var (
 		[]string{"name"},
 	)
 
+	raRejectedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dynamic_prefix_rejected_router_advertisements_total",
+			Help: "Router Advertisements dropped by validation, by interface and reason.",
+		},
+		[]string{"interface", "reason"},
+	)
+
 	poolsSynced = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dynamic_prefix_pools_synced",
@@ -72,6 +80,7 @@ func init() {
 		prefixChangesTotal,
 		prefixLeaseExpirySeconds,
 		receiverHealthy,
+		raRejectedTotal,
 		poolsSynced,
 	)
 }
@@ -101,6 +110,14 @@ func recordReceiverHealthMetric(name string, healthy bool) {
 		value = 1
 	}
 	receiverHealthy.WithLabelValues(name).Set(value)
+}
+
+// RecordRARejection counts one dropped Router Advertisement. Exported because
+// the prefix package reports drops through it without importing this registry.
+// The reason is one of a small fixed set, so the label cannot be grown by
+// anything arriving on the link.
+func RecordRARejection(iface, reason string) {
+	raRejectedTotal.WithLabelValues(iface, reason).Inc()
 }
 
 func recordPoolSyncedMetric(backend, dynamicPrefix, pool string) {

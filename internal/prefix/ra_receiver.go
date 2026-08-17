@@ -75,31 +75,48 @@ type RAReceiver struct {
 	listen                     ndpListenFunc
 	maxRouterSolicitations     int
 	routerSolicitationInterval time.Duration
-	requireGlobalUnicast       bool
+	policy                     RAPolicy
 	// verifyHopLimit records whether the socket agreed to report each packet's
 	// hop limit. Written under mu by Start and handed to that generation's
 	// receive loop as an argument, since Stop does not wait for the previous
 	// loop to leave ReadFrom.
 	verifyHopLimit bool
-	// rejected counts advertisements dropped by the RFC 4861 source and hop-limit
-	// checks. A flood is a plausible way to attack the log, so the drops are
-	// counted and summarised rather than logged one for one.
+	// rejected counts advertisements dropped by validation. A flood is a
+	// plausible way to attack the log, so the drops are counted and summarised
+	// rather than logged one for one.
 	rejected uint64
+	// onReject reports a drop to whatever is counting them, set at construction
+	// and never reassigned. It exists so the count can reach a metric without
+	// this package importing the controller's registry.
+	onReject RejectionObserver
+	// lastReason is the most recent drop's reason, for the periodic report that
+	// turns a rising counter into something a user can act on.
+	lastReasonMu sync.Mutex
+	lastReason   string
 }
 
 // NewRAReceiver creates a new Router Advertisement receiver for the given
 // interface, accepting only global-unicast prefixes. Use NewRAReceiverWithPolicy
 // to track a prefix that is deliberately not global unicast.
 func NewRAReceiver(iface string) *RAReceiver {
-	return NewRAReceiverWithPolicy(iface, true)
+	return NewRAReceiverWithPolicy(iface, DefaultRAPolicy())
 }
+
+// RejectionObserver is told about each dropped advertisement, by interface and
+// by one of the bounded reason constants.
+type RejectionObserver func(iface, reason string)
 
 // NewRAReceiverWithPolicy creates a Router Advertisement receiver with an explicit
 // acceptance policy. The policy is fixed for the receiver's lifetime, which is why
 // receivers are pooled per interface *and* policy.
-func NewRAReceiverWithPolicy(iface string, requireGlobalUnicast bool) *RAReceiver {
+func NewRAReceiverWithPolicy(iface string, policy RAPolicy, observers ...RejectionObserver) *RAReceiver {
+	var onReject RejectionObserver
+	if len(observers) > 0 {
+		onReject = observers[0]
+	}
 	return &RAReceiver{
-		requireGlobalUnicast:       requireGlobalUnicast,
+		onReject:                   onReject,
+		policy:                     policy,
 		iface:                      iface,
 		events:                     make(chan Event, 10),
 		stopCh:                     make(chan struct{}),
@@ -217,6 +234,27 @@ func (r *RAReceiver) CurrentPrefix() *Prefix {
 // LastError implements AcquisitionHealth.
 func (r *RAReceiver) LastError() error { return r.health.LastError() }
 
+// recordRejection counts a dropped advertisement and remembers why.
+func (r *RAReceiver) recordRejection(reason string) {
+	r.lastReasonMu.Lock()
+	r.lastReason = reason
+	r.lastReasonMu.Unlock()
+
+	if r.onReject != nil {
+		r.onReject(r.iface, reason)
+	}
+}
+
+// RARejections reports how many advertisements this receiver has dropped and
+// the most recent reason. Reconcile reads it to report drops on the resource:
+// a link with a rogue router announces itself as a rising count here, and
+// nowhere else a user would look.
+func (r *RAReceiver) RARejections() (total uint64, lastReason string) {
+	r.lastReasonMu.Lock()
+	defer r.lastReasonMu.Unlock()
+	return atomic.LoadUint64(&r.rejected), r.lastReason
+}
+
 // Source returns SourceRouterAdvertisement.
 func (r *RAReceiver) Source() Source {
 	return SourceRouterAdvertisement
@@ -308,16 +346,17 @@ func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}, co
 			continue
 		}
 
-		if reason := r.rejectRouterAdvertisement(from, cm, verifyHopLimit); reason != "" {
+		if reason, detail := r.rejectRouterAdvertisement(from, cm, verifyHopLimit); reason != "" {
+			r.recordRejection(reason)
 			count := atomic.AddUint64(&r.rejected, 1)
 			// One line per packet would hand anyone on the link a way to fill the
 			// node's disk, so the drops are counted and reported on a curve.
 			if count == 1 || count%100 == 0 {
-				log.Info("Ignoring Router Advertisement that fails RFC 4861 validation",
-					"interface", r.iface, "from", from, "reason", reason, "rejectedTotal", count)
+				log.Info("Ignoring Router Advertisement that failed validation",
+					"interface", r.iface, "from", from, "reason", reason, "detail", detail, "rejectedTotal", count)
 			} else {
-				log.V(1).Info("Ignoring Router Advertisement that fails RFC 4861 validation",
-					"interface", r.iface, "from", from, "reason", reason)
+				log.V(1).Info("Ignoring Router Advertisement that failed validation",
+					"interface", r.iface, "from", from, "reason", reason, "detail", detail)
 			}
 			continue
 		}
@@ -413,12 +452,23 @@ func (r *RAReceiver) sendRouterSolicitation(hwAddr net.HardwareAddr) error {
 	return nil
 }
 
-// rejectRouterAdvertisement applies the two receive-side checks RFC 4861
-// section 6.1.2 requires of a Router Advertisement, returning why it must be
-// discarded or "" if it may be processed.
+// Reasons an advertisement is discarded. Bounded and low-cardinality, because
+// they label a metric as well as a log line.
+const (
+	rejectReasonNotLinkLocal    = "source-not-link-local"
+	rejectReasonHopLimitUnknown = "hop-limit-unreported"
+	rejectReasonForwarded       = "forwarded-hop-limit"
+	rejectReasonUntrustedSource = "untrusted-source"
+	rejectReasonPrefixLength    = "prefix-length-out-of-bounds"
+)
+
+// rejectRouterAdvertisement applies the receive-side checks a Router
+// Advertisement has to pass, returning the reason it must be discarded and a
+// description, or "" if it may be processed.
 //
-// They are not a complete defence: an attacker with access to the link can still
-// forge a compliant RA, which is inherent to taking delegation from Router
+// The first two are what RFC 4861 section 6.1.2 requires. They are not a
+// defence against anything on the link: an attacker with link access can forge
+// a compliant RA, which is inherent to taking delegation from Router
 // Advertisements at all. What they do is restore the floor every conforming NDP
 // implementation provides, and rule out the remote attacker entirely.
 //
@@ -427,21 +477,32 @@ func (r *RAReceiver) sendRouterSolicitation(hwAddr net.HardwareAddr) error {
 //   - The hop limit must be 255. Since a forwarding router must decrement it,
 //     receiving 255 proves the packet was never forwarded, i.e. originated on
 //     this link.
-func (r *RAReceiver) rejectRouterAdvertisement(from netip.Addr, cm *ipv6.ControlMessage, verifyHopLimit bool) string {
+//
+// The third is the trust decision the first two cannot make. Every host on the
+// segment satisfies "on-link and one hop away", so a link the operator does not
+// control needs the routers that may be believed named explicitly -- the job a
+// switch does with RA Guard, done here for the links where that is not
+// available.
+func (r *RAReceiver) rejectRouterAdvertisement(from netip.Addr, cm *ipv6.ControlMessage, verifyHopLimit bool) (reason, detail string) {
 	if !isLinkLocal(from) {
-		return "source address is not link-local"
+		return rejectReasonNotLinkLocal, "source address is not link-local"
+	}
+
+	if !r.policy.Trusts(from) {
+		return rejectReasonUntrustedSource, "source is not one of the trusted routers"
 	}
 
 	if !verifyHopLimit {
-		return ""
+		return "", ""
 	}
 	if cm == nil {
-		return "hop limit was not reported for this packet"
+		return rejectReasonHopLimitUnknown, "hop limit was not reported for this packet"
 	}
 	if cm.HopLimit != ndp.HopLimit {
-		return fmt.Sprintf("hop limit is %d, not %d, so the packet was forwarded", cm.HopLimit, ndp.HopLimit)
+		return rejectReasonForwarded,
+			fmt.Sprintf("hop limit is %d, not %d, so the packet was forwarded", cm.HopLimit, ndp.HopLimit)
 	}
-	return ""
+	return "", ""
 }
 
 // handleRouterAdvertisement processes a received Router Advertisement.
@@ -479,6 +540,17 @@ func (r *RAReceiver) handleRouterAdvertisement(ra *ndp.RouterAdvertisement) {
 			continue
 		}
 
+		// Screen the length here as well as at the controller's choke point: an
+		// advertisement carrying an implausible prefix alongside a usable one
+		// should lose to the usable one, rather than be selected and then
+		// rejected downstream, which leaves the receiver holding nothing.
+		if err := r.policy.checkLength(int(pi.PrefixLength)); err != nil {
+			log.V(1).Info("Skipping prefix outside the configured length bounds",
+				"prefix", pi.Prefix, "prefixLength", pi.PrefixLength, "reason", err.Error())
+			r.recordRejection(rejectReasonPrefixLength)
+			continue
+		}
+
 		// The Prefix field is already netip.Addr in mdlayher/ndp v1.1.0
 		addr := pi.Prefix
 
@@ -496,7 +568,7 @@ func (r *RAReceiver) handleRouterAdvertisement(ra *ndp.RouterAdvertisement) {
 			// moving every derived address off-link and pushing the real prefix out
 			// of history as if it had been retired. Skip it unless the tracked
 			// prefix is deliberately not global unicast.
-			if r.requireGlobalUnicast {
+			if r.policy.RequireGlobalUnicast {
 				log.V(1).Info("Ignoring unique-local prefix: requireGlobalUnicast is set",
 					"prefix", pi.Prefix)
 				continue

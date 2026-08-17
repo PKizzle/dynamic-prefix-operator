@@ -138,3 +138,40 @@ func TestCompositeReceiver_EventChannel(t *testing.T) {
 		t.Errorf("Events channel capacity = %d, want 10", cap(events))
 	}
 }
+
+// Stop does not wait for the merge loop to leave its select, so a restart puts
+// two generations of it side by side. Reading the context and stop channel from
+// the receiver -- which the next Start replaces under the lock -- is the defect
+// c03e9a7 fixed in the RA receive loop, and it was still here.
+func TestCompositeReceiverSurvivesRestartUnderRace(t *testing.T) {
+	primary := NewMockReceiver(SourceDHCPv6PD)
+	fallback := NewMockReceiver(SourceRouterAdvertisement)
+	c := NewCompositeReceiver(primary, fallback)
+
+	ctx := context.Background()
+	for i := range 5 {
+		if err := c.Start(ctx); err != nil {
+			t.Fatalf("cycle %d: Start() = %v", i, err)
+		}
+		// Give the outgoing generation something to be woken by while the next
+		// Start is replacing the fields it used to read.
+		primary.SimulatePrefix(netip.MustParsePrefix("2001:db8::/56"), time.Hour)
+		if err := c.Stop(); err != nil {
+			t.Fatalf("cycle %d: Stop() = %v", i, err)
+		}
+	}
+
+	// The last generation must still deliver, rather than having exited on a
+	// channel closed by an earlier Stop.
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("final Start() = %v", err)
+	}
+	t.Cleanup(func() { _ = c.Stop() })
+
+	primary.SimulatePrefix(netip.MustParsePrefix("2001:db8:2::/56"), time.Hour)
+	select {
+	case <-c.Events():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the restarted composite delivered no events")
+	}
+}

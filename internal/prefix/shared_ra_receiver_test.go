@@ -33,7 +33,7 @@ func TestDefaultReceiverFactory_SharesRAReceiverByInterface(t *testing.T) {
 	created := 0
 
 	factory := &DefaultReceiverFactory{
-		newRAReceiver: func(iface string, _ bool) Receiver {
+		newRAReceiver: func(iface string, _ RAPolicy) Receiver {
 			created++
 			return underlying
 		},
@@ -110,7 +110,7 @@ func TestDefaultReceiverFactory_SharesRAReceiverByInterface(t *testing.T) {
 func TestDefaultReceiverFactory_CreatesSeparateRAReceiversForDifferentInterfaces(t *testing.T) {
 	createdByInterface := map[string]int{}
 	factory := &DefaultReceiverFactory{
-		newRAReceiver: func(iface string, _ bool) Receiver {
+		newRAReceiver: func(iface string, _ RAPolicy) Receiver {
 			createdByInterface[iface]++
 			return newInstrumentedReceiver(SourceRouterAdvertisement)
 		},
