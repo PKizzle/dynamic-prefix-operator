@@ -70,7 +70,7 @@ var _ = Describe("DynamicPrefix status writers", func() {
 		// The prefix reconciler applies everything it owns.
 		dpr := &DynamicPrefixReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		current := get()
-		current.Status.CurrentPrefix = "2001:db8:1::/56"
+		current.Status.CurrentPrefix = testStatusPrefix
 		current.Status.PrefixSource = dynamicprefixiov1alpha1.PrefixSourceRouterAdvertisement
 		dpr.setCondition(current, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired,
 			metav1.ConditionTrue, "PrefixAcquired", "Prefix acquired")
@@ -87,7 +87,7 @@ var _ = Describe("DynamicPrefix status writers", func() {
 
 		// Every writer's fields coexist on the server's copy.
 		final := get()
-		Expect(final.Status.CurrentPrefix).To(Equal("2001:db8:1::/56"))
+		Expect(final.Status.CurrentPrefix).To(Equal(testStatusPrefix))
 		for _, condType := range []string{
 			dynamicprefixiov1alpha1.ConditionTypePrefixAcquired,
 			dynamicprefixiov1alpha1.ConditionTypePoolsSynced,

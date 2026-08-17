@@ -31,6 +31,11 @@ import (
 	dynamicprefixiov1alpha1 "github.com/pkizzle/dynamic-prefix-operator/api/v1alpha1"
 )
 
+// testStatusPrefix is the delegation the status-writer tests report on. Shared
+// with the envtest half, which exercises the same scenario against a real API
+// server.
+const testStatusPrefix = "2001:db8:1::/56"
+
 func mustParsePrefix(t *testing.T, s string) netip.Prefix {
 	t.Helper()
 	p, err := netip.ParsePrefix(s)
@@ -77,9 +82,9 @@ func TestStatusWritersDoNotDisturbEachOther(t *testing.T) {
 	// The prefix reconciler writes everything it owns.
 	dpr := &DynamicPrefixReconciler{Client: fakeClient, Scheme: scheme}
 	current := get(t)
-	current.Status.CurrentPrefix = "2001:db8:1::/56"
+	current.Status.CurrentPrefix = testStatusPrefix
 	current.Status.PrefixSource = dynamicprefixiov1alpha1.PrefixSourceRouterAdvertisement
-	subnets, err := dpr.calculateSubnets("home-ipv6", mustParsePrefix(t, "2001:db8:1::/56"), current.Spec.Subnets)
+	subnets, err := dpr.calculateSubnets("home-ipv6", mustParsePrefix(t, testStatusPrefix), current.Spec.Subnets)
 	if err != nil {
 		t.Fatalf("calculateSubnets: %v", err)
 	}
@@ -105,7 +110,7 @@ func TestStatusWritersDoNotDisturbEachOther(t *testing.T) {
 
 	// All three writers' fields coexist.
 	final := get(t)
-	if final.Status.CurrentPrefix != "2001:db8:1::/56" {
+	if final.Status.CurrentPrefix != testStatusPrefix {
 		t.Errorf("currentPrefix = %q after the other writers ran", final.Status.CurrentPrefix)
 	}
 	if len(final.Status.Subnets) != 1 || final.Status.Subnets[0].BGPAdvertisement != "dp-home-ipv6-lb" {
@@ -154,7 +159,7 @@ func TestStatusWritersDoNotDisturbEachOther(t *testing.T) {
 // it while building the entries rather than copying it from BGPSync's writes.
 func TestPrefixWriterOwnsAdvertisementNames(t *testing.T) {
 	r := &DynamicPrefixReconciler{}
-	subnets, err := r.calculateSubnets("home-ipv6", mustParsePrefix(t, "2001:db8:1::/56"),
+	subnets, err := r.calculateSubnets("home-ipv6", mustParsePrefix(t, testStatusPrefix),
 		[]dynamicprefixiov1alpha1.SubnetSpec{
 			{Name: "lb", Offset: 0, PrefixLength: 64,
 				BGP: &dynamicprefixiov1alpha1.SubnetBGPSpec{Advertise: true}},
