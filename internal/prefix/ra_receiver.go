@@ -206,6 +206,7 @@ func (r *RAReceiver) Start(ctx context.Context) error {
 	// next Start.
 	go r.receiveLoop(r.ctx, r.stopCh, conn, r.verifyHopLimit)
 	go r.sendInitialRouterSolicitations(r.ctx, r.stopCh, ifi.HardwareAddr)
+	go r.watchLeaseExpiry(r.ctx, r.stopCh)
 
 	return nil
 }
@@ -678,6 +679,81 @@ func (r *RAReceiver) updatePrefix(prefix netip.Prefix, validLifetime, preferredL
 		log.V(2).Info("Event sent", "eventType", eventType)
 	default:
 		log.Info("Event channel full, event dropped", "eventType", eventType)
+	}
+}
+
+// raLeaseExpiryCheckInterval is how often the receiver looks for a lease that
+// has run out. Valid lifetimes are hours, so this only needs to be short enough
+// that the expiry is noticed while it still matters.
+const raLeaseExpiryCheckInterval = 30 * time.Second
+
+// watchLeaseExpiry drops the prefix once its valid lifetime has run out with no
+// advertisement renewing it.
+//
+// A Router Advertisement lease is only as good as the next advertisement. The
+// DHCPv6-PD path has always given up a lease the server stopped extending, but
+// this path had no expiry at all: if the router went silent -- taken away,
+// replaced, reconfigured, or simply no longer trusted after a trustedRouters
+// change -- the receiver kept serving the last prefix it saw indefinitely, with
+// PrefixAcquired true, Degraded unset and receiver_healthy at 1. The only
+// symptom was dynamic_prefix_lease_expiry_seconds drifting into the past, which
+// is not something anyone watches.
+//
+// Every accepted advertisement resets the deadline, because updatePrefix stamps
+// ReceivedAt, so this only fires when the advertisements really have stopped.
+func (r *RAReceiver) watchLeaseExpiry(ctx context.Context, stopCh <-chan struct{}) {
+	ticker := time.NewTicker(raLeaseExpiryCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.expireLeaseIfStale()
+		}
+	}
+}
+
+// expireLeaseIfStale gives up a prefix whose valid lifetime has passed. The
+// prefix goes with the lease, for the same reason it does on the DHCPv6-PD
+// path: a delegation nothing is renewing is one that is no longer routed, and
+// reporting it as still held keeps it in the pools and in DNS.
+func (r *RAReceiver) expireLeaseIfStale() {
+	log := logf.Log.WithName("ra-receiver")
+
+	r.mu.Lock()
+	current := r.currentPrefix
+	if current == nil || current.ValidLifetime <= 0 {
+		r.mu.Unlock()
+		return
+	}
+	expiresAt := current.ReceivedAt.Add(current.ValidLifetime)
+	if !time.Now().After(expiresAt) {
+		r.mu.Unlock()
+		return
+	}
+	r.currentPrefix = nil
+	r.mu.Unlock()
+
+	err := fmt.Errorf("no Router Advertisement renewed prefix %s within its valid lifetime of %s (last seen %s)",
+		current.Network, current.ValidLifetime, current.ReceivedAt.Format(time.RFC3339))
+	log.Info("Router Advertisement lease expired; giving up the prefix",
+		"interface", r.iface, "prefix", current.Network, "validLifetime", current.ValidLifetime,
+		"receivedAt", current.ReceivedAt, "expiredAt", expiresAt)
+
+	// Recorded as a health failure as well as an event: the event moves the
+	// reconciler, the health failure is what turns Degraded on and takes
+	// receiver_healthy to 0, so this is visible to an alert and not only to
+	// someone reading events.
+	r.health.recordFailure(err)
+
+	select {
+	case r.events <- Event{Type: EventTypeExpired}:
+	default:
+		log.Info("Event channel full, lease-expiry event dropped", "interface", r.iface)
 	}
 }
 
