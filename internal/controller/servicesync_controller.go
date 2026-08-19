@@ -282,6 +282,10 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	skipExternalDNS := annotations[AnnotationSkipExternalDNSUpdate] == AnnotationValueTrue
 
 	var finalTargetStr string
+	// Set when the target is withheld because the address is not assigned yet, so
+	// the reconcile ends in a requeue instead of waiting for an event that has
+	// already happened.
+	var deferredDNSTarget bool
 	if !skipExternalDNS {
 		// Preserve non-managed entries (hostnames, IPv4, static IPv6) and set
 		// only the current IPv6 as the managed target.
@@ -295,15 +299,48 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		preservedTargets := preserveUnownedIPs(existingTarget, targetRecord, managedPrefixes)
 		finalTargets := dedupePreservingOrder(append(preservedTargets, currentIP))
 		finalTargetStr = strings.Join(finalTargets, ",")
-		if annotations[AnnotationExternalDNSTarget] != finalTargetStr {
+
+		// DNS follows the address; it does not lead it. The LB-IPAM request
+		// above is what makes the new address exist, and it is not answerable
+		// until Cilium has assigned it and started announcing it -- which is a
+		// later reconcile, woken by the status write. Publishing the target in
+		// the same pass put the new address into DNS while nothing answered on
+		// it, so every rotation opened a window where the name resolved and the
+		// connection was refused.
+		//
+		// Holding the old target through that window is the better failure: it
+		// keeps pointing at an address that still works. If the address is never
+		// assigned at all, DNS simply never moves, which is also what should
+		// happen.
+		// Deferred only when the Service is publishing assigned addresses and the
+		// current one is not among them yet -- which is exactly the rotation
+		// window. A Service with no assigned addresses at all is a different
+		// situation: some providers never populate status, and withholding the
+		// target there would mean never publishing DNS at all.
+		assignedIPs := assignedLoadBalancerIPs(&svc)
+		dnsTargetReady := len(assignedIPs) == 0 || slices.Contains(assignedIPs, currentIP)
+		switch {
+		case annotations[AnnotationExternalDNSTarget] == finalTargetStr:
+			// Already where it should be.
+		case dnsTargetReady:
 			newAnnotations[AnnotationExternalDNSTarget] = finalTargetStr
 			updated = true
+		default:
+			log.V(1).Info("Deferring external-dns target until the address is assigned",
+				"service", req.NamespacedName, "currentIP", currentIP, "assigned", assignedIPs)
+			deferredDNSTarget = true
 		}
 
-		managedTargetStr := formatOwnershipRecord(excludePinned([]string{currentIP}, preservedTargets))
-		if annotations[AnnotationManagedTargets] != managedTargetStr {
-			newAnnotations[AnnotationManagedTargets] = managedTargetStr
-			updated = true
+		// The ownership record tracks what the operator has actually published,
+		// so it moves with the target rather than ahead of it. Recording the new
+		// address while the annotation still holds the old one would make the
+		// old entry look unowned, and the next pass would preserve it forever.
+		if newAnnotations[AnnotationExternalDNSTarget] == finalTargetStr {
+			managedTargetStr := formatOwnershipRecord(excludePinned([]string{currentIP}, preservedTargets))
+			if annotations[AnnotationManagedTargets] != managedTargetStr {
+				newAnnotations[AnnotationManagedTargets] = managedTargetStr
+				updated = true
+			}
 		}
 	} else {
 		// Opting out has to hand the field back, not merely stop touching it.
@@ -353,10 +390,27 @@ func (r *ServiceSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		// The nudge works around a bug in Cilium's L2 announcer. On a cluster
 		// whose addresses come from somewhere else there is no announcer to
 		// nudge, and the fingerprint annotation would be noise on every change.
-		return ctrl.Result{}, nil
+		return requeueIfDNSTargetDeferred(ctrl.Result{}, deferredDNSTarget), nil
 	}
 
-	return r.nudgeL2Announcer(ctx, &svc, currentIP)
+	result, err := r.nudgeL2Announcer(ctx, &svc, currentIP)
+	if err != nil {
+		return result, err
+	}
+	return requeueIfDNSTargetDeferred(result, deferredDNSTarget), nil
+}
+
+// requeueIfDNSTargetDeferred keeps a withheld external-dns target from waiting
+// on an event that may never come. The address showing up in status normally
+// wakes another reconcile, but if it was already there and something else held
+// the target back, nothing further would arrive. A minute matches the L2 nudge's
+// backstop for the same reason: it is cheap enough to sit on indefinitely.
+func requeueIfDNSTargetDeferred(result ctrl.Result, deferred bool) ctrl.Result {
+	if !deferred || result.Requeue || result.RequeueAfter > 0 {
+		return result
+	}
+	result.RequeueAfter = time.Minute
+	return result
 }
 
 // writeLBAddresses puts the calculated addresses into the annotation this
