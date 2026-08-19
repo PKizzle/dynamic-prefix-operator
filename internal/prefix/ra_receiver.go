@@ -89,6 +89,9 @@ type RAReceiver struct {
 	// and never reassigned. It exists so the count can reach a metric without
 	// this package importing the controller's registry.
 	onReject RejectionObserver
+	// onHopLimit reports whether the RFC 4861 hop-limit check ended up in force,
+	// for the same reason and by the same route as onReject.
+	onHopLimit HopLimitObserver
 	// lastReason is the most recent drop's reason, for the periodic report that
 	// turns a rising counter into something a user can act on.
 	lastReasonMu sync.Mutex
@@ -105,6 +108,10 @@ func NewRAReceiver(iface string) *RAReceiver {
 // RejectionObserver is told about each dropped advertisement, by interface and
 // by one of the bounded reason constants.
 type RejectionObserver func(iface, reason string)
+
+// HopLimitObserver is told, once per receiver start, whether the hop-limit
+// check is in force on that interface.
+type HopLimitObserver func(iface string, enabled bool)
 
 // NewRAReceiverWithPolicy creates a Router Advertisement receiver with an explicit
 // acceptance policy. The policy is fixed for the receiver's lifetime, which is why
@@ -178,6 +185,12 @@ func (r *RAReceiver) Start(ctx context.Context) error {
 		log.Info("Could not enable hop-limit reporting; Router Advertisements will be accepted without the RFC 4861 hop-limit check",
 			"interface", r.iface, "error", err.Error())
 	}
+	// Reported every start, not only on failure, so the series exists and can be
+	// alerted on. A single log line at startup was the only previous sign that
+	// one of the two anti-spoofing checks had quietly stopped applying.
+	if r.onHopLimit != nil {
+		r.onHopLimit(r.iface, r.verifyHopLimit)
+	}
 
 	r.conn = conn
 	r.ctx, r.cancel = context.WithCancel(ctx)
@@ -234,15 +247,29 @@ func (r *RAReceiver) CurrentPrefix() *Prefix {
 // LastError implements AcquisitionHealth.
 func (r *RAReceiver) LastError() error { return r.health.LastError() }
 
-// recordRejection counts a dropped advertisement and remembers why.
-func (r *RAReceiver) recordRejection(reason string) {
+// recordRejection counts a dropped advertisement and remembers why, returning
+// the running total so callers can throttle their logging.
+//
+// The increment belongs here rather than at the call sites. It used to live at
+// the receive-loop call site only, so a rejection recorded while walking the
+// prefix options moved the metric and lastReason but not the counter --
+// RARejections then reported a total of 0, reportRARejections returned early on
+// that, and a link whose only fault was out-of-bounds prefix lengths produced
+// an event stream that stayed silent forever. When both kinds occurred the
+// event was worse than silent: it paired a count from one path with a reason
+// from the other.
+func (r *RAReceiver) recordRejection(reason string) uint64 {
 	r.lastReasonMu.Lock()
 	r.lastReason = reason
 	r.lastReasonMu.Unlock()
 
+	count := atomic.AddUint64(&r.rejected, 1)
+
 	if r.onReject != nil {
 		r.onReject(r.iface, reason)
 	}
+
+	return count
 }
 
 // RARejections reports how many advertisements this receiver has dropped and
@@ -347,8 +374,7 @@ func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}, co
 		}
 
 		if reason, detail := r.rejectRouterAdvertisement(from, cm, verifyHopLimit); reason != "" {
-			r.recordRejection(reason)
-			count := atomic.AddUint64(&r.rejected, 1)
+			count := r.recordRejection(reason)
 			// One line per packet would hand anyone on the link a way to fill the
 			// node's disk, so the drops are counted and reported on a curve.
 			if count == 1 || count%100 == 0 {

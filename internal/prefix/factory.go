@@ -51,6 +51,9 @@ type DefaultReceiverFactory struct {
 	// onRAReject is handed to every Router Advertisement receiver this factory
 	// builds, so drops on any interface reach one counter.
 	onRAReject RejectionObserver
+	// onRAHopLimit is handed to the same receivers, reporting whether the
+	// hop-limit check ended up in force.
+	onRAHopLimit HopLimitObserver
 	// pdInterfaces records which interfaces already run a DHCPv6-PD client.
 	// Router Advertisement receivers are shared per interface and policy, which
 	// is safe because listening twice costs nothing; a DHCPv6 client holds a
@@ -68,6 +71,13 @@ func WithRARejectionObserver(obs RejectionObserver) FactoryOption {
 	return func(f *DefaultReceiverFactory) { f.onRAReject = obs }
 }
 
+// WithRAHopLimitObserver reports whether the RFC 4861 hop-limit check is in
+// force on each interface a receiver starts on, by the same route and for the
+// same reason as WithRARejectionObserver.
+func WithRAHopLimitObserver(obs HopLimitObserver) FactoryOption {
+	return func(f *DefaultReceiverFactory) { f.onRAHopLimit = obs }
+}
+
 // NewReceiverFactory creates a new DefaultReceiverFactory.
 func NewReceiverFactory(opts ...FactoryOption) *DefaultReceiverFactory {
 	f := &DefaultReceiverFactory{}
@@ -75,7 +85,9 @@ func NewReceiverFactory(opts ...FactoryOption) *DefaultReceiverFactory {
 		opt(f)
 	}
 	f.newRAReceiver = func(iface string, policy RAPolicy) Receiver {
-		return NewRAReceiverWithPolicy(iface, policy, f.onRAReject)
+		r := NewRAReceiverWithPolicy(iface, policy, f.onRAReject)
+		r.onHopLimit = f.onRAHopLimit
+		return r
 	}
 	return f
 }
@@ -230,7 +242,9 @@ func (f *DefaultReceiverFactory) sharedRAPool() *sharedRAReceiverPool {
 
 	if f.newRAReceiver == nil {
 		f.newRAReceiver = func(iface string, policy RAPolicy) Receiver {
-			return NewRAReceiverWithPolicy(iface, policy, f.onRAReject)
+			r := NewRAReceiverWithPolicy(iface, policy, f.onRAReject)
+		r.onHopLimit = f.onRAHopLimit
+		return r
 		}
 	}
 	if f.raReceivers == nil {

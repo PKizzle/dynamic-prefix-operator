@@ -65,6 +65,20 @@ var (
 		[]string{"interface", "reason"},
 	)
 
+	// One of the two defences against a forged Router Advertisement, reported
+	// so its absence is visible. The other is the trusted-router source check,
+	// and that one is spoofable by anything on the link, so knowing whether
+	// this one is actually in force matters. It can only be off when the socket
+	// refuses to report hop limits, which is a property of the node, not of the
+	// traffic -- a startup log line was the only sign before.
+	raHopLimitCheckEnabled = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dynamic_prefix_ra_hop_limit_check_enabled",
+			Help: "Whether the RFC 4861 hop-limit check is in force for Router Advertisements on this interface. A value of 0 means the socket would not report hop limits, so off-link advertisements are no longer excluded by that check.",
+		},
+		[]string{"interface"},
+	)
+
 	poolsSynced = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dynamic_prefix_pools_synced",
@@ -81,6 +95,7 @@ func init() {
 		prefixLeaseExpirySeconds,
 		receiverHealthy,
 		raRejectedTotal,
+		raHopLimitCheckEnabled,
 		poolsSynced,
 	)
 }
@@ -118,6 +133,17 @@ func recordReceiverHealthMetric(name string, healthy bool) {
 // anything arriving on the link.
 func RecordRARejection(iface, reason string) {
 	raRejectedTotal.WithLabelValues(iface, reason).Inc()
+}
+
+// RecordRAHopLimitCheck reports whether the hop-limit check is in force on an
+// interface. Exported for the same reason as RecordRARejection: the prefix
+// package reports through it without importing this registry.
+func RecordRAHopLimitCheck(iface string, enabled bool) {
+	value := 0.0
+	if enabled {
+		value = 1
+	}
+	raHopLimitCheckEnabled.WithLabelValues(iface).Set(value)
 }
 
 func recordPoolSyncedMetric(backend, dynamicPrefix, pool string) {

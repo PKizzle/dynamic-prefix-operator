@@ -265,6 +265,7 @@ func main() {
 	// something on it that should not be advertising visible.
 	receiverFactory := prefix.NewReceiverFactory(
 		prefix.WithRARejectionObserver(controller.RecordRARejection),
+		prefix.WithRAHopLimitObserver(controller.RecordRAHopLimitCheck),
 	)
 
 	// Discover available Cilium API versions
