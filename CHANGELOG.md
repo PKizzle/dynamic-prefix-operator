@@ -4,6 +4,77 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## v0.0.17 - 2026-08-20
+
+Three ways the operator could be wrong without saying so.
+
+Two are on the Router Advertisement path, which v0.0.16 had just given a trust
+policy without giving it a reliable way to report that the policy was dropping
+anything -- or any way at all to notice that nothing was arriving any more. The
+third put every prefix rotation through a window where DNS pointed at an address
+that did not answer yet.
+
+**Upgrading:** a Router Advertisement prefix whose valid lifetime has run out is
+now given up rather than served indefinitely. A link where advertisements
+stopped some time ago and nobody noticed will therefore go to
+`PrefixAcquired=False` and `Degraded` on upgrade, where before it kept
+publishing the last prefix it saw. That is the bug being fixed, but it will look
+like the upgrade broke something -- check that the router is still advertising,
+and that its link-local address is still in `trustedRouters` if that list is set.
+
+### Added
+
+- `dynamic_prefix_ra_hop_limit_check_enabled{interface}`, reported at every
+  receiver start. The RFC 4861 hop-limit check fails open by design -- a
+  receiver that refuses to start acquires nothing -- but the other
+  anti-spoofing check is one that anything on the link passes, so whether this
+  one is actually in force is worth alerting on rather than leaving in a single
+  startup log line.
+
+### Fixed
+
+- **A router that went quiet was indistinguishable from a healthy one.** The
+  Router Advertisement path had no expiry. A router taken away, replaced,
+  reconfigured, or simply no longer matching `trustedRouters` after a spec
+  change left the receiver serving the last prefix it ever saw, indefinitely,
+  with `PrefixAcquired` true, `Degraded` unset and
+  `dynamic_prefix_receiver_healthy` at 1. The single symptom was
+  `dynamic_prefix_lease_expiry_seconds` drifting into the past, which is not
+  something anyone watches, so the failure mode was a pipeline confidently
+  publishing a prefix that is no longer routed. A watchdog now gives the prefix
+  up once the valid lifetime has run out, recording a health failure as well as
+  an `Expired` event -- the event moves the reconciler, the health failure is
+  what turns `Degraded` on and takes `receiver_healthy` to 0. Every accepted
+  advertisement restamps the lease, so this only fires when they really have
+  stopped.
+- **Rejections recorded while reading prefix options never reached the
+  counter.** The increment sat at one call site instead of inside
+  `recordRejection`, so a prefix rejected on its length moved
+  `dynamic_prefix_rejected_router_advertisements_total` and the last reason but
+  not the running total. Since the periodic report returns early on a total of
+  zero, a link whose only fault was an out-of-bounds prefix length raised the
+  metric while the `RouterAdvertisementsRejected` event stayed silent forever;
+  where both kinds of rejection occurred, the event was worse than silent,
+  pairing a count taken from one path with a reason taken from the other.
+  Rejections from the source and hop-limit checks -- including
+  `trustedRouters` -- were counted correctly and are unaffected.
+- **external-dns published the new address before anything answered on it.**
+  The target moved to the new address in the same pass that requested it from
+  LB-IPAM, but the address is not answerable until the load-balancer
+  implementation has assigned it and begun announcing it, which is a later
+  reconcile woken by the status write. Every rotation therefore opened a window
+  where the name resolved and the connection was refused -- reached on every
+  rotation in suffix mode, where the address is computed straight from the
+  prefix and returned with no wait at all. DNS now follows the address instead
+  of leading it: the target is withheld while the Service is publishing
+  assigned addresses that do not yet include the current one, and the ownership
+  record moves with the target rather than ahead of it, so a withheld address is
+  not recorded as published. Holding the previous target through the window is
+  the better failure -- it keeps pointing at something that works. A Service
+  publishing no assigned addresses at all is deliberately left alone: some
+  providers never populate status, and withholding there would mean never
+  publishing DNS.
+
 ## v0.0.16 - 2026-08-17
 
 Two things that were broken for everyone, and two that were missing.
