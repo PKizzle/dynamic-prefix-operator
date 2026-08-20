@@ -243,8 +243,8 @@ func (f *DefaultReceiverFactory) sharedRAPool() *sharedRAReceiverPool {
 	if f.newRAReceiver == nil {
 		f.newRAReceiver = func(iface string, policy RAPolicy) Receiver {
 			r := NewRAReceiverWithPolicy(iface, policy, f.onRAReject)
-		r.onHopLimit = f.onRAHopLimit
-		return r
+			r.onHopLimit = f.onRAHopLimit
+			return r
 		}
 	}
 	if f.raReceivers == nil {
