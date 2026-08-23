@@ -87,8 +87,7 @@ at all.
 
 DHCPv6-PD, meanwhile, could not work in either shipped install and never had:
 the client binds UDP 546 and neither install granted the capability for it.
-Testing the exchanges for the first time turned up two further reasons it would
-not have worked even once it could bind.
+Two further defects would have kept it from working even once it could bind.
 
 Beyond the repairs, Router Advertisement monitoring gained a way to say which
 routers it believes, and the kube-vip cloud provider joins Cilium, MetalLB and
@@ -198,8 +197,8 @@ DynamicPrefix carrying several `addressRanges` or `subnets`.
 
 ## v0.0.15 - 2026-08-16
 
-A follow-up to the v0.0.14 audit: the lifecycle defects that round left behind,
-one reachable-vulnerability fix in the Go toolchain, and a chart fix without
+Further lifecycle fixes in the same shape as v0.0.14's, one
+reachable-vulnerability fix in the Go toolchain, and a chart fix without
 which the secure metrics endpoint v0.0.14 introduced cannot actually be scraped.
 
 **Upgrading from v0.0.14 with metrics enabled:** the chart now ships the
@@ -231,9 +230,9 @@ secure listener before upgrading.
 
 ## v0.0.14 - 2026-08-10
 
-This release is an audit round: one security fix in the operator itself, three in
-the Helm chart, and a set of lifecycle defects that all shared a shape — the
-operator knew what it had written and not when to stop maintaining it.
+One security fix in the operator itself, three in the Helm chart, and a set of
+lifecycle defects that all shared a shape — the operator knew what it had
+written and not when to stop maintaining it.
 
 **Upgrade the chart, not just the image.** Three of the fixes are chart-side and
 have no effect if only the image tag is bumped.
