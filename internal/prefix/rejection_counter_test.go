@@ -27,8 +27,8 @@ import (
 
 // oversizedPrefixAdvertisement carries a single prefix that is longer than any
 // sane bound, so the only thing that can reject it is the length check inside
-// the prefix walk -- the path that used to move the metric without moving the
-// counter.
+// the prefix walk -- the path most at risk of moving the metric without moving
+// the counter.
 func oversizedPrefixAdvertisement() *ndp.RouterAdvertisement {
 	return &ndp.RouterAdvertisement{Options: []ndp.Option{
 		&ndp.PrefixInformation{
@@ -45,10 +45,10 @@ func oversizedPrefixAdvertisement() *ndp.RouterAdvertisement {
 // A rejection recorded while walking the prefix options must reach the counter
 // that RARejections reports, not just the metric.
 //
-// It used to reach only the metric. reportRARejections returns early on a total
-// of 0, so a link whose only fault was out-of-bounds prefix lengths raised the
-// metric while the RouterAdvertisementsRejected event stayed silent forever --
-// and when both kinds of rejection happened, the event paired a count from one
+// If it reached only the metric: reportRARejections returns early on a total
+// of 0, so a link whose only fault is out-of-bounds prefix lengths raises the
+// metric while the RouterAdvertisementsRejected event stays silent forever --
+// and when both kinds of rejection happen, the event pairs a count from one
 // path with a reason from the other.
 func TestPrefixLengthRejectionCountsTowardsRARejections(t *testing.T) {
 	var observed []string

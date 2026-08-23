@@ -343,11 +343,11 @@ func TestParsePrefix(t *testing.T) {
 	}
 }
 
-// CalculateSubnet used to trust the offset: big.Int.FillBytes panics when the
+// CalculateSubnet must not trust the offset: big.Int.FillBytes panics when the
 // value exceeds the 16-byte buffer, and Offset has no upper bound in the CRD,
-// so a large value produced a permanent panic/requeue loop. Offsets that stay
-// under 2^128 but past the end of the delegation were worse -- they returned a
-// subnet the operator does not own and went on to advertise it.
+// so an unchecked large value is a permanent panic/requeue loop. Offsets that
+// stay under 2^128 but past the end of the delegation are worse -- they yield a
+// subnet the operator does not own and go on to advertise it.
 func TestCalculateSubnetRejectsOutOfRangeOffsets(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -355,14 +355,14 @@ func TestCalculateSubnetRejectsOutOfRangeOffsets(t *testing.T) {
 		config     SubnetConfig
 	}{
 		{
-			// 3e14 << (128-48) overflows 128 bits -> used to panic.
+			// 3e14 << (128-48) overflows 128 bits -> must error, not panic.
 			name:       "offset overflows the address space",
 			basePrefix: "2001:db8::/48",
 			config:     SubnetConfig{Name: "overflow", Offset: 300000000000000, PrefixLength: 48},
 		},
 		{
-			// Fits in 128 bits, but lands outside the /48 -> used to be
-			// returned as a valid subnet.
+			// Fits in 128 bits, but lands outside the /48 -> must be rejected,
+			// not returned as a valid subnet.
 			name:       "offset one past the last subnet",
 			basePrefix: "2001:db8::/48",
 			config:     SubnetConfig{Name: "past-end", Offset: 65536, PrefixLength: 64},

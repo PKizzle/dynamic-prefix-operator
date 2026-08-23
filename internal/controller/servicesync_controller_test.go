@@ -1365,8 +1365,8 @@ func TestCalculateSuffixIPs_InvalidInputs(t *testing.T) {
 			dp:     validDP,
 			suffix: "192.168.1.1",
 			// netip.ParseAddr accepts IPv4, and As16() then maps it into the
-			// IPv6 space, so this used to yield a plausible-looking but wrong
-			// address. It is now rejected, as the error message always claimed.
+			// IPv6 space -- a plausible-looking but wrong address. It must be
+			// rejected, as the error message claims.
 			expectErr: true,
 		},
 		{
@@ -1697,10 +1697,10 @@ func TestCollectManagedPrefixes_InvalidEntries(t *testing.T) {
 
 // A Service annotated with a range or subnet name that the DynamicPrefix does
 // not define -- a typo, or an entry removed from the spec while the annotation
-// stayed -- used to yield ("", nil, nil). The nil error slipped past the
-// caller's fallback, so calculateServiceIPs returned no addresses and Reconcile
-// then wrote an empty lbipam.cilium.io/ips, withdrawing the Service's
-// LoadBalancer IP request, and appended an empty external-dns target.
+// stayed -- must yield an error, never ("", nil, nil): the nil error slips past
+// the caller's fallback, calculateServiceIPs returns no addresses, and
+// Reconcile then writes an empty lbipam.cilium.io/ips, withdrawing the
+// Service's LoadBalancer IP request, and appends an empty external-dns target.
 func TestCalculateServiceIPsErrorsOnUnknownRangeOrSubnet(t *testing.T) {
 	ctx := context.Background()
 

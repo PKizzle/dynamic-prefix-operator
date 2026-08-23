@@ -337,9 +337,10 @@ func calicoPoolStateForGeneration(gen, maxHistory int) ([]poolConfiguration, []n
 }
 
 // TestServiceReleasedOnDeannotation covers the cleanup path. Removing the name
-// annotation used to strand the operator's entries: the watch predicate no longer
-// matched the object, so no event was delivered and an external-dns target that
-// stops resolving at the next rotation was simply left behind.
+// annotation must not strand the operator's entries: the watch predicate stops
+// matching the object, so without cleanup on this path no event is delivered
+// and an external-dns target that stops resolving at the next rotation is
+// simply left behind.
 func TestServiceReleasedOnDeannotation(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -674,9 +675,9 @@ func TestCalicoReleaseRemovesDrainingSiblings(t *testing.T) {
 }
 
 // TestReleaseDoesNotInventFieldsOnOtherBackends pins the backend dispatch. The
-// release path used to branch on which record annotation was present rather than
-// on the matched backend, so a CIDR group carrying a blocks record had an empty
-// spec.blocks created on it -- a field its schema does not have.
+// release path must branch on the matched backend, not on which record
+// annotation is present -- otherwise a CIDR group carrying a blocks record gets
+// an empty spec.blocks created on it, a field its schema does not have.
 func TestReleaseDoesNotInventFieldsOnOtherBackends(t *testing.T) {
 	ctx := context.Background()
 	scheme := newPoolBackendTestScheme(t)

@@ -908,12 +908,12 @@ func TestIsPrefixSubsetOfManaged_EdgeCases(t *testing.T) {
 }
 
 // A reconcile.Request carries only name and namespace, so getPool has to work
-// out which backend it belongs to. It used to probe every backend in order and
-// take the first hit -- and because the API server ignores the namespace when
-// reading a cluster-scoped resource, a request for the namespaced MetalLB
-// IPAddressPool matched the same-named cluster-scoped Cilium pool instead. The
-// MetalLB pool was then never synced, silently, since the wrong Get succeeded.
-// The repo's own config/samples ship exactly this name collision.
+// out which backend it belongs to. Probing every backend in order and taking
+// the first hit is wrong: the API server ignores the namespace when reading a
+// cluster-scoped resource, so a request for the namespaced MetalLB
+// IPAddressPool matches a same-named cluster-scoped Cilium pool instead, and
+// the MetalLB pool is then never synced, silently, since the wrong Get
+// succeeded. The repo's own config/samples ship exactly this name collision.
 //
 // The fake client keys everything by the namespace it is handed, so it does not
 // reproduce that on its own. The interceptor below supplies the missing API

@@ -251,14 +251,13 @@ func (r *RAReceiver) LastError() error { return r.health.LastError() }
 // recordRejection counts a dropped advertisement and remembers why, returning
 // the running total so callers can throttle their logging.
 //
-// The increment belongs here rather than at the call sites. It used to live at
-// the receive-loop call site only, so a rejection recorded while walking the
-// prefix options moved the metric and lastReason but not the counter --
-// RARejections then reported a total of 0, reportRARejections returned early on
-// that, and a link whose only fault was out-of-bounds prefix lengths produced
-// an event stream that stayed silent forever. When both kinds occurred the
-// event was worse than silent: it paired a count from one path with a reason
-// from the other.
+// The increment belongs here rather than at the call sites. If a call site
+// could record a rejection while moving only the metric and lastReason,
+// RARejections would report a total of 0, reportRARejections would return
+// early on that, and a link whose only fault is out-of-bounds prefix lengths
+// would produce an event stream that stays silent forever. With both kinds of
+// rejection the event would be worse than silent: a count from one path paired
+// with a reason from the other.
 func (r *RAReceiver) recordRejection(reason string) uint64 {
 	r.lastReasonMu.Lock()
 	r.lastReason = reason

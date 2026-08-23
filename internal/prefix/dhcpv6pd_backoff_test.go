@@ -83,9 +83,9 @@ func TestJitteredStaysWithinBounds(t *testing.T) {
 	}
 }
 
-// A failing acquisition used to retry every ten seconds for as long as the
-// uplink stayed down -- an exchange a minute forever against a server that has
-// already refused, or none at all.
+// Without backoff, a failing acquisition retries every ten seconds for as long
+// as the uplink stays down -- an exchange a minute forever against a server
+// that has already refused, or none at all.
 func TestDHCPv6PDBacksOffWhileAcquisitionKeepsFailing(t *testing.T) {
 	attempts := make(chan struct{}, 8)
 	r, _ := newWireTestReceiver(t, func(*dhcpv6.Message) (*dhcpv6.Message, error) {

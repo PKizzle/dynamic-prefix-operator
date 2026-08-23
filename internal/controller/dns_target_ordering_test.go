@@ -49,10 +49,10 @@ func assignAddresses(t *testing.T, r *ServiceSyncReconciler, key types.Namespace
 // During a rotation the external-dns target must not move to the new address
 // until that address is actually assigned.
 //
-// It used to move in the same pass that requested the address, so every
-// rotation published a name that resolved to an address nothing answered on
-// yet. Holding the previous target through the window is the better failure:
-// it keeps pointing somewhere that works.
+// Moving it in the same pass that requests the address means every rotation
+// publishes a name that resolves to an address nothing answers on yet.
+// Holding the previous target through the window is the better failure: it
+// keeps pointing somewhere that works.
 func TestExternalDNSTargetWaitsForTheAddressToBeAssigned(t *testing.T) {
 	ctx := context.Background()
 	const maxHistory = 2

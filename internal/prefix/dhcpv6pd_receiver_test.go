@@ -61,9 +61,9 @@ func replyWithPrefixes(iaid [4]byte, prefixes ...*dhcpv6.OptIAPrefix) *dhcpv6.Me
 
 // A REPLY whose IA_PREFIX carries a zero prefix-length decodes to a nil
 // Prefix even though the lifetimes are valid, because the lifetimes sit ahead
-// of the length byte on the wire. Selecting on the lifetime alone used to
-// dereference that nil in processIAPDReply; it runs in a bare goroutine with
-// no recover, so the panic took the whole operator down.
+// of the length byte on the wire. Selecting on the lifetime alone dereferences
+// that nil in processIAPDReply; it runs in a bare goroutine with no recover,
+// so the panic takes the whole operator down.
 func TestProcessIAPDReplyRejectsPrefixesInsteadOfPanicking(t *testing.T) {
 	iaid := [4]byte{1, 2, 3, 4}
 	ip := net.ParseIP("2001:db8::")
@@ -80,7 +80,7 @@ func TestProcessIAPDReplyRejectsPrefixesInsteadOfPanicking(t *testing.T) {
 		},
 		{
 			// net.CIDRMask returns nil above 128, and Size() then reports
-			// (0, 0) -- previously accepted as a /0 over the whole space.
+			// (0, 0) -- which must not pass as a /0 over the whole space.
 			name:         "prefix length above 128 yields an unusable mask",
 			prefixLength: 200,
 			wantErr:      "invalid prefix length in IA_PD",
@@ -216,11 +216,12 @@ func TestDHCPv6PDReceiverStopWithoutStart(t *testing.T) {
 	}
 }
 
-// Stop() closes stopCh, which used to be created only by the constructor. So a
-// receiver could not be restarted -- the new goroutines saw an already-closed
-// channel and exited immediately, leaving something that reported healthy but
-// never delivered a prefix -- and the second Stop panicked with "close of
-// closed channel". The shared RA pool restarts receivers on exactly this path.
+// Stop() closes stopCh, so Start must create a fresh one. A receiver whose
+// channel comes only from the constructor cannot be restarted -- the new
+// goroutines see an already-closed channel and exit immediately, leaving
+// something that reports healthy but never delivers a prefix -- and a second
+// Stop panics with "close of closed channel". The shared RA pool restarts
+// receivers on exactly this path.
 func TestDHCPv6PDReceiverSurvivesStartStopCycles(t *testing.T) {
 	ctx := context.Background()
 	r := NewDHCPv6PDReceiver("eth0", 56)
