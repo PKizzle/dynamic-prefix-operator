@@ -4,6 +4,36 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## v0.0.19 - 2026-08-24
+
+Fixes the chart rendering of the two arguments whose values are quoted, one of
+which is `v0.0.18`'s new annotation-key list.
+
+### Fixed
+
+- `config.serviceSync.externalDNSTargetAnnotationKeys` and
+  `config.serviceSync.cacheLabelSelector` reached the operator with quote
+  characters embedded in their values.
+
+  The template quoted the value where it had to quote the whole argument:
+  `- --flag={{ . | quote }}` renders `- --flag="a,b"`, and YAML reads that as a
+  plain scalar, so the quotes stay in the string the process is handed. The
+  annotation keys parsed out of it were `"external-dns.alpha.kubernetes.io/target`
+  and `external-dns.kubernetes.io/target"`, which no API server accepts.
+
+  Both settings default to empty, so this only ever affected deployments that set
+  one -- and for the key list, that is every cluster migrating between external-dns
+  annotation prefixes.
+
+- `--external-dns-target-annotation-keys` rejects keys that are not valid
+  annotation keys, at startup.
+
+  An unusable key was otherwise only rejected by the API server, and only once a
+  prefix rotation made the operator write it. A failed write leaves the previous
+  target annotation in place, so the symptom was a stale address on a name that
+  used to resolve, hours after the misconfiguration, rather than an error at the
+  point of the mistake.
+
 ## v0.0.18 - 2026-08-24
 
 external-dns v0.22 renamed the annotation the operator publishes DNS targets

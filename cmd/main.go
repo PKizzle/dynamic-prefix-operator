@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -416,10 +417,20 @@ func main() {
 // an empty list rather than silently falling back to a default: an operator started
 // with an explicit but unusable value should fail loudly at startup, not publish DNS
 // targets somewhere the administrator did not ask for.
+//
+// Each key is validated here, for the same reason. An unusable key is otherwise only
+// rejected later, by the API server, once a prefix rotation makes the operator write it
+// -- and a write that fails leaves the previous target in place, so the symptom is a
+// stale address on a name that used to resolve, hours after the misconfiguration. The
+// most likely source of one is a deployment that passes the flag value with its quotes
+// still attached, which yields keys like `"external-dns.alpha.kubernetes.io/target`.
 func parseAnnotationKeyList(raw string) ([]string, error) {
 	var keys []string
 	for _, part := range strings.Split(raw, ",") {
 		if key := strings.TrimSpace(part); key != "" {
+			if errs := validation.IsQualifiedName(key); len(errs) > 0 {
+				return nil, fmt.Errorf("%q is not a usable annotation key: %s", key, strings.Join(errs, "; "))
+			}
 			if !slices.Contains(keys, key) {
 				keys = append(keys, key)
 			}

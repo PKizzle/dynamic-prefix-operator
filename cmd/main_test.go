@@ -20,6 +20,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -58,5 +59,37 @@ func TestDefaultZapOptionsProduceStructuredJSONLogs(t *testing.T) {
 	}
 	if entry.Message != "test message" {
 		t.Fatalf("message = %q, want %q", entry.Message, "test message")
+	}
+}
+
+func TestParseAnnotationKeyListAcceptsWellFormedKeys(t *testing.T) {
+	keys, err := parseAnnotationKeyList(
+		" external-dns.alpha.kubernetes.io/target , external-dns.kubernetes.io/target ,,external-dns.kubernetes.io/target")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"external-dns.alpha.kubernetes.io/target", "external-dns.kubernetes.io/target"}
+	if !slices.Equal(keys, want) {
+		t.Fatalf("keys = %q, want %q", keys, want)
+	}
+}
+
+// A chart that quotes only the flag's value renders `- --flag="a,b"` as a YAML plain
+// scalar, so the process receives the quotes as part of the value. Writing the keys that
+// come out of that is an API-server rejection at rotation time, hours later; refusing them
+// at startup is the difference between a pod that will not start and a name that silently
+// stops resolving.
+func TestParseAnnotationKeyListRejectsKeysWithQuotesAttached(t *testing.T) {
+	if _, err := parseAnnotationKeyList(
+		`"external-dns.alpha.kubernetes.io/target,external-dns.kubernetes.io/target"`); err == nil {
+		t.Fatal("expected quoted flag value to be rejected")
+	}
+}
+
+func TestParseAnnotationKeyListRejectsUnusableValues(t *testing.T) {
+	for _, raw := range []string{"", " , ", "not a key", "external-dns.kubernetes.io/", "/target"} {
+		if _, err := parseAnnotationKeyList(raw); err == nil {
+			t.Fatalf("expected %q to be rejected", raw)
+		}
 	}
 }

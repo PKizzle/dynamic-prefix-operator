@@ -58,11 +58,16 @@ spec:
             - --zap-devel={{ .Values.config.logDevelopment }}
             - --zap-encoder={{ .Values.config.logEncoder }}
             - --zap-log-level={{ .Values.config.logLevel }}
+            {{- /*
+            Quote the WHOLE argument, not just the value. `--flag={{ . | quote }}` renders
+            `- --flag="value"` as a YAML plain scalar, so the quotes are part of the string
+            the process receives and land inside the parsed value.
+            */}}
             {{- with .Values.config.serviceSync.cacheLabelSelector }}
-            - --service-cache-label-selector={{ . | quote }}
+            - {{ printf "--service-cache-label-selector=%s" . | quote }}
             {{- end }}
             {{- with .Values.config.serviceSync.externalDNSTargetAnnotationKeys }}
-            - --external-dns-target-annotation-keys={{ join "," . | quote }}
+            - {{ printf "--external-dns-target-annotation-keys=%s" (join "," .) | quote }}
             {{- end }}
             {{- if .Values.kubevip.enabled }}
             - --kubevip-configmap={{ .Values.kubevip.configMap.namespace }}/{{ .Values.kubevip.configMap.name }}

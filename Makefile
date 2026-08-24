@@ -152,6 +152,13 @@ helm-lint: ## Lint Helm charts
 helm-template: ## Render Helm chart templates for validation
 	@command -v helm >/dev/null 2>&1 || { echo "Helm is not installed. Please install helm."; exit 1; }
 	helm template test charts/dynamic-prefix-operator
+	# Again with the optional settings filled in. Every `with`-guarded block is skipped by
+	# the default render above, so a template that is broken only when a value is set renders
+	# clean here -- which is how a flag reached the operator with its quotes still attached.
+	helm template test charts/dynamic-prefix-operator \
+		--set config.serviceSync.cacheLabelSelector=dynamic-prefix.io/name \
+		--set 'config.serviceSync.externalDNSTargetAnnotationKeys={external-dns.kubernetes.io/target}' \
+		--set kubevip.enabled=true
 
 ##@ Build
 
