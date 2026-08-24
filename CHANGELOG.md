@@ -4,6 +4,49 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## v0.0.18 - 2026-08-24
+
+external-dns v0.22 renamed the annotation the operator publishes DNS targets
+under, and gave the old spelling no fallback. This release stops the operator
+having an opinion about which spelling is right.
+
+**Upgrading:** Services now carry the target under BOTH
+`external-dns.alpha.kubernetes.io/target` and `external-dns.kubernetes.io/target`
+by default. Nothing needs to change: an external-dns only reads the key its own
+`--annotation-prefix` names and ignores the other, so both are correct on every
+version. If the extra annotation is unwanted, set the new configuration to just
+the key your external-dns reads.
+
+### Added
+
+- `--external-dns-target-annotation-keys` (chart:
+  `config.serviceSync.externalDNSTargetAnnotationKeys`), a comma-separated list
+  in precedence order. The default writes both spellings.
+
+  external-dns v0.22 changed its default `--annotation-prefix` from
+  `external-dns.alpha.kubernetes.io/` to `external-dns.kubernetes.io/` and reads
+  only the one it is configured for. Which key is correct is therefore a property
+  of the external-dns deployment, not of this operator, and a cluster migrating
+  between the two needs both written at once. It is configuration rather than
+  detection deliberately: detecting the external-dns version fails silently in
+  the one direction that matters -- concluding "new" while external-dns still
+  reads "old" leaves that key frozen at a stale address, which shows up as a dead
+  name one rotation later rather than as an error -- it would need cluster-wide
+  read access to another component's Deployment, and it has no answer at all for
+  a split-horizon cluster running several external-dns instances on different
+  prefixes, which is the case `--annotation-prefix` exists for.
+
+### Changed
+
+- A key the operator knows but is no longer configured to write is now actively
+  released from Services that still carry it, preserving any entries the operator
+  did not put there. Narrowing the list is what finishes a prefix migration:
+  the old annotation is cleaned off every Service on the next reconcile instead
+  of being left behind, frozen at whatever address it last held.
+- Opting out via `dynamic-prefix.io/skip-external-dns-update` releases every
+  known target key rather than only the legacy one, so an opt-out during a
+  migration cannot leave a half-owned annotation behind.
+
 ## v0.0.17 - 2026-08-20
 
 Three ways the operator could be wrong without saying so.

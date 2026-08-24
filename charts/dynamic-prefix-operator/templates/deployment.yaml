@@ -61,6 +61,9 @@ spec:
             {{- with .Values.config.serviceSync.cacheLabelSelector }}
             - --service-cache-label-selector={{ . | quote }}
             {{- end }}
+            {{- with .Values.config.serviceSync.externalDNSTargetAnnotationKeys }}
+            - --external-dns-target-annotation-keys={{ join "," . | quote }}
+            {{- end }}
             {{- if .Values.kubevip.enabled }}
             - --kubevip-configmap={{ .Values.kubevip.configMap.namespace }}/{{ .Values.kubevip.configMap.name }}
             {{- end }}

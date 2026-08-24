@@ -129,6 +129,19 @@ config:
     # Example: dynamic-prefix.io/name caches only Services labeled with that key.
     cacheLabelSelector: ""
 
+    # -- Annotation keys to publish the external-dns target under, in precedence
+    # order. external-dns v0.22 changed its default prefix from
+    # `external-dns.alpha.kubernetes.io/` to `external-dns.kubernetes.io/` and
+    # provides no fallback, so the correct key is a property of the external-dns
+    # you run, not of this operator.
+    #
+    # The default writes BOTH, which is safe on every version: an external-dns only
+    # reads the key its own --annotation-prefix names and ignores the other. Set a
+    # single key once your external-dns is settled -- the operator then releases the
+    # other from Services that still carry it, which is how a migration is finished.
+    # Leave empty to use the operator's default.
+    externalDNSTargetAnnotationKeys: []
+
 # ==============================================================================
 # kube-vip cloud provider integration
 # ==============================================================================

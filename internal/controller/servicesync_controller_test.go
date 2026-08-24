@@ -629,6 +629,11 @@ func TestServiceSyncAnnotationConstants(t *testing.T) {
 			expected: "external-dns.alpha.kubernetes.io/target",
 		},
 		{
+			name:     "AnnotationExternalDNSTargetNew",
+			constant: AnnotationExternalDNSTargetNew,
+			expected: "external-dns.kubernetes.io/target",
+		},
+		{
 			name:     "AnnotationServiceAddressRange",
 			constant: AnnotationServiceAddressRange,
 			expected: "dynamic-prefix.io/service-address-range",

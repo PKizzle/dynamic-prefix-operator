@@ -62,8 +62,21 @@ const (
 	// other ServiceSync toggle is already a Service annotation.
 	AnnotationLBProvider = "dynamic-prefix.io/lb-provider"
 
-	// AnnotationExternalDNSTarget is the external-dns annotation for overriding DNS target.
+	// AnnotationExternalDNSTarget is the external-dns annotation for overriding DNS
+	// target, in the form external-dns used by default up to and including v0.21.
 	AnnotationExternalDNSTarget = "external-dns.alpha.kubernetes.io/target"
+
+	// AnnotationExternalDNSTargetNew is the same annotation under the prefix
+	// external-dns adopted as its default in v0.22. That release changed the
+	// default from the "alpha" form to this one and provides NO fallback: an
+	// external-dns on the new default simply does not see the old key, and under
+	// `--policy=sync` an unseen target means the record is deleted rather than
+	// left alone.
+	//
+	// Both spellings exist here because which one is correct is a property of the
+	// external-dns deployment, not of this operator, and a cluster mid-migration
+	// needs both at once. ExternalDNSTargetAnnotationKeys selects them.
+	AnnotationExternalDNSTargetNew = "external-dns.kubernetes.io/target"
 
 	// AnnotationServiceAddressRange specifies which address range to use for Service IPs.
 	// This is used when the DynamicPrefix uses address ranges (Mode 1).
@@ -119,18 +132,78 @@ const (
 )
 
 // ServiceSyncReconciler reconciles LoadBalancer Services for HA mode prefix transitions.
-// In HA mode, it manages both lbipam.cilium.io/ips and external-dns.alpha.kubernetes.io/target
-// annotations to ensure graceful transitions when prefixes change.
+// In HA mode, it manages both the load-balancer address annotation and the external-dns
+// target annotation(s) to ensure graceful transitions when prefixes change.
 type ServiceSyncReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
+
+	// ExternalDNSTargetAnnotationKeys are the annotation keys the target is
+	// published under, in precedence order: the first one present on a Service is
+	// the one read back when working out which entries the operator owns.
+	//
+	// It is a list, and configurable, because the correct key is a property of the
+	// external-dns that consumes it (see AnnotationExternalDNSTargetNew), and
+	// because during a prefix migration both have to be written at once. Deliberately
+	// NOT auto-detected from the external-dns Deployment: detection fails silently in
+	// the one direction that matters -- concluding "new" while external-dns still
+	// reads "old" leaves the old key frozen at a stale address, which surfaces as a
+	// dead name one rotation later rather than as an error. It would also need
+	// cluster-wide read access to another component's Deployment, and it has no
+	// answer at all for a split-horizon cluster running several external-dns
+	// instances on different prefixes -- the case --annotation-prefix exists for.
+	//
+	// Empty means DefaultExternalDNSTargetAnnotationKeys. Any key in
+	// knownExternalDNSTargetAnnotationKeys that is NOT in this list is actively
+	// released from Services that still carry it, so narrowing the list is how the
+	// migration is finished.
+	ExternalDNSTargetAnnotationKeys []string
 
 	// l2Nudge decides whether the running Cilium still needs the L2 announcer
 	// nudge. Populated by SetupWithManager; a nil decider nudges unconditionally,
 	// which is the safe direction and keeps tests that construct the reconciler
 	// directly working unchanged.
 	l2Nudge l2NudgeDecider
+}
+
+// DefaultExternalDNSTargetAnnotationKeys writes both spellings. It is the safe
+// default rather than a tidy one: an external-dns only ever reads the key its own
+// --annotation-prefix names and ignores the other, so writing both is correct on
+// every version, while writing only one is correct on exactly half of them.
+var DefaultExternalDNSTargetAnnotationKeys = []string{
+	AnnotationExternalDNSTarget,
+	AnnotationExternalDNSTargetNew,
+}
+
+// knownExternalDNSTargetAnnotationKeys is every key this operator understands as
+// "the external-dns target". Membership is what makes a key eligible for release
+// when it is not configured; an unknown annotation is somebody else's and is left
+// alone.
+var knownExternalDNSTargetAnnotationKeys = []string{
+	AnnotationExternalDNSTarget,
+	AnnotationExternalDNSTargetNew,
+}
+
+// targetAnnotationKeys returns the configured keys, or the default when unset.
+func (r *ServiceSyncReconciler) targetAnnotationKeys() []string {
+	if len(r.ExternalDNSTargetAnnotationKeys) == 0 {
+		return DefaultExternalDNSTargetAnnotationKeys
+	}
+	return r.ExternalDNSTargetAnnotationKeys
+}
+
+// releasableTargetAnnotationKeys returns the known keys that are not configured,
+// i.e. the ones a Service should no longer carry.
+func (r *ServiceSyncReconciler) releasableTargetAnnotationKeys() []string {
+	configured := r.targetAnnotationKeys()
+	var out []string
+	for _, k := range knownExternalDNSTargetAnnotationKeys {
+		if !slices.Contains(configured, k) {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;update;patch
@@ -350,8 +423,32 @@ func (r *ServiceSyncReconciler) syncExternalDNSTarget(
 	skipExternalDNS bool,
 ) (finalTargetStr string, deferred bool, updated bool) {
 	log := logf.FromContext(ctx)
+	targetKeys := r.targetAnnotationKeys()
 
 	if !skipExternalDNS {
+		// Drop any key this operator knows but is no longer configured to write.
+		// This is what finishes a prefix migration: narrowing the configured list
+		// makes the next reconcile clean the old key off every Service, so nobody
+		// has to hand-edit annotations, and a Service that is created later never
+		// gets the stale spelling in the first place. Unowned entries are preserved
+		// exactly as on opt-out -- the operator gives back only what it wrote.
+		targetRecordForRelease := parseOwnershipRecord(annotations[AnnotationManagedTargets],
+			hasAnnotation(annotations, AnnotationManagedTargets))
+		for _, key := range r.releasableTargetAnnotationKeys() {
+			if _, ok := annotations[key]; !ok {
+				continue
+			}
+			kept := strings.Join(preserveUnownedIPs(annotations[key], targetRecordForRelease, managedPrefixes), ",")
+			if kept == "" {
+				delete(newAnnotations, key)
+			} else {
+				newAnnotations[key] = kept
+			}
+			updated = true
+			log.Info("Released a de-configured external-dns target annotation",
+				"service", req.NamespacedName, "key", key, "remainingTarget", kept)
+		}
+
 		// Preserve non-managed entries (hostnames, IPv4, static IPv6) and set
 		// only the current IPv6 as the managed target.
 		// This supports dual-stack NAT setups where IPv4 is a hostname (e.g.,
@@ -360,7 +457,11 @@ func (r *ServiceSyncReconciler) syncExternalDNSTarget(
 		targetRecordValue, targetRecordExists := annotations[AnnotationManagedTargets]
 		targetRecord := parseOwnershipRecord(targetRecordValue, targetRecordExists)
 
-		existingTarget := annotations[AnnotationExternalDNSTarget]
+		// Read back from the first configured key the Service actually carries.
+		// During a migration both keys hold the same value, so precedence only
+		// decides anything on the first pass after a key is added -- and then the
+		// established key is the one with the entries worth preserving.
+		existingTarget := firstAnnotationValue(annotations, targetKeys)
 		preservedTargets := preserveUnownedIPs(existingTarget, targetRecord, managedPrefixes)
 		finalTargets := dedupePreservingOrder(append(preservedTargets, currentIP))
 		finalTargetStr = strings.Join(finalTargets, ",")
@@ -385,10 +486,12 @@ func (r *ServiceSyncReconciler) syncExternalDNSTarget(
 		assignedIPs := assignedLoadBalancerIPs(svc)
 		dnsTargetReady := len(assignedIPs) == 0 || slices.Contains(assignedIPs, currentIP)
 		switch {
-		case annotations[AnnotationExternalDNSTarget] == finalTargetStr:
-			// Already where it should be.
+		case allAnnotationsEqual(annotations, targetKeys, finalTargetStr):
+			// Already where it should be, under every configured key.
 		case dnsTargetReady:
-			newAnnotations[AnnotationExternalDNSTarget] = finalTargetStr
+			for _, key := range targetKeys {
+				newAnnotations[key] = finalTargetStr
+			}
 			updated = true
 		default:
 			log.V(1).Info("Deferring external-dns target until the address is assigned",
@@ -400,7 +503,7 @@ func (r *ServiceSyncReconciler) syncExternalDNSTarget(
 		// so it moves with the target rather than ahead of it. Recording the new
 		// address while the annotation still holds the old one would make the
 		// old entry look unowned, and the next pass would preserve it forever.
-		if newAnnotations[AnnotationExternalDNSTarget] == finalTargetStr {
+		if allAnnotationsEqual(newAnnotations, targetKeys, finalTargetStr) {
 			managedTargetStr := formatOwnershipRecord(excludePinned([]string{currentIP}, preservedTargets))
 			if annotations[AnnotationManagedTargets] != managedTargetStr {
 				newAnnotations[AnnotationManagedTargets] = managedTargetStr
@@ -416,13 +519,21 @@ func (r *ServiceSyncReconciler) syncExternalDNSTarget(
 		targetRecordValue, targetRecordExists := annotations[AnnotationManagedTargets]
 		if targetRecordExists {
 			targetRecord := parseOwnershipRecord(targetRecordValue, true)
-			released := preserveUnownedIPs(annotations[AnnotationExternalDNSTarget], targetRecord, managedPrefixes)
-			releasedStr := strings.Join(released, ",")
-			if annotations[AnnotationExternalDNSTarget] != releasedStr {
-				if releasedStr == "" {
-					delete(newAnnotations, AnnotationExternalDNSTarget)
-				} else {
-					newAnnotations[AnnotationExternalDNSTarget] = releasedStr
+			// Every known key, not just the configured ones: opting out has to hand
+			// back whatever this operator has ever written, including a key left over
+			// from a prefix migration.
+			for _, key := range knownExternalDNSTargetAnnotationKeys {
+				if _, ok := annotations[key]; !ok {
+					continue
+				}
+				released := preserveUnownedIPs(annotations[key], targetRecord, managedPrefixes)
+				releasedStr := strings.Join(released, ",")
+				if annotations[key] != releasedStr {
+					if releasedStr == "" {
+						delete(newAnnotations, key)
+					} else {
+						newAnnotations[key] = releasedStr
+					}
 				}
 			}
 			// Dropping the record is itself a change, so this covers the target
@@ -430,7 +541,7 @@ func (r *ServiceSyncReconciler) syncExternalDNSTarget(
 			delete(newAnnotations, AnnotationManagedTargets)
 			updated = true
 			log.Info("Released external-dns target on opt-out", "service", req.NamespacedName,
-				"remainingTarget", releasedStr)
+				"remainingTarget", firstAnnotationValue(newAnnotations, knownExternalDNSTargetAnnotationKeys))
 		}
 		log.V(1).Info("Skipping external-dns target update (opted out via annotation)", "service", req.NamespacedName)
 	}
@@ -1365,4 +1476,35 @@ func (r *ServiceSyncReconciler) findReferencingServices(ctx context.Context, obj
 	}
 
 	return requests
+}
+
+// hasAnnotation reports whether the key is present, which parseOwnershipRecord
+// distinguishes from an empty value: absent means "no record kept yet", empty
+// means "a record was kept and it was empty".
+func hasAnnotation(annotations map[string]string, key string) bool {
+	_, ok := annotations[key]
+	return ok
+}
+
+// firstAnnotationValue returns the value of the first key present, so callers can
+// read one logical annotation that lives under more than one spelling.
+func firstAnnotationValue(annotations map[string]string, keys []string) string {
+	for _, key := range keys {
+		if v, ok := annotations[key]; ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// allAnnotationsEqual reports whether every key already holds want. A single key
+// matching is not enough during a migration: the whole point is that the other
+// spelling is also up to date.
+func allAnnotationsEqual(annotations map[string]string, keys []string, want string) bool {
+	for _, key := range keys {
+		if annotations[key] != want {
+			return false
+		}
+	}
+	return true
 }

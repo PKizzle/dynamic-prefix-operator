@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -83,6 +84,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var serviceCacheLabelSelector string
+	var externalDNSTargetAnnotationKeys string
 	var kubevipConfigMap string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -104,6 +106,13 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&serviceCacheLabelSelector, "service-cache-label-selector", "",
 		"Optional Kubernetes label selector limiting the Service informer cache, for example dynamic-prefix.io/name")
+	flag.StringVar(&externalDNSTargetAnnotationKeys, "external-dns-target-annotation-keys",
+		strings.Join(controller.DefaultExternalDNSTargetAnnotationKeys, ","),
+		"Comma-separated annotation keys to publish the external-dns target under, in precedence order. "+
+			"external-dns v0.22 changed its default prefix from external-dns.alpha.kubernetes.io/ to "+
+			"external-dns.kubernetes.io/ with no fallback, so the correct key depends on the external-dns "+
+			"being run; the default writes both, which every version tolerates. Setting a single key makes "+
+			"the operator release the other from Services that still carry it.")
 	flag.StringVar(&kubevipConfigMap, "kubevip-configmap", "",
 		"Manage the kube-vip cloud provider's pool ConfigMap, given as namespace/name, for example kube-system/kubevip. "+
 			"Empty disables the kube-vip backend, and the operator then needs no access to ConfigMaps at all.")
@@ -300,10 +309,18 @@ func main() {
 	}
 
 	// Set up ServiceSync controller for HA mode Service management
+	targetAnnotationKeys, err := parseAnnotationKeyList(externalDNSTargetAnnotationKeys)
+	if err != nil {
+		setupLog.Error(err, "invalid external-dns target annotation keys",
+			"value", externalDNSTargetAnnotationKeys)
+		os.Exit(1)
+	}
+	setupLog.Info("publishing external-dns targets", "annotationKeys", targetAnnotationKeys)
 	if err := (&controller.ServiceSyncReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: eventRecorder,
+		Client:                          mgr.GetClient(),
+		Scheme:                          mgr.GetScheme(),
+		Recorder:                        eventRecorder,
+		ExternalDNSTargetAnnotationKeys: targetAnnotationKeys,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ServiceSync")
 		os.Exit(1)
@@ -393,4 +410,23 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// parseAnnotationKeyList turns the comma-separated flag value into keys, rejecting
+// an empty list rather than silently falling back to a default: an operator started
+// with an explicit but unusable value should fail loudly at startup, not publish DNS
+// targets somewhere the administrator did not ask for.
+func parseAnnotationKeyList(raw string) ([]string, error) {
+	var keys []string
+	for _, part := range strings.Split(raw, ",") {
+		if key := strings.TrimSpace(part); key != "" {
+			if !slices.Contains(keys, key) {
+				keys = append(keys, key)
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("no annotation keys given")
+	}
+	return keys, nil
 }
