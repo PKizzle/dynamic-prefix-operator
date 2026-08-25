@@ -206,7 +206,7 @@ This follows the [1Password Operator](https://github.com/1Password/onepassword-o
 - Watches LoadBalancer Services with `dynamic-prefix.io/name` annotation
 - Only active when DynamicPrefix has `transition.mode: ha`
 - Sets `lbipam.cilium.io/ips` with all active IPs (current + historical)
-- Sets `external-dns.alpha.kubernetes.io/target` with current IPv6 only (preserving non-managed entries), unless the Service has `dynamic-prefix.io/skip-external-dns-update: "true"`
+- Sets `external-dns.kubernetes.io/target` with current IPv6 only (preserving non-managed entries), unless the Service has `dynamic-prefix.io/skip-external-dns-update: "true"`
 - Preserves non-managed entries (hostnames, IPv4, static IPv6) in both annotations for dual-stack setups
 
 **IP Calculation Modes:**
@@ -219,12 +219,12 @@ The controller supports two ways to determine which IPv6 addresses to assign:
 
 **Dual-Stack Annotation Preservation:**
 
-Both `lbipam.cilium.io/ips` and `external-dns.alpha.kubernetes.io/target` use the same preservation logic:
+Both `lbipam.cilium.io/ips` and `external-dns.kubernetes.io/target` use the same preservation logic:
 1. Collects all managed prefixes (current + historical) via `collectManagedPrefixes()`
 2. Calls `extractUnmanagedIPs()` to identify entries that are *not* managed IPv6 — this includes hostnames, IPv4 addresses, and static IPv6 addresses outside any managed prefix
 3. Preserves those unmanaged entries at the front of the annotation
 4. For `lbipam.cilium.io/ips`: appends all calculated IPv6 addresses (current + historical)
-5. For `external-dns.alpha.kubernetes.io/target`: appends only the current IPv6 (DNS should point to the new prefix)
+5. For `external-dns.kubernetes.io/target`: appends only the current IPv6 (DNS should point to the new prefix)
 
 **Important**: While the operator preserves hostnames in the target annotation, external-dns will discard CNAME records when they conflict with A/AAAA records (per RFC 1034 §3.6.2). External-DNS logs: "Domain X contains conflicting record type candidates; discarding CNAME record". For dual-stack setups with NAT IPv4, manage A records separately (e.g., via ddns-updater) and configure external-dns to only manage AAAA records.
 
@@ -235,7 +235,7 @@ Both `lbipam.cilium.io/ips` and `external-dns.alpha.kubernetes.io/target` use th
 metadata:
   annotations:
     lbipam.cilium.io/ips: "2001:db8:B::1,2001:db8:A::1"  # Both IPs
-    external-dns.alpha.kubernetes.io/target: "2001:db8:B::1"  # New IP only
+    external-dns.kubernetes.io/target: "2001:db8:B::1"  # New IP only
 ```
 
 ```yaml
@@ -245,7 +245,7 @@ metadata:
     dynamic-prefix.io/name: home-ipv6
     dynamic-prefix.io/suffix: "::ffff:0:2"
     lbipam.cilium.io/ips: "198.51.100.10,2001:db8:B::1,2001:db8:A::1"
-    external-dns.alpha.kubernetes.io/target: "2001:db8:B::1"
+    external-dns.kubernetes.io/target: "2001:db8:B::1"
 ```
 
 The operator rotates only the managed IPv6 addresses. IPv4 addresses and static IPv6 are preserved in both annotations. Note that hostnames are preserved but will be discarded by external-dns due to CNAME/A/AAAA conflicts.
@@ -311,7 +311,7 @@ The operator rotates only the managed IPv6 addresses. IPv4 addresses and static 
    b. Dynamically assigned: infers offset from Cilium-assigned IP
 6. Preserves unmanaged entries (hostnames, IPv4, static IPv6) via extractUnmanagedIPs()
 7. Sets lbipam.cilium.io/ips = "ipv4,new-ipv6,old-ipv6"
-8. Sets external-dns.alpha.kubernetes.io/target = "hostname,new-ipv6"
+8. Sets external-dns.kubernetes.io/target = "hostname,new-ipv6"
 9. Service now has all IPs, DNS points to hostname + new IPv6 only
 10. Old connections work, new clients get new IP via DNS
 ```

@@ -266,7 +266,16 @@ spec:
 **How it works:**
 1. Prefix changes from A → B
 2. Service gets **both** IPs via `lbipam.cilium.io/ips` annotation
-3. DNS points to **new IP only** via `external-dns.alpha.kubernetes.io/target`
+3. DNS points to **new IP only** via `external-dns.kubernetes.io/target`
+
+> **Which target annotation?** The operator writes the target under *every* key listed in
+> `--external-dns-target-annotation-keys` (chart: `config.serviceSync.externalDNSTargetAnnotationKeys`).
+> The default writes **both** `external-dns.alpha.kubernetes.io/target` and
+> `external-dns.kubernetes.io/target`, because external-dns v0.22 changed its own default prefix
+> with no fallback and each version simply ignores the key it does not read. Narrow the list to the
+> single key your external-dns reads once you are no longer migrating: the operator then *releases*
+> the other from the Services it owns, preserving any entry it did not write itself. The examples
+> below show one key for brevity.
 4. Old connections continue working (both IPs active on Service)
 5. New clients connect to new IP via DNS
 
@@ -284,7 +293,7 @@ metadata:
     dynamic-prefix.io/name: home-ipv6
     dynamic-prefix.io/suffix: "::ffff:0:1"          # Static host part
     lbipam.cilium.io/ips: "198.51.100.10"           # IPv4 only — operator adds IPv6
-    external-dns.alpha.kubernetes.io/target: "example.com"  # Hostname for IPv4 NAT
+    external-dns.kubernetes.io/target: "example.com"  # Hostname for IPv4 NAT
 spec:
   type: LoadBalancer
 ```
@@ -295,18 +304,18 @@ After reconciliation, the annotations become:
 # HA Mode result on Service:
 annotations:
   lbipam.cilium.io/ips: "198.51.100.10,2001:db8:new::ffff:0:2,2001:db8:old::ffff:0:2"
-  external-dns.alpha.kubernetes.io/target: "example.com,2001:db8:new::ffff:0:2"
+  external-dns.kubernetes.io/target: "example.com,2001:db8:new::ffff:0:2"
 ```
 
 The operator preserves all non-managed entries in both annotations:
 - **`lbipam.cilium.io/ips`**: IPv4 addresses and static IPv6 are preserved; managed IPv6 (current + historical) is appended
-- **`external-dns.alpha.kubernetes.io/target`**: Hostnames, IPv4 addresses, and static IPv6 are preserved; only the current IPv6 is appended (DNS should point to the new prefix)
+- **`external-dns.kubernetes.io/target`**: Hostnames, IPv4 addresses, and static IPv6 are preserved; only the current IPv6 is appended (DNS should point to the new prefix)
 
 ```yaml
 # HA Mode result without suffix (dynamically assigned — inferred from Cilium-assigned IP):
 annotations:
   lbipam.cilium.io/ips: "2001:db8:new::1,2001:db8:old::1"     # Both IPs active
-  external-dns.alpha.kubernetes.io/target: "2001:db8:new::1"   # DNS → new only
+  external-dns.kubernetes.io/target: "2001:db8:new::1"   # DNS → new only
 ```
 
 > **DNS Spec Limitation**: The operator preserves hostnames in the target annotation, but external-dns will discard them when both a hostname (CNAME) and IP addresses (A/AAAA) are present. Per RFC 1034, CNAME records cannot coexist with other record types on the same DNS name. External-DNS logs this as a conflict and keeps only the A/AAAA records. For dual-stack NAT setups (IPv4 via hostname, IPv6 via direct addresses), use a separate tool like ddns-updater to manage the A record, and configure external-dns with `--managed-record-types=AAAA` to manage only IPv6.
@@ -331,7 +340,7 @@ annotations:
 | `dynamic-prefix.io/name` | Name of the DynamicPrefix CR (required) |
 | `dynamic-prefix.io/suffix` | Static IPv6 suffix (e.g., `::ffff:0:2`). Preferred for dual-stack setups — operator calculates full IPv6 from prefix + suffix |
 | `dynamic-prefix.io/service-address-range` | Which address range for IP calculation (legacy mode) |
-| `dynamic-prefix.io/skip-external-dns-update` | Set to `"true"` to prevent the operator from managing the `external-dns.alpha.kubernetes.io/target` annotation on this Service. `lbipam.cilium.io/ips` is still managed normally |
+| `dynamic-prefix.io/skip-external-dns-update` | Set to `"true"` to prevent the operator from managing the `external-dns.kubernetes.io/target` annotation on this Service. `lbipam.cilium.io/ips` is still managed normally |
 
 ## Supported Annotations
 
@@ -421,7 +430,7 @@ guessing from the address shape.
 | Annotation | Written on | Records |
 |------------|-----------|---------|
 | `dynamic-prefix.io/managed-ips` | Services | The addresses last written to `lbipam.cilium.io/ips` |
-| `dynamic-prefix.io/managed-targets` | Services | The address last written to `external-dns.alpha.kubernetes.io/target` |
+| `dynamic-prefix.io/managed-targets` | Services | The address last written to `external-dns.kubernetes.io/target` |
 | `dynamic-prefix.io/managed-blocks` | Cilium pools | The blocks last written to `spec.blocks` |
 | `dynamic-prefix.io/managed-cidrs` | CIDR groups | The CIDRs last written to `spec.externalCIDRs` |
 | `dynamic-prefix.io/managed-addresses` | MetalLB pools | The entries last written to `spec.addresses` |
