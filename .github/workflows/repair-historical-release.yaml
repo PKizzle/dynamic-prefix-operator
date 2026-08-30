@@ -1,0 +1,183 @@
+name: Repair Historical Release Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Historical release tag to rebuild and republish
+        required: true
+        type: choice
+        options:
+          - v0.0.2
+          - v0.0.3
+
+# This workflow is deliberately restricted to the two releases whose old
+# provenance indexes now reference deleted child manifests. It replaces only
+# their GHCR tags; it never changes a Git tag or GitHub Release.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-platform:
+    name: Build ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            architecture: amd64
+          - platform: linux/arm64
+            architecture: arm64
+    steps:
+      - name: Check out the historical source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.version }}
+
+      - name: Convert repository name to lowercase
+        id: image_name
+        run: echo "lowercase=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.9.0
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rebuild and publish the platform image
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: .
+          push: true
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.lowercase }}:${{ inputs.version }}-${{ matrix.architecture }}
+          # The original releases used provenance indexes here. Their child
+          # manifests are now gone, leaving a tag that exists but cannot be
+          # pulled. The ordinary per-platform manifest is retained by its tag.
+          provenance: false
+
+  publish-index:
+    name: Publish and verify multi-architecture index
+    needs: build-platform
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Convert repository name to lowercase
+        id: image_name
+        run: echo "lowercase=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.9.0
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the multi-architecture image index
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.lowercase }}:${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            -t "$IMAGE" \
+            "${IMAGE}-amd64" \
+            "${IMAGE}-arm64"
+
+      - name: Verify both platform images are pullable
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.lowercase }}:${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "$IMAGE"
+          docker pull --platform linux/arm64 "$IMAGE"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.2
+
+      - name: Sign the repaired image
+        env:
+          COSIGN_YES: "true"
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.image_name.outputs.lowercase }}:${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect --format '{{ .Manifest.Digest }}' "$IMAGE")"
+          repository="${IMAGE%%:*}"
+          cosign sign "${repository}@${digest}"
+
+  refresh-v0-0-2-chart:
+    name: Refresh v0.0.2 chart metadata
+    if: inputs.version == 'v0.0.2'
+    needs: publish-index
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the historical chart
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: v0.0.2
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v4.1.1
+
+      - name: Repair fork metadata and declare the scanned image
+        run: |
+          set -euo pipefail
+          template="charts/dynamic-prefix-operator/Chart.template.yaml"
+          values="charts/dynamic-prefix-operator/values.yaml"
+
+          perl -0pi -e 's#https://github.com/jr42#https://github.com/pkizzle#g; s/- name: jr42/- name: pkizzle/' "$template"
+          awk '
+            { print }
+            /artifacthub.io\/prerelease:/ {
+              print "  artifacthub.io/images: |"
+              print "    - name: manager"
+              print "      image: ghcr.io/pkizzle/dynamic-prefix-operator:v0.0.2"
+            }
+          ' "$template" > "${template}.tmp"
+          mv "${template}.tmp" "$template"
+          perl -pi -e 's#repository: ghcr.io/jr42/#repository: ghcr.io/pkizzle/#' "$values"
+
+          sed -e 's/{{IS_PRERELEASE}}/false/g' \
+              -e 's/^version: .*/version: v0.0.2/' \
+              -e 's/^appVersion: .*/appVersion: "v0.0.2"/' \
+              "$template" > charts/dynamic-prefix-operator/Chart.yaml
+          perl -pi -e 's/^  tag:.*/  tag: "v0.0.2"/' "$values"
+
+          helm lint charts/dynamic-prefix-operator
+          helm package charts/dynamic-prefix-operator --destination .
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Republish the OCI chart with corrected metadata
+        run: |
+          helm push dynamic-prefix-operator-v0.0.2.tgz \
+            oci://ghcr.io/pkizzle/dynamic-prefix-operator/helm

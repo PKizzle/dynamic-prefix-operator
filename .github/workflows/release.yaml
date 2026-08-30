@@ -110,13 +110,15 @@ jobs:
 
           deadline=$(( SECONDS + 45 * 60 ))
           attempt=0
+          manifest_file="$(mktemp)"
+          trap 'rm -f "$manifest_file"' EXIT
 
           while (( SECONDS < deadline )); do
             attempt=$(( attempt + 1 ))
 
             token="$(curl -fsS "https://ghcr.io/token?scope=repository:${IMAGE_REPOSITORY}:pull" \
               | jq -r '.token')"
-            status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            status="$(curl -sS -o "$manifest_file" -w '%{http_code}' \
               -H "Authorization: Bearer ${token}" \
               -H 'Accept: application/vnd.oci.image.index.v1+json' \
               -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
@@ -125,8 +127,42 @@ jobs:
               "https://ghcr.io/v2/${IMAGE_REPOSITORY}/manifests/${IMAGE_TAG}")"
 
             if [[ "${status}" == "200" ]]; then
-              echo "ghcr.io/${IMAGE_REPOSITORY}:${IMAGE_TAG} is available after ${attempt} attempt(s)."
-              exit 0
+              # A registry can retain an index after one of its platform
+              # manifests has disappeared. It still returns 200 for the tag,
+              # but neither a kubelet nor Artifact Hub can pull it. Verify
+              # every platform the operator publishes before packaging the
+              # chart that advertises this image.
+              image_ready=true
+              for architecture in amd64 arm64; do
+                digest="$(jq -r --arg architecture "$architecture" '
+                  .manifests[]?
+                  | select(.platform.os == "linux" and .platform.architecture == $architecture)
+                  | .digest
+                ' "$manifest_file" | head -n 1)"
+
+                if [[ -z "$digest" || "$digest" == "null" ]]; then
+                  echo "Attempt ${attempt}: index has no linux/${architecture} manifest yet."
+                  image_ready=false
+                  break
+                fi
+
+                child_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+                  -H "Authorization: Bearer ${token}" \
+                  -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+                  -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+                  "https://ghcr.io/v2/${IMAGE_REPOSITORY}/manifests/${digest}")"
+
+                if [[ "${child_status}" != "200" ]]; then
+                  echo "Attempt ${attempt}: linux/${architecture} manifest ${digest} returned HTTP ${child_status}."
+                  image_ready=false
+                  break
+                fi
+              done
+
+              if [[ "$image_ready" == "true" ]]; then
+                echo "ghcr.io/${IMAGE_REPOSITORY}:${IMAGE_TAG} and both platform manifests are available after ${attempt} attempt(s)."
+                exit 0
+              fi
             fi
 
             echo "Attempt ${attempt}: manifest returned HTTP ${status}; waiting for the image build."
