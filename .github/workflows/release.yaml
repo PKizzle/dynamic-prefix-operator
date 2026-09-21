@@ -44,6 +44,30 @@ jobs:
           echo "$PWD/bin" >> "$GITHUB_PATH"
           ./bin/kustomize version
 
+      # Before anything is published. The release notes are built from this
+      # section further down, and discovering it is missing at that point
+      # leaves the image and the Helm chart pushed for a version that has no
+      # release and never reaches the Pages index.
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          set -euo pipefail
+          VERSION="${{ github.ref_name }}"
+          awk -v version="$VERSION" '
+            $1 == "##" && $2 == version { in_section = 1; next }
+            in_section && /^## / { exit }
+            in_section {
+              if (!seen_content && $0 == "") { next }
+              seen_content = 1
+              print
+            }
+          ' CHANGELOG.md > "$RUNNER_TEMP/changelog-section.md"
+
+          if [[ ! -s "$RUNNER_TEMP/changelog-section.md" ]]; then
+            echo "::error::No CHANGELOG.md entry found for ${VERSION}. Add a '## ${VERSION} - <date>' section before tagging."
+            exit 1
+          fi
+
       - name: Determine Prerelease Status
         id: prerelease
         # specific logic: if version contains a hyphen (e.g. 1.0.0-rc.1), it is a prerelease
@@ -200,20 +224,7 @@ jobs:
           REPOSITORY_LOWER="${{ steps.repository.outputs.lowercase }}"
           REPOSITORY_OWNER_LOWER="${{ steps.repository_owner.outputs.lowercase }}"
 
-          CHANGELOG_SECTION="$(awk -v version="$VERSION" '
-            $1 == "##" && $2 == version { in_section = 1; next }
-            in_section && /^## / { exit }
-            in_section {
-              if (!seen_content && $0 == "") { next }
-              seen_content = 1
-              print
-            }
-          ' CHANGELOG.md)"
-
-          if [[ -z "${CHANGELOG_SECTION//[[:space:]]/}" ]]; then
-            echo "::error::No CHANGELOG.md entry found for ${VERSION}"
-            exit 1
-          fi
+          CHANGELOG_SECTION="$(cat "$RUNNER_TEMP/changelog-section.md")"
 
           cat > release-notes.md <<EOF
           ## Release Highlights
