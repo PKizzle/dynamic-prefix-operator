@@ -4,6 +4,19 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## v0.0.20 - 2026-09-21
+
+Dependency update for a denial-of-service issue in the gRPC stack.
+
+### Fixed
+
+- Updated gRPC past an HTTP/2 memory-exhaustion issue reported by
+  `govulncheck`. The operator exposes no gRPC listener, so the exposure is
+  limited to outbound connections to the Kubernetes API server.
+
+No chart changes: templates, CRDs and values defaults are unchanged from
+`v0.0.19`.
+
 ## v0.0.19 - 2026-08-24
 
 Fixes the chart rendering of the two arguments whose values are quoted, one of
