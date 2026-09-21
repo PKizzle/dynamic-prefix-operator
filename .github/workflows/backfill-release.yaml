@@ -1,0 +1,395 @@
+name: Backfill Release
+
+# Republishes an already-tagged version whose Release workflow failed after it
+# had pushed artefacts. Such a tag has an image and an OCI chart but no GitHub
+# Release, so its chart archive never reaches the Pages index and
+# `helm repo update` cannot see the version.
+#
+# Run manually from the Actions tab. Remove this workflow once the affected
+# tags are published; the Release workflow gates on the changelog before it
+# publishes anything, so a tag cannot reach this state again.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to publish (for example v0.0.20)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+  pages: write
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  HELM_REPO_URL: https://pkizzle.github.io/dynamic-prefix-operator
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify the tag exists
+        run: |
+          set -euo pipefail
+          git rev-parse --verify "refs/tags/${{ inputs.tag }}^{commit}" >/dev/null
+
+      # The changelog entry for a tag whose release failed on the missing entry
+      # is added afterwards, so it lives on the default branch and not in the
+      # tagged tree. Everything else that is published still comes from the tag.
+      - name: Take the changelog from the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$DEFAULT_BRANCH"
+          git checkout FETCH_HEAD -- CHANGELOG.md
+
+      - name: Extract changelog section
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.tag }}"
+          awk -v version="$VERSION" '
+            $1 == "##" && $2 == version { in_section = 1; next }
+            in_section && /^## / { exit }
+            in_section {
+              if (!seen_content && $0 == "") { next }
+              seen_content = 1
+              print
+            }
+          ' CHANGELOG.md > "$RUNNER_TEMP/changelog-section.md"
+
+          if [[ ! -s "$RUNNER_TEMP/changelog-section.md" ]]; then
+            echo "::error::No CHANGELOG.md entry found for ${VERSION} on the default branch."
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v4.1.1
+
+      - name: Set up Kustomize
+        run: |
+          set -euo pipefail
+          make kustomize
+          echo "$PWD/bin" >> "$GITHUB_PATH"
+          ./bin/kustomize version
+
+      - name: Determine Prerelease Status
+        id: prerelease
+        run: |
+          if [[ "${{ inputs.tag }}" == *"-"* ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Render Chart.yaml from Template
+        run: |
+          TEMPLATE_FILE="charts/dynamic-prefix-operator/Chart.template.yaml"
+          CHART_FILE="charts/dynamic-prefix-operator/Chart.yaml"
+          VALUES_FILE="charts/dynamic-prefix-operator/values.yaml"
+
+          VERSION="${{ inputs.tag }}"
+          IS_PRE="${{ steps.prerelease.outputs.is_prerelease }}"
+
+          sed -e "s/{{IS_PRERELEASE}}/$IS_PRE/g" \
+              -e "s/{{VERSION}}/$VERSION/g" \
+              -e "s/^version: .*/version: $VERSION/" \
+              -e "s/^appVersion: .*/appVersion: \"$VERSION\"/" \
+              $TEMPLATE_FILE > $CHART_FILE
+
+          sed -i "s/tag:.*/tag: \"$VERSION\"/" $VALUES_FILE
+
+      - name: Convert repository to lowercase
+        id: repository
+        run: echo "lowercase=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Generate install.yaml
+        run: |
+          cd config/manager
+          kustomize edit set image controller=${{ env.REGISTRY }}/${{ steps.repository.outputs.lowercase }}:${{ inputs.tag }}
+          cd ../..
+
+          kustomize build config/default > install.yaml
+
+      # The image for an already-tagged version was built long ago, so this
+      # confirms it once instead of waiting for a build the way the Release
+      # workflow does. A chart must never advertise an image the registry
+      # cannot serve.
+      - name: Verify the release image is published
+        env:
+          IMAGE_REPOSITORY: ${{ steps.repository.outputs.lowercase }}
+          IMAGE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          manifest_file="$(mktemp)"
+          trap 'rm -f "$manifest_file"' EXIT
+
+          token="$(curl -fsS "https://ghcr.io/token?scope=repository:${IMAGE_REPOSITORY}:pull" \
+            | jq -r '.token')"
+          status="$(curl -sS -o "$manifest_file" -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json' \
+            -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+            -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+            -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/${IMAGE_REPOSITORY}/manifests/${IMAGE_TAG}")"
+
+          if [[ "${status}" != "200" ]]; then
+            echo "::error::ghcr.io/${IMAGE_REPOSITORY}:${IMAGE_TAG} returned HTTP ${status}."
+            exit 1
+          fi
+
+          for architecture in amd64 arm64; do
+            digest="$(jq -r --arg architecture "$architecture" '
+              .manifests[]?
+              | select(.platform.os == "linux" and .platform.architecture == $architecture)
+              | .digest
+            ' "$manifest_file" | head -n 1)"
+
+            if [[ -z "$digest" || "$digest" == "null" ]]; then
+              echo "::error::Index has no linux/${architecture} manifest."
+              exit 1
+            fi
+
+            child_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+              -H "Authorization: Bearer ${token}" \
+              -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/${IMAGE_REPOSITORY}/manifests/${digest}")"
+
+            if [[ "${child_status}" != "200" ]]; then
+              echo "::error::linux/${architecture} manifest ${digest} returned HTTP ${child_status}."
+              exit 1
+            fi
+          done
+
+          echo "ghcr.io/${IMAGE_REPOSITORY}:${IMAGE_TAG} and both platform manifests are available."
+
+      - name: Package Helm chart
+        run: |
+          helm package charts/dynamic-prefix-operator --destination .
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Convert repository owner to lowercase
+        id: repository_owner
+        run: echo "lowercase=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      # The failed run pushed this chart before it stopped, so this normally
+      # rewrites identical content built from the same tag.
+      - name: Push Helm chart to OCI registry
+        run: |
+          helm push dynamic-prefix-operator-${{ inputs.tag }}.tgz oci://${{ env.REGISTRY }}/${{ steps.repository_owner.outputs.lowercase }}/dynamic-prefix-operator/helm
+
+      - name: Generate release notes
+        run: |
+          VERSION="${{ inputs.tag }}"
+          REPOSITORY="${{ github.repository }}"
+          REPOSITORY_LOWER="${{ steps.repository.outputs.lowercase }}"
+          REPOSITORY_OWNER_LOWER="${{ steps.repository_owner.outputs.lowercase }}"
+
+          CHANGELOG_SECTION="$(cat "$RUNNER_TEMP/changelog-section.md")"
+
+          cat > release-notes.md <<EOF
+          ## Release Highlights
+
+          ${CHANGELOG_SECTION}
+
+          ## Installation
+
+          ### Using the Helm repository
+
+          \`\`\`bash
+          helm repo add dynamic-prefix-operator ${HELM_REPO_URL}
+          helm repo update
+          helm install dynamic-prefix-operator \
+            dynamic-prefix-operator/dynamic-prefix-operator \
+            --version ${VERSION}
+          \`\`\`
+
+          ### Using Helm OCI
+
+          \`\`\`bash
+          helm install dynamic-prefix-operator \
+            oci://ghcr.io/${REPOSITORY_OWNER_LOWER}/dynamic-prefix-operator/helm/dynamic-prefix-operator \
+            --version ${VERSION}
+          \`\`\`
+
+          ### Using kubectl
+
+          \`\`\`bash
+          kubectl apply -f https://github.com/${REPOSITORY}/releases/download/${VERSION}/install.yaml
+          \`\`\`
+
+          ## Docker Images
+
+          Multi-arch images (amd64, arm64) are available at:
+
+          \`\`\`
+          ghcr.io/${REPOSITORY_LOWER}:${VERSION}
+          \`\`\`
+
+          This tag is a **dual image**: its index carries the standard OCI
+          manifests plus a Nydus manifest per architecture. Ordinary clients
+          (docker, plain containerd) resolve the OCI half exactly as before,
+          while a Nydus-aware snapshotter picks up the accelerated half for
+          lazy, on-demand pulls. There is no separate \`-nydus\` tag anymore.
+
+          ## What's Changed
+
+          See the [commit history](https://github.com/${REPOSITORY_LOWER}/commits/${VERSION}) for details.
+          EOF
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release edit "$tag" --notes-file release-notes.md
+            gh release upload "$tag" install.yaml "dynamic-prefix-operator-${tag}.tgz" --clobber
+          else
+            prerelease_flag=()
+            if [[ "${{ steps.prerelease.outputs.is_prerelease }}" == "true" ]]; then
+              prerelease_flag=(--prerelease)
+            fi
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes-file release-notes.md \
+              "${prerelease_flag[@]}" \
+              install.yaml "dynamic-prefix-operator-${tag}.tgz"
+          fi
+
+      - name: Build Helm repository for GitHub Pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          PAGES_DIR="dist/helm-repo"
+          ASSETS_DIR="dist/chart-assets"
+          CURRENT_TAG="${{ inputs.tag }}"
+
+          rm -rf "$PAGES_DIR" "$ASSETS_DIR"
+          mkdir -p "$PAGES_DIR" "$ASSETS_DIR/$CURRENT_TAG"
+
+          cp "dynamic-prefix-operator-${CURRENT_TAG}.tgz" "$ASSETS_DIR/$CURRENT_TAG/"
+
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            mkdir -p "$ASSETS_DIR/$tag"
+            gh release download "$tag" \
+              --pattern 'dynamic-prefix-operator-*.tgz' \
+              --dir "$ASSETS_DIR/$tag" \
+              --clobber || true
+          done
+
+          rm -f "$PAGES_DIR/index.yaml"
+          shopt -s nullglob
+          found_package=false
+          for release_dir in "$ASSETS_DIR"/*; do
+            [[ -d "$release_dir" ]] || continue
+
+            tag="$(basename "$release_dir")"
+            packages=("$release_dir"/dynamic-prefix-operator-*.tgz)
+            if (( ${#packages[@]} == 0 )); then
+              continue
+            fi
+
+            found_package=true
+            tmpdir="$(mktemp -d)"
+            cp "${packages[@]}" "$tmpdir/"
+
+            package_url="https://github.com/${{ github.repository }}/releases/download/${tag}"
+            if [[ -f "$PAGES_DIR/index.yaml" ]]; then
+              helm repo index "$tmpdir" --url "$package_url" --merge "$PAGES_DIR/index.yaml"
+            else
+              helm repo index "$tmpdir" --url "$package_url"
+            fi
+
+            cp "$tmpdir/index.yaml" "$PAGES_DIR/index.yaml"
+            rm -rf "$tmpdir"
+          done
+
+          if [[ "$found_package" != "true" ]]; then
+            echo "::error::No Helm chart packages found for repository index generation"
+            exit 1
+          fi
+
+          if ! grep -q "https://github.com/${{ github.repository }}/releases/download/" "$PAGES_DIR/index.yaml"; then
+            echo "::error::Helm repository index must point to GitHub release chart assets"
+            exit 1
+          fi
+
+          if compgen -G "$PAGES_DIR/*.tgz" > /dev/null; then
+            echo "::error::GitHub Pages artifact must not duplicate chart archives"
+            exit 1
+          fi
+
+          # The index the deployment publishes replaces the live one wholesale,
+          # so it has to carry the version this run exists for.
+          if ! grep -q "dynamic-prefix-operator-${CURRENT_TAG}.tgz" "$PAGES_DIR/index.yaml"; then
+            echo "::error::Index does not contain ${CURRENT_TAG}"
+            exit 1
+          fi
+
+          cp artifacthub-repo.yml "$PAGES_DIR/artifacthub-repo.yml"
+          touch "$PAGES_DIR/.nojekyll"
+          cat > "$PAGES_DIR/README.md" <<EOF
+          # Dynamic Prefix Operator Helm Repository
+
+          Add this repository with:
+
+              helm repo add dynamic-prefix-operator ${HELM_REPO_URL}
+              helm repo update
+
+          Then install the chart with:
+
+              helm install dynamic-prefix-operator dynamic-prefix-operator/dynamic-prefix-operator
+          EOF
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Upload Helm repository Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: dist/helm-repo
+          include-hidden-files: true
+
+  deploy-pages:
+    needs: backfill
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy Helm repository to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
