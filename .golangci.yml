@@ -1,6 +1,10 @@
 version: "2"
 run:
   allow-parallel-runners: true
+  # The end-to-end suite only compiles with this tag; without it the linters
+  # never see it.
+  build-tags:
+    - e2e
 linters:
   default: none
   enable:
