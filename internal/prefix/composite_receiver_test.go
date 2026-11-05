@@ -156,7 +156,7 @@ func TestCompositeReceiverSurvivesRestartUnderRace(t *testing.T) {
 		}
 		// Give the outgoing generation something to be woken by while the next
 		// Start is replacing the fields it used to read.
-		primary.SimulatePrefix(netip.MustParsePrefix("2001:db8::/56"), time.Hour)
+		primary.SimulatePrefix(netip.MustParsePrefix(testPrefixLen56), time.Hour)
 		if err := c.Stop(); err != nil {
 			t.Fatalf("cycle %d: Stop() = %v", i, err)
 		}

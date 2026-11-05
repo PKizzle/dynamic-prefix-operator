@@ -55,27 +55,27 @@ func TestPoolsSyncedClearedWhenFailingPoolIsReleased(t *testing.T) {
 	scheme := newPoolBackendTestScheme(t)
 	scheme.AddKnownTypeWithName(DefaultCiliumLBIPPoolGVK, &unstructured.Unstructured{})
 
-	const operatorBlock = "2001:db8:abcd::/64"
+	const operatorBlock = testPrefixABCDLen64
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
 	}
 
 	// Released because the binding annotation is gone, with the operator's own
 	// record still on the object.
 	pool := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultCiliumLBIPPoolGVK),
-			"kind":       DefaultCiliumLBIPPoolGVK.Kind,
-			"metadata": map[string]interface{}{
-				"name": "lb-pool",
-				"annotations": map[string]interface{}{
-					AnnotationManagedBlocks: blockKey(map[string]interface{}{"cidr": operatorBlock}),
+			keyAPIVersion: APIVersion(DefaultCiliumLBIPPoolGVK),
+			keyKind:       DefaultCiliumLBIPPoolGVK.Kind,
+			keyMetadata: map[string]interface{}{
+				keyName: testLBPoolName,
+				keyAnnotations: map[string]interface{}{
+					AnnotationManagedBlocks: blockKey(map[string]interface{}{fieldCIDR: operatorBlock}),
 				},
 			},
-			"spec": map[string]interface{}{
-				"blocks": []interface{}{
-					map[string]interface{}{"cidr": operatorBlock},
+			fieldSpec: map[string]interface{}{
+				fieldBlocks: []interface{}{
+					map[string]interface{}{fieldCIDR: operatorBlock},
 				},
 			},
 		},
@@ -91,14 +91,14 @@ func TestPoolsSyncedClearedWhenFailingPoolIsReleased(t *testing.T) {
 	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 
 	// The pool failed its last sync.
-	key := poolStateKey{backend: "cilium-load-balancer-ip-pool", pool: "/lb-pool"}
-	r.updatePoolsSyncedCondition(ctx, "home-ipv6", key, errors.New("webhook rejected the update"))
+	key := poolStateKey{backend: testBackendCiliumLBIPPool, pool: testLBPoolKey}
+	r.updatePoolsSyncedCondition(ctx, testDynamicPrefixName, key, errors.New("webhook rejected the update"))
 	if cond := poolsSyncedCondition(t, r); cond == nil || cond.Status != metav1.ConditionFalse {
 		t.Fatalf("expected PoolsSynced=False after a failure, got %+v", cond)
 	}
 
 	if _, err := r.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "lb-pool"},
+		NamespacedName: types.NamespacedName{Name: testLBPoolName},
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestPoolsSyncedKeyedByBackend(t *testing.T) {
 	scheme := newPoolBackendTestScheme(t)
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
 	}
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -131,11 +131,11 @@ func TestPoolsSyncedKeyedByBackend(t *testing.T) {
 		Build()
 	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 
-	failing := poolStateKey{backend: "cilium-load-balancer-ip-pool", pool: "/shared-name"}
+	failing := poolStateKey{backend: testBackendCiliumLBIPPool, pool: "/shared-name"}
 	healthy := poolStateKey{backend: "cilium-cidr-group", pool: "/shared-name"}
 
-	r.updatePoolsSyncedCondition(ctx, "home-ipv6", failing, errors.New("immutable field"))
-	r.updatePoolsSyncedCondition(ctx, "home-ipv6", healthy, nil)
+	r.updatePoolsSyncedCondition(ctx, testDynamicPrefixName, failing, errors.New("immutable field"))
+	r.updatePoolsSyncedCondition(ctx, testDynamicPrefixName, healthy, nil)
 
 	cond := poolsSyncedCondition(t, r)
 	if cond == nil {
@@ -145,12 +145,12 @@ func TestPoolsSyncedKeyedByBackend(t *testing.T) {
 		t.Fatalf("PoolsSynced = %s (%q); a healthy CIDR group cleared a broken load-balancer pool of the same name",
 			cond.Status, cond.Message)
 	}
-	if !strings.Contains(cond.Message, "cilium-load-balancer-ip-pool") {
+	if !strings.Contains(cond.Message, testBackendCiliumLBIPPool) {
 		t.Errorf("message %q does not say which backend is failing", cond.Message)
 	}
 
 	// The remaining backend recovering clears it.
-	r.updatePoolsSyncedCondition(ctx, "home-ipv6", failing, nil)
+	r.updatePoolsSyncedCondition(ctx, testDynamicPrefixName, failing, nil)
 	if cond := poolsSyncedCondition(t, r); cond.Status != metav1.ConditionTrue {
 		t.Errorf("PoolsSynced = %s (%q) once every backend is in sync, want True", cond.Status, cond.Message)
 	}
@@ -164,7 +164,7 @@ func TestPoolsSyncedClearedWhenPoolIsDeleted(t *testing.T) {
 	scheme := newPoolBackendTestScheme(t)
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
 	}
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -174,8 +174,8 @@ func TestPoolsSyncedClearedWhenPoolIsDeleted(t *testing.T) {
 		Build()
 	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 
-	key := poolStateKey{backend: "cilium-load-balancer-ip-pool", pool: "/gone-pool"}
-	r.updatePoolsSyncedCondition(ctx, "home-ipv6", key, errors.New("webhook rejected the update"))
+	key := poolStateKey{backend: testBackendCiliumLBIPPool, pool: "/gone-pool"}
+	r.updatePoolsSyncedCondition(ctx, testDynamicPrefixName, key, errors.New("webhook rejected the update"))
 
 	// Reconciling a name that no longer resolves to any backend object.
 	if _, err := r.Reconcile(ctx, reconcile.Request{

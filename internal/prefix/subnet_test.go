@@ -32,31 +32,31 @@ func TestCalculateSubnet(t *testing.T) {
 	}{
 		{
 			name:       "first /64 from /48",
-			basePrefix: "2001:db8::/48",
+			basePrefix: testPrefixLen48,
 			config: SubnetConfig{
 				Name:         "default",
 				Offset:       0,
 				PrefixLength: 64,
 			},
-			wantCIDR: "2001:db8::/64",
+			wantCIDR: testPrefixLen64,
 			wantErr:  false,
 		},
 		{
 			name:       "second /64 from /48",
-			basePrefix: "2001:db8::/48",
+			basePrefix: testPrefixLen48,
 			config: SubnetConfig{
 				Name:         "second",
 				Offset:       1,
 				PrefixLength: 64,
 			},
-			wantCIDR: "2001:db8:0:1::/64",
+			wantCIDR: testPrefixSubnet1Len64,
 			wantErr:  false,
 		},
 		{
 			name:       "256th /64 from /48",
-			basePrefix: "2001:db8::/48",
+			basePrefix: testPrefixLen48,
 			config: SubnetConfig{
-				Name:         "services",
+				Name:         testSubnetServices,
 				Offset:       256,
 				PrefixLength: 64,
 			},
@@ -67,7 +67,7 @@ func TestCalculateSubnet(t *testing.T) {
 			name:       "first /120 from /60",
 			basePrefix: "2001:db8:1234:ab00::/60",
 			config: SubnetConfig{
-				Name:         "loadbalancers",
+				Name:         testSubnetLoadBalancers,
 				Offset:       0,
 				PrefixLength: 120,
 			},
@@ -78,7 +78,7 @@ func TestCalculateSubnet(t *testing.T) {
 			name:       "17th /120 from /60",
 			basePrefix: "2001:db8:1234:ab00::/60",
 			config: SubnetConfig{
-				Name:         "loadbalancers",
+				Name:         testSubnetLoadBalancers,
 				Offset:       16, // 16 * 256 = 0x1000
 				PrefixLength: 120,
 			},
@@ -89,7 +89,7 @@ func TestCalculateSubnet(t *testing.T) {
 			name:       "second /112 from /56",
 			basePrefix: "2001:db8:abcd:ef00::/56",
 			config: SubnetConfig{
-				Name:         "services",
+				Name:         testSubnetServices,
 				Offset:       1, // 1 * 65536 = 0x10000
 				PrefixLength: 112,
 			},
@@ -98,9 +98,9 @@ func TestCalculateSubnet(t *testing.T) {
 		},
 		{
 			name:       "error: subnet shorter than base",
-			basePrefix: "2001:db8::/64",
+			basePrefix: testPrefixLen64,
 			config: SubnetConfig{
-				Name:         "invalid",
+				Name:         testNameInvalid,
 				Offset:       0,
 				PrefixLength: 48,
 			},
@@ -108,9 +108,9 @@ func TestCalculateSubnet(t *testing.T) {
 		},
 		{
 			name:       "error: prefix length > 128",
-			basePrefix: "2001:db8::/64",
+			basePrefix: testPrefixLen64,
 			config: SubnetConfig{
-				Name:         "invalid",
+				Name:         testNameInvalid,
 				Offset:       0,
 				PrefixLength: 129,
 			},
@@ -148,11 +148,11 @@ func TestCalculateSubnet(t *testing.T) {
 }
 
 func TestCalculateSubnets(t *testing.T) {
-	basePrefix := netip.MustParsePrefix("2001:db8::/48")
+	basePrefix := netip.MustParsePrefix(testPrefixLen48)
 
 	configs := []SubnetConfig{
 		{
-			Name:         "services",
+			Name:         testSubnetServices,
 			Offset:       0,
 			PrefixLength: 64,
 		},
@@ -162,7 +162,7 @@ func TestCalculateSubnets(t *testing.T) {
 			PrefixLength: 64,
 		},
 		{
-			Name:         "loadbalancers",
+			Name:         testSubnetLoadBalancers,
 			Offset:       256,
 			PrefixLength: 64,
 		},
@@ -178,24 +178,24 @@ func TestCalculateSubnets(t *testing.T) {
 	}
 
 	// Check first subnet
-	if subnets[0].Name != "services" {
-		t.Errorf("subnets[0].Name = %q, want %q", subnets[0].Name, "services")
+	if subnets[0].Name != testSubnetServices {
+		t.Errorf("subnets[0].Name = %q, want %q", subnets[0].Name, testSubnetServices)
 	}
-	if subnets[0].CIDR.String() != "2001:db8::/64" {
-		t.Errorf("subnets[0].CIDR = %q, want %q", subnets[0].CIDR.String(), "2001:db8::/64")
+	if subnets[0].CIDR.String() != testPrefixLen64 {
+		t.Errorf("subnets[0].CIDR = %q, want %q", subnets[0].CIDR.String(), testPrefixLen64)
 	}
 
 	// Check second subnet
 	if subnets[1].Name != "pods" {
 		t.Errorf("subnets[1].Name = %q, want %q", subnets[1].Name, "pods")
 	}
-	if subnets[1].CIDR.String() != "2001:db8:0:1::/64" {
-		t.Errorf("subnets[1].CIDR = %q, want %q", subnets[1].CIDR.String(), "2001:db8:0:1::/64")
+	if subnets[1].CIDR.String() != testPrefixSubnet1Len64 {
+		t.Errorf("subnets[1].CIDR = %q, want %q", subnets[1].CIDR.String(), testPrefixSubnet1Len64)
 	}
 
 	// Check third subnet
-	if subnets[2].Name != "loadbalancers" {
-		t.Errorf("subnets[2].Name = %q, want %q", subnets[2].Name, "loadbalancers")
+	if subnets[2].Name != testSubnetLoadBalancers {
+		t.Errorf("subnets[2].Name = %q, want %q", subnets[2].Name, testSubnetLoadBalancers)
 	}
 	if subnets[2].CIDR.String() != "2001:db8:0:100::/64" {
 		t.Errorf("subnets[2].CIDR = %q, want %q", subnets[2].CIDR.String(), "2001:db8:0:100::/64")
@@ -207,7 +207,7 @@ func TestCalculateSubnets_IPv4Error(t *testing.T) {
 
 	configs := []SubnetConfig{
 		{
-			Name:         "test",
+			Name:         testName,
 			Offset:       0,
 			PrefixLength: 28,
 		},
@@ -228,9 +228,9 @@ func TestValidateSubnetFitsInPrefix(t *testing.T) {
 	}{
 		{
 			name:       "first subnet fits",
-			basePrefix: "2001:db8::/48",
+			basePrefix: testPrefixLen48,
 			config: SubnetConfig{
-				Name:         "test",
+				Name:         testName,
 				Offset:       0,
 				PrefixLength: 64,
 			},
@@ -238,9 +238,9 @@ func TestValidateSubnetFitsInPrefix(t *testing.T) {
 		},
 		{
 			name:       "last valid /64 in /48 fits",
-			basePrefix: "2001:db8::/48",
+			basePrefix: testPrefixLen48,
 			config: SubnetConfig{
-				Name:         "test",
+				Name:         testName,
 				Offset:       65535, // Last /64 in a /48 (2^16 - 1)
 				PrefixLength: 64,
 			},
@@ -248,9 +248,9 @@ func TestValidateSubnetFitsInPrefix(t *testing.T) {
 		},
 		{
 			name:       "subnet outside base prefix",
-			basePrefix: "2001:db8::/48",
+			basePrefix: testPrefixLen48,
 			config: SubnetConfig{
-				Name:         "test",
+				Name:         testName,
 				Offset:       65536, // One past the last valid /64
 				PrefixLength: 64,
 			},
@@ -260,7 +260,7 @@ func TestValidateSubnetFitsInPrefix(t *testing.T) {
 			name:       "very large offset overflows",
 			basePrefix: "2001:db8::/60",
 			config: SubnetConfig{
-				Name:         "test",
+				Name:         testName,
 				Offset:       0x7FFFFFFFFFFFFFFF,
 				PrefixLength: 64,
 			},
@@ -292,8 +292,8 @@ func TestParsePrefix(t *testing.T) {
 	}{
 		{
 			name:    "valid IPv6 already normalized",
-			cidr:    "2001:db8::/32",
-			want:    "2001:db8::/32",
+			cidr:    testPrefixLen32,
+			want:    testPrefixLen32,
 			wantErr: false,
 		},
 		{
@@ -305,7 +305,7 @@ func TestParsePrefix(t *testing.T) {
 		{
 			name:    "IPv6 with host bits gets masked",
 			cidr:    "2001:db8::ffff/48",
-			want:    "2001:db8::/48",
+			want:    testPrefixLen48,
 			wantErr: false,
 		},
 		{
@@ -357,19 +357,19 @@ func TestCalculateSubnetRejectsOutOfRangeOffsets(t *testing.T) {
 		{
 			// 3e14 << (128-48) overflows 128 bits -> must error, not panic.
 			name:       "offset overflows the address space",
-			basePrefix: "2001:db8::/48",
+			basePrefix: testPrefixLen48,
 			config:     SubnetConfig{Name: "overflow", Offset: 300000000000000, PrefixLength: 48},
 		},
 		{
 			// Fits in 128 bits, but lands outside the /48 -> must be rejected,
 			// not returned as a valid subnet.
 			name:       "offset one past the last subnet",
-			basePrefix: "2001:db8::/48",
+			basePrefix: testPrefixLen48,
 			config:     SubnetConfig{Name: "past-end", Offset: 65536, PrefixLength: 64},
 		},
 		{
 			name:       "negative offset",
-			basePrefix: "2001:db8::/48",
+			basePrefix: testPrefixLen48,
 			config:     SubnetConfig{Name: "negative", Offset: -1, PrefixLength: 64},
 		},
 	}
@@ -390,7 +390,7 @@ func TestCalculateSubnetRejectsOutOfRangeOffsets(t *testing.T) {
 // The last in-range offset must still work, and the result must sit inside the
 // base prefix.
 func TestCalculateSubnetAcceptsLastValidOffset(t *testing.T) {
-	base := netip.MustParsePrefix("2001:db8::/48")
+	base := netip.MustParsePrefix(testPrefixLen48)
 
 	got, err := CalculateSubnet(base, SubnetConfig{Name: "last", Offset: 65535, PrefixLength: 64})
 	if err != nil {
@@ -413,7 +413,7 @@ func TestCalculateSubnetMasksBasePrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.CIDR.String() != "2001:db8:0:1::/64" {
+	if got.CIDR.String() != testPrefixSubnet1Len64 {
 		t.Fatalf("expected host bits to be ignored, got %v", got.CIDR)
 	}
 	if !unmasked.Masked().Contains(got.CIDR.Addr()) {

@@ -41,13 +41,13 @@ import (
 func newMetalLBPool(name, namespace string, addresses []interface{}) *unstructured.Unstructured {
 	pool := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultMetalLBIPAddressPoolGVK),
-			"kind":       DefaultMetalLBIPAddressPoolGVK.Kind,
-			"metadata": map[string]interface{}{
-				"name":      name,
+			keyAPIVersion: APIVersion(DefaultMetalLBIPAddressPoolGVK),
+			keyKind:       DefaultMetalLBIPAddressPoolGVK.Kind,
+			keyMetadata: map[string]interface{}{
+				keyName:     name,
 				"namespace": namespace,
 			},
-			"spec": map[string]interface{}{"addresses": addresses},
+			fieldSpec: map[string]interface{}{"addresses": addresses},
 		},
 	}
 	pool.SetGroupVersionKind(DefaultMetalLBIPAddressPoolGVK)
@@ -64,12 +64,12 @@ func TestMetalLBAddressesStayBoundedAcrossRotations(t *testing.T) {
 	scheme := newPoolBackendTestScheme(t)
 
 	const staticAddress = "198.51.100.0/24"
-	pool := newMetalLBPool("lb-pool", "metallb-system", []interface{}{staticAddress})
+	pool := newMetalLBPool(testLBPoolName, "metallb-system", []interface{}{staticAddress})
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool).Build()
 	reconciler := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 	backend := metalLBIPAddressPoolBackend{resourceGVK: DefaultMetalLBIPAddressPoolGVK}
-	key := types.NamespacedName{Name: "lb-pool", Namespace: "metallb-system"}
+	key := types.NamespacedName{Name: testLBPoolName, Namespace: "metallb-system"}
 
 	const rotations = 25
 	for gen := 0; gen < rotations; gen++ {
@@ -89,7 +89,7 @@ func TestMetalLBAddressesStayBoundedAcrossRotations(t *testing.T) {
 	if err := fakeClient.Get(ctx, key, fetched); err != nil {
 		t.Fatalf("final get: %v", err)
 	}
-	addresses, _, err := unstructured.NestedStringSlice(fetched.Object, "spec", "addresses")
+	addresses, _, err := unstructured.NestedStringSlice(fetched.Object, fieldSpec, "addresses")
 	if err != nil {
 		t.Fatalf("read addresses: %v", err)
 	}
@@ -114,8 +114,8 @@ func TestFallbackPreservesUserSupernet(t *testing.T) {
 	scheme.AddKnownTypeWithName(DefaultCiliumLBIPPoolGVK, &unstructured.Unstructured{})
 
 	// The user pins the entire delegation; the operator manages a /64 inside it.
-	supernet := map[string]interface{}{"cidr": "2001:db8:abcd::/48"}
-	pool := newCiliumPool("default-ipv6", []interface{}{supernet})
+	supernet := map[string]interface{}{fieldCIDR: testPrefixABCDLen48}
+	pool := newCiliumPool(testPoolDefaultIPv6, []interface{}{supernet})
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool).Build()
 	reconciler := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
@@ -123,7 +123,7 @@ func TestFallbackPreservesUserSupernet(t *testing.T) {
 
 	fetched := &unstructured.Unstructured{}
 	fetched.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "default-ipv6"}, fetched); err != nil {
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: testPoolDefaultIPv6}, fetched); err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	// No record on the object: the legacy geometric path, i.e. the first pass
@@ -133,10 +133,10 @@ func TestFallbackPreservesUserSupernet(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "default-ipv6"}, fetched); err != nil {
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: testPoolDefaultIPv6}, fetched); err != nil {
 		t.Fatalf("get after update: %v", err)
 	}
-	blocks, _, err := unstructured.NestedSlice(fetched.Object, "spec", "blocks")
+	blocks, _, err := unstructured.NestedSlice(fetched.Object, fieldSpec, fieldBlocks)
 	if err != nil {
 		t.Fatalf("read blocks: %v", err)
 	}
@@ -161,20 +161,20 @@ func TestUnkeyableBlockIsNeverWritten(t *testing.T) {
 	scheme := newPoolBackendTestScheme(t)
 	scheme.AddKnownTypeWithName(DefaultCiliumLBIPPoolGVK, &unstructured.Unstructured{})
 
-	pool := newCiliumPool("default-ipv6", []interface{}{})
+	pool := newCiliumPool(testPoolDefaultIPv6, []interface{}{})
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool).Build()
 	reconciler := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 	backend := ciliumLoadBalancerIPPoolBackend{resourceGVK: DefaultCiliumLBIPPoolGVK}
 
 	// An empty CIDR: reachable when status carries an address range with no
 	// usable start/end and no CIDR.
-	configs := []poolConfiguration{{cidr: ""}, {cidr: "2001:db8:abcd::/64"}}
-	managed := []netip.Prefix{netip.MustParsePrefix("2001:db8:abcd::/64")}
+	configs := []poolConfiguration{{cidr: ""}, {cidr: testPrefixABCDLen64}}
+	managed := []netip.Prefix{netip.MustParsePrefix(testPrefixABCDLen64)}
 
 	for pass := 0; pass < 3; pass++ {
 		fetched := &unstructured.Unstructured{}
 		fetched.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
-		if err := fakeClient.Get(ctx, types.NamespacedName{Name: "default-ipv6"}, fetched); err != nil {
+		if err := fakeClient.Get(ctx, types.NamespacedName{Name: testPoolDefaultIPv6}, fetched); err != nil {
 			t.Fatalf("pass %d: get: %v", pass, err)
 		}
 		if _, err := backend.update(ctx, reconciler, fetched, configs, managed); err != nil {
@@ -184,10 +184,10 @@ func TestUnkeyableBlockIsNeverWritten(t *testing.T) {
 
 	fetched := &unstructured.Unstructured{}
 	fetched.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "default-ipv6"}, fetched); err != nil {
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: testPoolDefaultIPv6}, fetched); err != nil {
 		t.Fatalf("final get: %v", err)
 	}
-	blocks, _, err := unstructured.NestedSlice(fetched.Object, "spec", "blocks")
+	blocks, _, err := unstructured.NestedSlice(fetched.Object, fieldSpec, fieldBlocks)
 	if err != nil {
 		t.Fatalf("read blocks: %v", err)
 	}
@@ -209,10 +209,10 @@ func TestSameNameAcrossKindsSyncsBoth(t *testing.T) {
 	lbPool := newCiliumPool("shared-name", nil)
 	cidrGroup := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultCiliumCIDRGroupGVK),
-			"kind":       DefaultCiliumCIDRGroupGVK.Kind,
-			"metadata":   map[string]interface{}{"name": "shared-name"},
-			"spec":       map[string]interface{}{"externalCIDRs": []interface{}{}},
+			keyAPIVersion: APIVersion(DefaultCiliumCIDRGroupGVK),
+			keyKind:       DefaultCiliumCIDRGroupGVK.Kind,
+			keyMetadata:   map[string]interface{}{keyName: "shared-name"},
+			fieldSpec:     map[string]interface{}{fieldExternalCIDRs: []interface{}{}},
 		},
 	}
 	cidrGroup.SetGroupVersionKind(DefaultCiliumCIDRGroupGVK)
@@ -239,7 +239,7 @@ func TestSameNameAcrossKindsSyncsBoth(t *testing.T) {
 	for _, m := range matches {
 		seen[m.backend.name()] = true
 	}
-	for _, want := range []string{"cilium-load-balancer-ip-pool", "cilium-cidr-group"} {
+	for _, want := range []string{testBackendCiliumLBIPPool, "cilium-cidr-group"} {
 		if !seen[want] {
 			t.Errorf("getPools() did not return backend %q", want)
 		}
@@ -256,13 +256,13 @@ func TestCalicoKeepsDrainingSiblings(t *testing.T) {
 
 	pool := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultCalicoIPPoolGVK),
-			"kind":       DefaultCalicoIPPoolGVK.Kind,
-			"metadata": map[string]interface{}{
-				"name":        "calico-pool",
-				"annotations": map[string]interface{}{AnnotationName: "home-ipv6"},
+			keyAPIVersion: APIVersion(DefaultCalicoIPPoolGVK),
+			keyKind:       DefaultCalicoIPPoolGVK.Kind,
+			keyMetadata: map[string]interface{}{
+				keyName:        testCalicoPoolName,
+				keyAnnotations: map[string]interface{}{AnnotationName: testDynamicPrefixName},
 			},
-			"spec": map[string]interface{}{"cidr": "2001:db8:abcd::/64"},
+			fieldSpec: map[string]interface{}{fieldCIDR: testPrefixABCDLen64},
 		},
 	}
 	pool.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
@@ -275,7 +275,7 @@ func TestCalicoKeepsDrainingSiblings(t *testing.T) {
 	for gen := 0; gen < rotations; gen++ {
 		fetched := &unstructured.Unstructured{}
 		fetched.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
-		if err := fakeClient.Get(ctx, types.NamespacedName{Name: "calico-pool"}, fetched); err != nil {
+		if err := fakeClient.Get(ctx, types.NamespacedName{Name: testCalicoPoolName}, fetched); err != nil {
 			t.Fatalf("gen %d: get: %v", gen, err)
 		}
 		configs, managed := calicoPoolStateForGeneration(gen, maxHistory)
@@ -287,10 +287,10 @@ func TestCalicoKeepsDrainingSiblings(t *testing.T) {
 	// The primary must carry the current prefix.
 	fetched := &unstructured.Unstructured{}
 	fetched.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "calico-pool"}, fetched); err != nil {
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: testCalicoPoolName}, fetched); err != nil {
 		t.Fatalf("final get: %v", err)
 	}
-	gotCIDR, _, err := unstructured.NestedString(fetched.Object, "spec", "cidr")
+	gotCIDR, _, err := unstructured.NestedString(fetched.Object, fieldSpec, fieldCIDR)
 	if err != nil {
 		t.Fatalf("read cidr: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestCalicoKeepsDrainingSiblings(t *testing.T) {
 	}
 	siblings := 0
 	for i := range list.Items {
-		if list.Items[i].GetLabels()[LabelCalicoParentPool] == "calico-pool" {
+		if list.Items[i].GetLabels()[LabelCalicoParentPool] == testCalicoPoolName {
 			siblings++
 		}
 	}
@@ -353,8 +353,8 @@ func TestServiceReleasedOnDeannotation(t *testing.T) {
 
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "svc",
-			Namespace: "network",
+			Name:      testServiceName,
+			Namespace: testNamespaceNetwork,
 			Annotations: map[string]string{
 				// No dynamic-prefix.io/name: the user has just removed it.
 				AnnotationCiliumIPs:         strings.Join([]string{userIPv4, userULA, operatorAddr}, ","),
@@ -368,7 +368,7 @@ func TestServiceReleasedOnDeannotation(t *testing.T) {
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
 	r := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme}
-	key := types.NamespacedName{Name: "svc", Namespace: "network"}
+	key := types.NamespacedName{Name: testServiceName, Namespace: testNamespaceNetwork}
 
 	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -414,7 +414,7 @@ func newManagedService(dpName, operatorAddr, userIPv4 string) *corev1.Service {
 		annotations[AnnotationName] = dpName
 	}
 	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "network", Annotations: annotations},
+		ObjectMeta: metav1.ObjectMeta{Name: testServiceName, Namespace: testNamespaceNetwork, Annotations: annotations},
 		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
 	}
 }
@@ -454,10 +454,10 @@ func TestServiceReleasedWhenDynamicPrefixDeleted(t *testing.T) {
 	const operatorAddr = "2001:db8:abcd::ffff:0:2"
 
 	// The Service still references a DynamicPrefix, but it no longer exists.
-	svc := newManagedService("home-ipv6", operatorAddr, userIPv4)
+	svc := newManagedService(testDynamicPrefixName, operatorAddr, userIPv4)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(svc).Build()
 	r := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme}
-	key := types.NamespacedName{Name: "svc", Namespace: "network"}
+	key := types.NamespacedName{Name: testServiceName, Namespace: testNamespaceNetwork}
 
 	result, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 	if err != nil {
@@ -488,19 +488,19 @@ func TestServiceReleasedWhenHAModeDisabled(t *testing.T) {
 	const operatorAddr = "2001:db8:abcd::ffff:0:2"
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Transition: &dynamicprefixiov1alpha1.TransitionSpec{
 				Mode: dynamicprefixiov1alpha1.TransitionModeSimple,
 			},
 		},
-		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{CurrentPrefix: "2001:db8:abcd::/64"},
+		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{CurrentPrefix: testPrefixABCDLen64},
 	}
-	svc := newManagedService("home-ipv6", operatorAddr, userIPv4)
+	svc := newManagedService(testDynamicPrefixName, operatorAddr, userIPv4)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dp, svc).Build()
 	r := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme}
-	key := types.NamespacedName{Name: "svc", Namespace: "network"}
+	key := types.NamespacedName{Name: testServiceName, Namespace: testNamespaceNetwork}
 
 	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -522,24 +522,24 @@ func TestPoolReleasedWhenDynamicPrefixDeleted(t *testing.T) {
 	scheme.AddKnownTypeWithName(DefaultCiliumLBIPPoolGVK, &unstructured.Unstructured{})
 
 	const userBlock = "2001:db8:9999::/64"
-	const operatorBlock = "2001:db8:abcd::/64"
+	const operatorBlock = testPrefixABCDLen64
 
 	pool := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultCiliumLBIPPoolGVK),
-			"kind":       DefaultCiliumLBIPPoolGVK.Kind,
-			"metadata": map[string]interface{}{
-				"name": "lb-pool",
-				"annotations": map[string]interface{}{
-					AnnotationName: "home-ipv6",
+			keyAPIVersion: APIVersion(DefaultCiliumLBIPPoolGVK),
+			keyKind:       DefaultCiliumLBIPPoolGVK.Kind,
+			keyMetadata: map[string]interface{}{
+				keyName: testLBPoolName,
+				keyAnnotations: map[string]interface{}{
+					AnnotationName: testDynamicPrefixName,
 					// Records key blocks the way blockKey does, not as bare CIDRs.
-					AnnotationManagedBlocks: blockKey(map[string]interface{}{"cidr": operatorBlock}),
+					AnnotationManagedBlocks: blockKey(map[string]interface{}{fieldCIDR: operatorBlock}),
 				},
 			},
-			"spec": map[string]interface{}{
-				"blocks": []interface{}{
-					map[string]interface{}{"cidr": userBlock},
-					map[string]interface{}{"cidr": operatorBlock},
+			fieldSpec: map[string]interface{}{
+				fieldBlocks: []interface{}{
+					map[string]interface{}{fieldCIDR: userBlock},
+					map[string]interface{}{fieldCIDR: operatorBlock},
 				},
 			},
 		},
@@ -550,25 +550,25 @@ func TestPoolReleasedWhenDynamicPrefixDeleted(t *testing.T) {
 	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 
 	if _, err := r.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "lb-pool"},
+		NamespacedName: types.NamespacedName{Name: testLBPoolName},
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
 	fetched := &unstructured.Unstructured{}
 	fetched.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "lb-pool"}, fetched); err != nil {
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: testLBPoolName}, fetched); err != nil {
 		t.Fatalf("get: %v", err)
 	}
 
-	blocks, _, err := unstructured.NestedSlice(fetched.Object, "spec", "blocks")
+	blocks, _, err := unstructured.NestedSlice(fetched.Object, fieldSpec, fieldBlocks)
 	if err != nil {
 		t.Fatalf("read blocks: %v", err)
 	}
 	var cidrs []string
 	for _, b := range blocks {
 		if block, ok := b.(map[string]interface{}); ok {
-			if cidr, ok := block["cidr"].(string); ok {
+			if cidr, ok := block[fieldCIDR].(string); ok {
 				cidrs = append(cidrs, cidr)
 			}
 		}
@@ -595,13 +595,13 @@ func TestCalicoReleaseRemovesDrainingSiblings(t *testing.T) {
 
 	pool := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultCalicoIPPoolGVK),
-			"kind":       DefaultCalicoIPPoolGVK.Kind,
-			"metadata": map[string]interface{}{
-				"name":        "calico-pool",
-				"annotations": map[string]interface{}{AnnotationName: "home-ipv6"},
+			keyAPIVersion: APIVersion(DefaultCalicoIPPoolGVK),
+			keyKind:       DefaultCalicoIPPoolGVK.Kind,
+			keyMetadata: map[string]interface{}{
+				keyName:        testCalicoPoolName,
+				keyAnnotations: map[string]interface{}{AnnotationName: testDynamicPrefixName},
 			},
-			"spec": map[string]interface{}{"cidr": "2001:db8:abcd::/64"},
+			fieldSpec: map[string]interface{}{fieldCIDR: testPrefixABCDLen64},
 		},
 	}
 	pool.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
@@ -620,7 +620,7 @@ func TestCalicoReleaseRemovesDrainingSiblings(t *testing.T) {
 	for gen := 0; gen < 4; gen++ {
 		fetched := &unstructured.Unstructured{}
 		fetched.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
-		if err := fakeClient.Get(ctx, types.NamespacedName{Name: "calico-pool"}, fetched); err != nil {
+		if err := fakeClient.Get(ctx, types.NamespacedName{Name: testCalicoPoolName}, fetched); err != nil {
 			t.Fatalf("gen %d: get: %v", gen, err)
 		}
 		configs, managed := calicoPoolStateForGeneration(gen, maxHistory)
@@ -631,7 +631,7 @@ func TestCalicoReleaseRemovesDrainingSiblings(t *testing.T) {
 
 	fetched := &unstructured.Unstructured{}
 	fetched.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "calico-pool"}, fetched); err != nil {
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: testCalicoPoolName}, fetched); err != nil {
 		t.Fatalf("get before release: %v", err)
 	}
 	if _, ok := fetched.GetAnnotations()[AnnotationManagedCIDR]; !ok {
@@ -647,7 +647,7 @@ func TestCalicoReleaseRemovesDrainingSiblings(t *testing.T) {
 	}
 
 	if _, err := r.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "calico-pool"},
+		NamespacedName: types.NamespacedName{Name: testCalicoPoolName},
 	}); err != nil {
 		t.Fatalf("reconcile after de-annotation: %v", err)
 	}
@@ -658,7 +658,7 @@ func TestCalicoReleaseRemovesDrainingSiblings(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	for i := range list.Items {
-		if list.Items[i].GetLabels()[LabelCalicoParentPool] == "calico-pool" {
+		if list.Items[i].GetLabels()[LabelCalicoParentPool] == testCalicoPoolName {
 			t.Errorf("draining sibling %s survived release; it allocates from a withdrawn prefix",
 				list.Items[i].GetName())
 		}
@@ -666,7 +666,7 @@ func TestCalicoReleaseRemovesDrainingSiblings(t *testing.T) {
 
 	released := &unstructured.Unstructured{}
 	released.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "calico-pool"}, released); err != nil {
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: testCalicoPoolName}, released); err != nil {
 		t.Fatalf("get after release: %v", err)
 	}
 	if _, ok := released.GetAnnotations()[AnnotationManagedCIDR]; ok {
@@ -684,18 +684,18 @@ func TestReleaseDoesNotInventFieldsOnOtherBackends(t *testing.T) {
 
 	group := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultCiliumCIDRGroupGVK),
-			"kind":       DefaultCiliumCIDRGroupGVK.Kind,
-			"metadata": map[string]interface{}{
-				"name": "cidr-group",
-				"annotations": map[string]interface{}{
+			keyAPIVersion: APIVersion(DefaultCiliumCIDRGroupGVK),
+			keyKind:       DefaultCiliumCIDRGroupGVK.Kind,
+			keyMetadata: map[string]interface{}{
+				keyName: testCIDRGroupName,
+				keyAnnotations: map[string]interface{}{
 					// A blocks record on an object that has no spec.blocks.
-					AnnotationManagedBlocks: "2001:db8:abcd::/64",
-					AnnotationManagedCIDRs:  "2001:db8:abcd::/64",
+					AnnotationManagedBlocks: testPrefixABCDLen64,
+					AnnotationManagedCIDRs:  testPrefixABCDLen64,
 				},
 			},
-			"spec": map[string]interface{}{
-				"externalCIDRs": []interface{}{"2001:db8:abcd::/64"},
+			fieldSpec: map[string]interface{}{
+				fieldExternalCIDRs: []interface{}{testPrefixABCDLen64},
 			},
 		},
 	}
@@ -705,17 +705,17 @@ func TestReleaseDoesNotInventFieldsOnOtherBackends(t *testing.T) {
 	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 
 	if _, err := r.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "cidr-group"},
+		NamespacedName: types.NamespacedName{Name: testCIDRGroupName},
 	}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 
 	fetched := &unstructured.Unstructured{}
 	fetched.SetGroupVersionKind(DefaultCiliumCIDRGroupGVK)
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "cidr-group"}, fetched); err != nil {
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: testCIDRGroupName}, fetched); err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if _, found, _ := unstructured.NestedSlice(fetched.Object, "spec", "blocks"); found {
+	if _, found, _ := unstructured.NestedSlice(fetched.Object, fieldSpec, fieldBlocks); found {
 		t.Error("spec.blocks was created on a CiliumCIDRGroup, which has no such field")
 	}
 }
@@ -760,7 +760,7 @@ func TestExternalDNSTargetReleasedOnOptOut(t *testing.T) {
 	if err := r.Get(ctx, key, &svc); err != nil {
 		t.Fatalf("get after opt-out: %v", err)
 	}
-	if got := svc.Annotations[AnnotationExternalDNSTarget]; got != "example.com" {
+	if got := svc.Annotations[AnnotationExternalDNSTarget]; got != testDNSTarget {
 		t.Errorf("external-dns target = %q, want just the user's hostname", got)
 	}
 	if _, ok := svc.Annotations[AnnotationManagedTargets]; ok {
@@ -845,8 +845,8 @@ func TestOwnershipSurvivesNonCanonicalSpelling(t *testing.T) {
 	}
 
 	// An absent stop and an empty stop describe the same block.
-	withEmpty := blockKey(map[string]interface{}{"start": "2001:db8::1", "stop": ""})
-	without := blockKey(map[string]interface{}{"start": "2001:db8::1"})
+	withEmpty := blockKey(map[string]interface{}{fieldStart: testAddr, fieldStop: ""})
+	without := blockKey(map[string]interface{}{fieldStart: testAddr})
 	if withEmpty != without {
 		t.Errorf("blockKey() = %q with an empty stop and %q without; they must match",
 			withEmpty, without)
@@ -913,7 +913,7 @@ func TestLegacyModeFollowsRotation(t *testing.T) {
 	_ = dynamicprefixiov1alpha1.AddToScheme(scheme)
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Transition: &dynamicprefixiov1alpha1.TransitionSpec{
 				Mode:             dynamicprefixiov1alpha1.TransitionModeHA,
@@ -928,9 +928,9 @@ func TestLegacyModeFollowsRotation(t *testing.T) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "legacy",
-			Namespace: "network",
+			Namespace: testNamespaceNetwork,
 			// No dynamic-prefix.io/suffix: this is legacy mode.
-			Annotations: map[string]string{AnnotationName: "home-ipv6"},
+			Annotations: map[string]string{AnnotationName: testDynamicPrefixName},
 		},
 		Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
 		Status: corev1.ServiceStatus{
@@ -947,7 +947,7 @@ func TestLegacyModeFollowsRotation(t *testing.T) {
 		WithTypeConverters(testTypeConverters(scheme)...).
 		Build()
 	r := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme}
-	key := types.NamespacedName{Name: "legacy", Namespace: "network"}
+	key := types.NamespacedName{Name: "legacy", Namespace: testNamespaceNetwork}
 
 	if _, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key}); err != nil {
 		t.Fatalf("reconcile: %v", err)

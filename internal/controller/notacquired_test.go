@@ -44,18 +44,18 @@ func TestPoolWaitsForFirstPrefix(t *testing.T) {
 	scheme.AddKnownTypeWithName(DefaultCiliumLBIPPoolGVK, &unstructured.Unstructured{})
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
 	}
 
 	pool := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultCiliumLBIPPoolGVK),
-			"kind":       DefaultCiliumLBIPPoolGVK.Kind,
-			"metadata": map[string]interface{}{
-				"name":        "lb-pool",
-				"annotations": map[string]interface{}{AnnotationName: "home-ipv6"},
+			keyAPIVersion: APIVersion(DefaultCiliumLBIPPoolGVK),
+			keyKind:       DefaultCiliumLBIPPoolGVK.Kind,
+			keyMetadata: map[string]interface{}{
+				keyName:        testLBPoolName,
+				keyAnnotations: map[string]interface{}{AnnotationName: testDynamicPrefixName},
 			},
-			"spec": map[string]interface{}{"blocks": []interface{}{}},
+			fieldSpec: map[string]interface{}{fieldBlocks: []interface{}{}},
 		},
 	}
 	pool.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
@@ -70,7 +70,7 @@ func TestPoolWaitsForFirstPrefix(t *testing.T) {
 	r := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme, Recorder: recorder}
 
 	res, err := r.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "lb-pool"},
+		NamespacedName: types.NamespacedName{Name: testLBPoolName},
 	})
 	if err != nil {
 		t.Fatalf("waiting for the first prefix must not be an error: %v", err)
@@ -102,7 +102,7 @@ func TestSuffixServiceWaitsForFirstPrefix(t *testing.T) {
 	scheme := newPoolBackendTestScheme(t)
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Transition: &dynamicprefixiov1alpha1.TransitionSpec{
 				Mode: dynamicprefixiov1alpha1.TransitionModeHA,
@@ -112,10 +112,10 @@ func TestSuffixServiceWaitsForFirstPrefix(t *testing.T) {
 
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "web",
-			Namespace: "default",
+			Name:      testServiceWeb,
+			Namespace: testNamespace,
 			Annotations: map[string]string{
-				AnnotationName:   "home-ipv6",
+				AnnotationName:   testDynamicPrefixName,
 				AnnotationSuffix: "::42",
 			},
 		},
@@ -131,7 +131,7 @@ func TestSuffixServiceWaitsForFirstPrefix(t *testing.T) {
 	r := &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme}
 
 	res, err := r.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "web", Namespace: "default"},
+		NamespacedName: types.NamespacedName{Name: testServiceWeb, Namespace: testNamespace},
 	})
 	if err != nil {
 		t.Fatalf("waiting for the first prefix must not be an error: %v", err)

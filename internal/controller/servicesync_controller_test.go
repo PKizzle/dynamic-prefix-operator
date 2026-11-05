@@ -41,11 +41,11 @@ var _ = Describe("ServiceSync Controller", func() {
 	Context("When reconciling a LoadBalancer Service in HA mode", func() {
 		const (
 			serviceName   = "test-service"
-			serviceNS     = "default"
+			serviceNS     = testNamespace
 			dpName        = "test-dp-ha"
 			addressRange  = "lb-range"
-			currentPrefix = "2001:db8:1::/48"
-			histPrefix1   = "2001:db8:2::/48"
+			currentPrefix = testPrefix1Len48
+			histPrefix1   = testPrefix2Len48
 			// Use canonical IPv6 format (RFC 5952)
 			currentIP    = "2001:db8:1:0:f000::10"
 			historicalIP = "2001:db8:2:0:f000::10"
@@ -62,14 +62,14 @@ var _ = Describe("ServiceSync Controller", func() {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-							Interface: "eth0",
+							Interface: testInterface,
 							Enabled:   ptr.To(true),
 						},
 					},
 					AddressRanges: []dynamicprefixiov1alpha1.AddressRangeSpec{
 						{
 							Name:  addressRange,
-							Start: "::f000:0:0:1",
+							Start: testSuffixRangeStart,
 							End:   "::f000:0:0:ff",
 						},
 					},
@@ -239,7 +239,7 @@ var _ = Describe("ServiceSync Controller", func() {
 			ipsAnnotation := svc.GetAnnotations()[AnnotationCiliumIPs]
 
 			// IPv4 must be preserved
-			Expect(ipsAnnotation).To(ContainSubstring("198.51.100.10"))
+			Expect(ipsAnnotation).To(ContainSubstring(testIPv4Other))
 			// Current IPv6 must be present
 			Expect(ipsAnnotation).To(ContainSubstring(currentIP))
 			// Historical IPv6 must be present
@@ -284,7 +284,7 @@ var _ = Describe("ServiceSync Controller", func() {
 			dnsTarget := svc.GetAnnotations()[AnnotationExternalDNSTarget]
 
 			// Hostname must be preserved
-			Expect(dnsTarget).To(ContainSubstring("example.com"))
+			Expect(dnsTarget).To(ContainSubstring(testDNSTarget))
 			// Hostname should come first
 			Expect(dnsTarget).To(HavePrefix("example.com,"))
 			// Current IPv6 must be present
@@ -338,7 +338,7 @@ var _ = Describe("ServiceSync Controller", func() {
 	Context("When reconciling a Service in simple mode", func() {
 		const (
 			serviceName = "test-service-simple"
-			serviceNS   = "default"
+			serviceNS   = testNamespace
 			dpName      = "test-dp-simple"
 		)
 
@@ -353,7 +353,7 @@ var _ = Describe("ServiceSync Controller", func() {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-							Interface: "eth0",
+							Interface: testInterface,
 							Enabled:   ptr.To(true),
 						},
 					},
@@ -437,13 +437,13 @@ func TestServiceSyncReconciler_calculateIPOffset(t *testing.T) {
 	}{
 		{
 			name:     "same address",
-			base:     "2001:db8::1",
-			target:   "2001:db8::1",
+			base:     testAddr,
+			target:   testAddr,
 			expected: [16]byte{},
 		},
 		{
 			name:   "simple offset",
-			base:   "2001:db8::1",
+			base:   testAddr,
 			target: "2001:db8::10",
 			expected: [16]byte{
 				0, 0, 0, 0, 0, 0, 0, 0,
@@ -488,13 +488,13 @@ func TestServiceSyncReconciler_applyIPOffset(t *testing.T) {
 	}{
 		{
 			name:     "zero offset",
-			base:     "2001:db8::1",
+			base:     testAddr,
 			offset:   [16]byte{},
-			expected: "2001:db8::1",
+			expected: testAddr,
 		},
 		{
 			name: "simple offset",
-			base: "2001:db8::1",
+			base: testAddr,
 			offset: [16]byte{
 				0, 0, 0, 0, 0, 0, 0, 0,
 				0, 0, 0, 0, 0, 0, 0, 0x0f,
@@ -530,8 +530,8 @@ func TestServiceSyncReconciler_applyIPOffset(t *testing.T) {
 
 func TestExtractUnmanagedIPs(t *testing.T) {
 	managedPrefixes := []netip.Prefix{
-		netip.MustParsePrefix("2001:db8:1::/48"),
-		netip.MustParsePrefix("2001:db8:2::/48"),
+		netip.MustParsePrefix(testPrefix1Len48),
+		netip.MustParsePrefix(testPrefix2Len48),
 	}
 
 	tests := []struct {
@@ -556,43 +556,43 @@ func TestExtractUnmanagedIPs(t *testing.T) {
 			name:     "IPv4 only — all preserved",
 			input:    "192.168.1.1,10.0.0.1",
 			prefixes: managedPrefixes,
-			expected: []string{"192.168.1.1", "10.0.0.1"},
+			expected: []string{testIPv4Private, testIPv4Addr},
 		},
 		{
 			name:     "dual-stack: IPv4 preserved, managed IPv6 removed",
 			input:    "198.51.100.10,2001:db8:1::ffff:0:2",
 			prefixes: managedPrefixes,
-			expected: []string{"198.51.100.10"},
+			expected: []string{testIPv4Other},
 		},
 		{
 			name:     "static IPv6 outside managed prefix — preserved",
 			input:    "fd00::1,2001:db8:1::1",
 			prefixes: managedPrefixes,
-			expected: []string{"fd00::1"},
+			expected: []string{testULAAddr},
 		},
 		{
 			name:     "mixed: IPv4 + static IPv6 + managed IPv6",
 			input:    "198.51.100.10,fd00::1,2001:db8:1::ffff:0:2,2001:db8:2::ffff:0:2",
 			prefixes: managedPrefixes,
-			expected: []string{"198.51.100.10", "fd00::1"},
+			expected: []string{testIPv4Other, testULAAddr},
 		},
 		{
 			name:     "multiple IPv4 + multiple static IPv6",
 			input:    "192.168.1.1,10.0.0.1,fd00::1,fd00::2,2001:db8:1::1",
 			prefixes: managedPrefixes,
-			expected: []string{"192.168.1.1", "10.0.0.1", "fd00::1", "fd00::2"},
+			expected: []string{testIPv4Private, testIPv4Addr, testULAAddr, "fd00::2"},
 		},
 		{
 			name:     "no managed prefixes — all IPs preserved",
 			input:    "192.168.1.1,2001:db8:1::1,fd00::1",
 			prefixes: nil,
-			expected: []string{"192.168.1.1", "2001:db8:1::1", "fd00::1"},
+			expected: []string{testIPv4Private, testPrefix1Addr, testULAAddr},
 		},
 		{
 			name:     "spaces around IPs",
 			input:    " 198.51.100.10 , 2001:db8:1::1 ",
 			prefixes: managedPrefixes,
-			expected: []string{"198.51.100.10"},
+			expected: []string{testIPv4Other},
 		},
 	}
 
@@ -668,15 +668,15 @@ func TestIndexServiceByDynamicPrefix(t *testing.T) {
 		{
 			name: "loadbalancer with DynamicPrefix annotation",
 			svc: &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{AnnotationName: "home-ipv6"}},
+				ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{AnnotationName: testDynamicPrefixName}},
 				Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
 			},
-			expected: []string{"home-ipv6"},
+			expected: []string{testDynamicPrefixName},
 		},
 		{
 			name: "clusterip ignored",
 			svc: &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{AnnotationName: "home-ipv6"}},
+				ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{AnnotationName: testDynamicPrefixName}},
 				Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP},
 			},
 		},
@@ -715,7 +715,7 @@ func TestServiceSyncReconciler_findReferencingServicesUsesIndex(t *testing.T) {
 	_ = dynamicprefixiov1alpha1.AddToScheme(scheme)
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Transition: &dynamicprefixiov1alpha1.TransitionSpec{Mode: dynamicprefixiov1alpha1.TransitionModeHA},
 		},
@@ -723,15 +723,15 @@ func TestServiceSyncReconciler_findReferencingServicesUsesIndex(t *testing.T) {
 	managed := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "managed",
-			Namespace:   "default",
-			Annotations: map[string]string{AnnotationName: "home-ipv6"},
+			Namespace:   testNamespace,
+			Annotations: map[string]string{AnnotationName: testDynamicPrefixName},
 		},
 		Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
 	}
 	otherDP := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "other-dp",
-			Namespace:   "default",
+			Namespace:   testNamespace,
 			Annotations: map[string]string{AnnotationName: "other-ipv6"},
 		},
 		Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
@@ -739,8 +739,8 @@ func TestServiceSyncReconciler_findReferencingServicesUsesIndex(t *testing.T) {
 	clusterIP := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        "clusterip",
-			Namespace:   "default",
-			Annotations: map[string]string{AnnotationName: "home-ipv6"},
+			Namespace:   testNamespace,
+			Annotations: map[string]string{AnnotationName: testDynamicPrefixName},
 		},
 		Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeClusterIP},
 	}
@@ -757,7 +757,7 @@ func TestServiceSyncReconciler_findReferencingServicesUsesIndex(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("findReferencingServices() returned %d requests, want 1: %v", len(requests), requests)
 	}
-	if requests[0].NamespacedName != (types.NamespacedName{Name: "managed", Namespace: "default"}) {
+	if requests[0].NamespacedName != (types.NamespacedName{Name: "managed", Namespace: testNamespace}) {
 		t.Errorf("findReferencingServices()[0] = %v, want default/managed", requests[0].NamespacedName)
 	}
 }
@@ -771,31 +771,31 @@ func TestCombinePrefixSuffix(t *testing.T) {
 	}{
 		{
 			name:     "/48 prefix with host suffix",
-			prefix:   "2001:db8:1::/48",
-			suffix:   "::ffff:0:2",
+			prefix:   testPrefix1Len48,
+			suffix:   testSuffix,
 			expected: "2001:db8:1::ffff:0:2",
 		},
 		{
 			name:     "/56 prefix with host suffix",
-			prefix:   "2001:db8:abcd:100::/56",
-			suffix:   "::ffff:0:2",
+			prefix:   testPrefixABCD100Len56,
+			suffix:   testSuffix,
 			expected: "2001:db8:abcd:100::ffff:0:2",
 		},
 		{
 			name:     "/56 prefix with different suffix",
-			prefix:   "2001:db8:abcd:100::/56",
+			prefix:   testPrefixABCD100Len56,
 			suffix:   "::ffff:0:10",
 			expected: "2001:db8:abcd:100::ffff:0:10",
 		},
 		{
 			name:     "/64 prefix with suffix",
 			prefix:   "2001:db8:1:2::/64",
-			suffix:   "::1",
+			suffix:   testSuffixOne,
 			expected: "2001:db8:1:2::1",
 		},
 		{
 			name:     "/48 prefix preserves high bits only from prefix",
-			prefix:   "2001:db8:abcd::/48",
+			prefix:   testPrefixABCDLen48,
 			suffix:   "::1234:5678:9abc:def0",
 			expected: "2001:db8:abcd:0:1234:5678:9abc:def0",
 		},
@@ -829,14 +829,14 @@ func TestCalculateSuffixIPs(t *testing.T) {
 			},
 		},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8:abcd:100::/56",
+			CurrentPrefix: testPrefixABCD100Len56,
 			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
-				{Prefix: "2001:db8:abcd:200::/56"},
+				{Prefix: testPrefixABCD200Len56},
 			},
 		},
 	}
 
-	allIPs, currentIP, err := r.calculateSuffixIPs(dp, "::ffff:0:2")
+	allIPs, currentIP, err := r.calculateSuffixIPs(dp, testSuffix)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -862,7 +862,7 @@ func TestCalculateSuffixIPs_NoPrefix(t *testing.T) {
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{},
 	}
 
-	_, _, err := r.calculateSuffixIPs(dp, "::ffff:0:2")
+	_, _, err := r.calculateSuffixIPs(dp, testSuffix)
 	if err == nil {
 		t.Error("expected error for empty current prefix, got nil")
 	}
@@ -873,7 +873,7 @@ func TestCalculateSuffixIPs_InvalidSuffix(t *testing.T) {
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8::/48",
+			CurrentPrefix: testPrefixLen48,
 		},
 	}
 
@@ -894,16 +894,16 @@ func TestCalculateSuffixIPs_MultipleHistory(t *testing.T) {
 			},
 		},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8:abcd:100::/56",
+			CurrentPrefix: testPrefixABCD100Len56,
 			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
-				{Prefix: "2001:db8:abcd:200::/56"},
+				{Prefix: testPrefixABCD200Len56},
 				{Prefix: "2001:db8:abcd:300::/56"},
 				{Prefix: "2001:db8:abcd:400::/56"},
 			},
 		},
 	}
 
-	allIPs, currentIP, err := r.calculateSuffixIPs(dp, "::1")
+	allIPs, currentIP, err := r.calculateSuffixIPs(dp, testSuffixOne)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -940,10 +940,10 @@ func TestCalculateSuffixIPs_MaxHistoryLimit(t *testing.T) {
 			},
 		},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8:1::/48",
+			CurrentPrefix: testPrefix1Len48,
 			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
-				{Prefix: "2001:db8:2::/48"},
-				{Prefix: "2001:db8:3::/48"}, // Should be excluded
+				{Prefix: testPrefix2Len48},
+				{Prefix: testPrefix3Len48}, // Should be excluded
 			},
 		},
 	}
@@ -974,14 +974,14 @@ func TestCalculateSuffixIPs_DifferentPrefixLengths(t *testing.T) {
 	}{
 		{
 			name:           "/48 prefix",
-			prefix:         "2001:db8:abcd::/48",
-			suffix:         "::f000:0:0:1",
+			prefix:         testPrefixABCDLen48,
+			suffix:         testSuffixRangeStart,
 			expectedResult: netip.MustParseAddr("2001:db8:abcd:0:f000:0:0:1").String(),
 		},
 		{
 			name:           "/56 prefix",
-			prefix:         "2001:db8:abcd:100::/56",
-			suffix:         "::f000:0:0:1",
+			prefix:         testPrefixABCD100Len56,
+			suffix:         testSuffixRangeStart,
 			expectedResult: netip.MustParseAddr("2001:db8:abcd:100:f000:0:0:1").String(),
 		},
 		{
@@ -1033,12 +1033,12 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 		{
 			name: "suffix with IPv4-only cilium annotation",
 			annotations: map[string]string{
-				AnnotationName:   "my-dp",
-				AnnotationSuffix: "::ffff:0:2",
+				AnnotationName:   testMyDP,
+				AnnotationSuffix: testSuffix,
 			},
-			existingCiliumIPs: "198.51.100.10",
-			dpCurrentPrefix:   "2001:db8:abcd:100::/56",
-			dpHistory:         []string{"2001:db8:abcd:200::/56"},
+			existingCiliumIPs: testIPv4Other,
+			dpCurrentPrefix:   testPrefixABCD100Len56,
+			dpHistory:         []string{testPrefixABCD200Len56},
 			maxHistory:        2,
 			expectUpdate:      true,
 			expectCiliumIPs: func(t *testing.T, ips string) {
@@ -1069,11 +1069,11 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 		{
 			name: "suffix with multiple IPv4 addresses",
 			annotations: map[string]string{
-				AnnotationName:   "my-dp",
-				AnnotationSuffix: "::1",
+				AnnotationName:   testMyDP,
+				AnnotationSuffix: testSuffixOne,
 			},
 			existingCiliumIPs: "10.0.0.1,192.168.1.100",
-			dpCurrentPrefix:   "2001:db8:1::/48",
+			dpCurrentPrefix:   testPrefix1Len48,
 			dpHistory:         nil,
 			maxHistory:        2,
 			expectUpdate:      true,
@@ -1082,14 +1082,14 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 				if !strings.HasPrefix(ips, "10.0.0.1,192.168.1.100,") {
 					t.Errorf("expected both IPv4 first, got: %s", ips)
 				}
-				expected := netip.MustParseAddr("2001:db8:1::1").String()
+				expected := netip.MustParseAddr(testPrefix1Addr).String()
 				if !strings.Contains(ips, expected) {
 					t.Errorf("missing current IP %s in: %s", expected, ips)
 				}
 			},
 			expectDNSTarget: func(t *testing.T, target string) {
 				t.Helper()
-				expected := netip.MustParseAddr("2001:db8:1::1").String()
+				expected := netip.MustParseAddr(testPrefix1Addr).String()
 				if target != expected {
 					t.Errorf("DNS target = %q, want %q", target, expected)
 				}
@@ -1098,23 +1098,23 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 		{
 			name: "suffix replaces old managed IPv6 but keeps static IPv6",
 			annotations: map[string]string{
-				AnnotationName:   "my-dp",
-				AnnotationSuffix: "::ffff:0:2",
+				AnnotationName:   testMyDP,
+				AnnotationSuffix: testSuffix,
 			},
 			// Has IPv4, a static IPv6 (fd00::), and an old managed IPv6
 			existingCiliumIPs: "192.168.1.1,fd00::1,2001:db8:abcd:100:0:ffff:0:99",
-			dpCurrentPrefix:   "2001:db8:abcd:100::/56",
+			dpCurrentPrefix:   testPrefixABCD100Len56,
 			dpHistory:         nil,
 			maxHistory:        2,
 			expectUpdate:      true,
 			expectCiliumIPs: func(t *testing.T, ips string) {
 				t.Helper()
 				// IPv4 preserved
-				if !strings.Contains(ips, "192.168.1.1") {
+				if !strings.Contains(ips, testIPv4Private) {
 					t.Errorf("missing IPv4 in: %s", ips)
 				}
 				// Static IPv6 preserved
-				if !strings.Contains(ips, "fd00::1") {
+				if !strings.Contains(ips, testULAAddr) {
 					t.Errorf("missing static IPv6 fd00::1 in: %s", ips)
 				}
 				// Old managed IPv6 should be gone (replaced by suffix-calculated one)
@@ -1132,11 +1132,11 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 		{
 			name: "suffix with empty cilium annotation (first run)",
 			annotations: map[string]string{
-				AnnotationName:   "my-dp",
+				AnnotationName:   testMyDP,
 				AnnotationSuffix: "::42",
 			},
 			existingCiliumIPs: "",
-			dpCurrentPrefix:   "2001:db8:abcd::/48",
+			dpCurrentPrefix:   testPrefixABCDLen48,
 			dpHistory:         nil,
 			maxHistory:        2,
 			expectUpdate:      true,
@@ -1158,13 +1158,13 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 		{
 			name: "dual-stack: hostname DNS target preserved with IPv6",
 			annotations: map[string]string{
-				AnnotationName:   "my-dp",
-				AnnotationSuffix: "::ffff:0:2",
+				AnnotationName:   testMyDP,
+				AnnotationSuffix: testSuffix,
 			},
-			existingCiliumIPs: "198.51.100.10",
-			existingDNSTarget: "example.com",
-			dpCurrentPrefix:   "2001:db8:abcd:100::/56",
-			dpHistory:         []string{"2001:db8:abcd:200::/56"},
+			existingCiliumIPs: testIPv4Other,
+			existingDNSTarget: testDNSTarget,
+			dpCurrentPrefix:   testPrefixABCD100Len56,
+			dpHistory:         []string{testPrefixABCD200Len56},
 			maxHistory:        2,
 			expectUpdate:      true,
 			expectCiliumIPs:   nil,
@@ -1189,14 +1189,14 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 		{
 			name: "dual-stack: hostname + old managed IPv6 in target gets rotated",
 			annotations: map[string]string{
-				AnnotationName:   "my-dp",
-				AnnotationSuffix: "::ffff:0:2",
+				AnnotationName:   testMyDP,
+				AnnotationSuffix: testSuffix,
 			},
-			existingCiliumIPs: "198.51.100.10",
+			existingCiliumIPs: testIPv4Other,
 			// Target has hostname + stale IPv6 from old prefix
 			existingDNSTarget: "example.com,2001:db8:abcd:200:0:ffff:0:2",
-			dpCurrentPrefix:   "2001:db8:abcd:100::/56",
-			dpHistory:         []string{"2001:db8:abcd:200::/56"},
+			dpCurrentPrefix:   testPrefixABCD100Len56,
+			dpHistory:         []string{testPrefixABCD200Len56},
 			maxHistory:        2,
 			expectUpdate:      true,
 			expectCiliumIPs:   nil,
@@ -1228,12 +1228,12 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 		{
 			name: "dual-stack: IPv4 address in DNS target preserved",
 			annotations: map[string]string{
-				AnnotationName:   "my-dp",
-				AnnotationSuffix: "::1",
+				AnnotationName:   testMyDP,
+				AnnotationSuffix: testSuffixOne,
 			},
-			existingCiliumIPs: "10.0.0.1",
+			existingCiliumIPs: testIPv4Addr,
 			existingDNSTarget: "203.0.113.1",
-			dpCurrentPrefix:   "2001:db8:1::/48",
+			dpCurrentPrefix:   testPrefix1Len48,
 			dpHistory:         nil,
 			maxHistory:        2,
 			expectUpdate:      true,
@@ -1245,7 +1245,7 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 					t.Errorf("expected IPv4 first, got: %s", target)
 				}
 				// Current IPv6 present
-				expected := netip.MustParseAddr("2001:db8:1::1").String()
+				expected := netip.MustParseAddr(testPrefix1Addr).String()
 				if !strings.Contains(target, expected) {
 					t.Errorf("missing current IPv6 %s in: %s", expected, target)
 				}
@@ -1254,12 +1254,12 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 		{
 			name: "empty DNS target (first run)",
 			annotations: map[string]string{
-				AnnotationName:   "my-dp",
-				AnnotationSuffix: "::ffff:0:2",
+				AnnotationName:   testMyDP,
+				AnnotationSuffix: testSuffix,
 			},
 			existingCiliumIPs: "",
 			existingDNSTarget: "",
-			dpCurrentPrefix:   "2001:db8:abcd:100::/56",
+			dpCurrentPrefix:   testPrefixABCD100Len56,
 			dpHistory:         nil,
 			maxHistory:        2,
 			expectUpdate:      true,
@@ -1326,8 +1326,8 @@ func TestSuffixAnnotation_EndToEnd(t *testing.T) {
 // TestSuffixAnnotation_RequiresName verifies that without dynamic-prefix.io/name,
 // the suffix annotation has no effect (Reconcile short-circuits).
 func TestSuffixAnnotation_RequiresName(t *testing.T) {
-	if AnnotationName != "dynamic-prefix.io/name" {
-		t.Fatalf("AnnotationName = %q, expected %q", AnnotationName, "dynamic-prefix.io/name")
+	if AnnotationName != testAnnotationNameKey {
+		t.Fatalf("AnnotationName = %q, expected %q", AnnotationName, testAnnotationNameKey)
 	}
 	if AnnotationSuffix != "dynamic-prefix.io/suffix" {
 		t.Fatalf("AnnotationSuffix = %q, expected %q", AnnotationSuffix, "dynamic-prefix.io/suffix")
@@ -1343,7 +1343,7 @@ func TestCalculateSuffixIPs_InvalidInputs(t *testing.T) {
 
 	validDP := &dynamicprefixiov1alpha1.DynamicPrefix{
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8::/48",
+			CurrentPrefix: testPrefixLen48,
 		},
 	}
 
@@ -1368,7 +1368,7 @@ func TestCalculateSuffixIPs_InvalidInputs(t *testing.T) {
 		{
 			name:   "IPv4 address as suffix",
 			dp:     validDP,
-			suffix: "192.168.1.1",
+			suffix: testIPv4Private,
 			// netip.ParseAddr accepts IPv4, and As16() then maps it into the
 			// IPv6 space -- a plausible-looking but wrong address. It must be
 			// rejected, as the error message claims.
@@ -1395,7 +1395,7 @@ func TestCalculateSuffixIPs_InvalidInputs(t *testing.T) {
 		{
 			name:      "suffix with brackets",
 			dp:        validDP,
-			suffix:    "[::1]",
+			suffix:    testSuffixBracketed,
 			expectErr: true,
 		},
 		{
@@ -1411,17 +1411,17 @@ func TestCalculateSuffixIPs_InvalidInputs(t *testing.T) {
 					CurrentPrefix: "not-a-prefix",
 				},
 			},
-			suffix:    "::1",
+			suffix:    testSuffixOne,
 			expectErr: true,
 		},
 		{
 			name: "current prefix is bare address (no /nn)",
 			dp: &dynamicprefixiov1alpha1.DynamicPrefix{
 				Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-					CurrentPrefix: "2001:db8::1",
+					CurrentPrefix: testAddr,
 				},
 			},
-			suffix:    "::1",
+			suffix:    testSuffixOne,
 			expectErr: true,
 		},
 		{
@@ -1431,7 +1431,7 @@ func TestCalculateSuffixIPs_InvalidInputs(t *testing.T) {
 					CurrentPrefix: "",
 				},
 			},
-			suffix:    "::1",
+			suffix:    testSuffixOne,
 			expectErr: true,
 		},
 		{
@@ -1439,15 +1439,15 @@ func TestCalculateSuffixIPs_InvalidInputs(t *testing.T) {
 			dp: &dynamicprefixiov1alpha1.DynamicPrefix{
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{},
 				Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-					CurrentPrefix: "2001:db8::/48",
+					CurrentPrefix: testPrefixLen48,
 					History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
-						{Prefix: "2001:db8:1::/48"},
-						{Prefix: "2001:db8:2::/48"},
-						{Prefix: "2001:db8:3::/48"},
+						{Prefix: testPrefix1Len48},
+						{Prefix: testPrefix2Len48},
+						{Prefix: testPrefix3Len48},
 					},
 				},
 			},
-			suffix:    "::1",
+			suffix:    testSuffixOne,
 			expectErr: false,
 		},
 	}
@@ -1476,13 +1476,13 @@ func TestCalculateSuffixIPs_MalformedHistorySkipped(t *testing.T) {
 			},
 		},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8::/48",
+			CurrentPrefix: testPrefixLen48,
 			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
-				{Prefix: "2001:db8:1::/48"}, // valid
-				{Prefix: "garbage"},         // invalid — should be skipped
-				{Prefix: ""},                // empty — should be skipped
-				{Prefix: "2001:db8::1"},     // bare addr without /nn — invalid
-				{Prefix: "2001:db8:2::/48"}, // valid
+				{Prefix: testPrefix1Len48}, // valid
+				{Prefix: testGarbage},      // invalid — should be skipped
+				{Prefix: ""},               // empty — should be skipped
+				{Prefix: testAddr},         // bare addr without /nn — invalid
+				{Prefix: testPrefix2Len48}, // valid
 			},
 		},
 	}
@@ -1525,7 +1525,7 @@ func TestExtractUnmanagedIPs_MalformedInput(t *testing.T) {
 		{
 			name:     "garbage mixed with valid IPs",
 			input:    "192.168.1.1,garbage,2001:db8::1",
-			expected: []string{"192.168.1.1", "garbage"},
+			expected: []string{testIPv4Private, testGarbage},
 		},
 		{
 			name:     "CIDR notation preserved as garbage (not a bare IP)",
@@ -1535,22 +1535,22 @@ func TestExtractUnmanagedIPs_MalformedInput(t *testing.T) {
 		{
 			name:     "duplicate IPs — all kept (no dedup)",
 			input:    "192.168.1.1,192.168.1.1,fd00::1,fd00::1",
-			expected: []string{"192.168.1.1", "192.168.1.1", "fd00::1", "fd00::1"},
+			expected: []string{testIPv4Private, testIPv4Private, testULAAddr, testULAAddr},
 		},
 		{
 			name:     "trailing comma",
 			input:    "192.168.1.1,",
-			expected: []string{"192.168.1.1"},
+			expected: []string{testIPv4Private},
 		},
 		{
 			name:     "leading comma",
 			input:    ",192.168.1.1",
-			expected: []string{"192.168.1.1"},
+			expected: []string{testIPv4Private},
 		},
 		{
 			name:     "IP with brackets",
-			input:    "[::1]",
-			expected: []string{"[::1]"}, // invalid parse → preserved as-is
+			input:    testSuffixBracketed,
+			expected: []string{testSuffixBracketed}, // invalid parse → preserved as-is
 		},
 		{
 			name:     "IP with port",
@@ -1560,7 +1560,7 @@ func TestExtractUnmanagedIPs_MalformedInput(t *testing.T) {
 		{
 			name:     "empty entries between valid IPs",
 			input:    "10.0.0.1,,fd00::1",
-			expected: []string{"10.0.0.1", "fd00::1"},
+			expected: []string{testIPv4Addr, testULAAddr},
 		},
 	}
 
@@ -1590,11 +1590,11 @@ func TestCombinePrefixSuffix_EdgeCases(t *testing.T) {
 			name:     "/128 prefix ignores suffix entirely",
 			prefix:   "2001:db8::1/128",
 			suffix:   "::ffff",
-			expected: "2001:db8::1",
+			expected: testAddr,
 		},
 		{
 			name:     "zero suffix keeps prefix network address",
-			prefix:   "2001:db8:abcd::/48",
+			prefix:   testPrefixABCDLen48,
 			suffix:   "::",
 			expected: "2001:db8:abcd::",
 		},
@@ -1633,9 +1633,9 @@ func TestCollectManagedPrefixes_InvalidEntries(t *testing.T) {
 			name: "all valid",
 			dp: &dynamicprefixiov1alpha1.DynamicPrefix{
 				Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-					CurrentPrefix: "2001:db8::/48",
+					CurrentPrefix: testPrefixLen48,
 					History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
-						{Prefix: "2001:db8:1::/48"},
+						{Prefix: testPrefix1Len48},
 					},
 				},
 			},
@@ -1645,9 +1645,9 @@ func TestCollectManagedPrefixes_InvalidEntries(t *testing.T) {
 			name: "garbage current prefix — skipped",
 			dp: &dynamicprefixiov1alpha1.DynamicPrefix{
 				Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-					CurrentPrefix: "garbage",
+					CurrentPrefix: testGarbage,
 					History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
-						{Prefix: "2001:db8:1::/48"},
+						{Prefix: testPrefix1Len48},
 					},
 				},
 			},
@@ -1659,7 +1659,7 @@ func TestCollectManagedPrefixes_InvalidEntries(t *testing.T) {
 				Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
 					CurrentPrefix: "",
 					History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
-						{Prefix: "2001:db8:1::/48"},
+						{Prefix: testPrefix1Len48},
 					},
 				},
 			},
@@ -1669,12 +1669,12 @@ func TestCollectManagedPrefixes_InvalidEntries(t *testing.T) {
 			name: "mixed valid and invalid history",
 			dp: &dynamicprefixiov1alpha1.DynamicPrefix{
 				Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-					CurrentPrefix: "2001:db8::/48",
+					CurrentPrefix: testPrefixLen48,
 					History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
 						{Prefix: "valid-nope"},
-						{Prefix: "2001:db8:1::/48"},
+						{Prefix: testPrefix1Len48},
 						{Prefix: ""},
-						{Prefix: "2001:db8::1"}, // bare addr — invalid prefix
+						{Prefix: testAddr}, // bare addr — invalid prefix
 					},
 				},
 			},
@@ -1724,7 +1724,7 @@ func TestCalculateServiceIPsErrorsOnUnknownRangeOrSubnet(t *testing.T) {
 			},
 		},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8:abcd:100::/56",
+			CurrentPrefix: testPrefixABCD100Len56,
 		},
 	}
 
@@ -1742,8 +1742,8 @@ func TestCalculateServiceIPsErrorsOnUnknownRangeOrSubnet(t *testing.T) {
 			r := &ServiceSyncReconciler{}
 			svc := &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:        "app",
-					Namespace:   "default",
+					Name:        testLabelApp,
+					Namespace:   testNamespace,
 					Annotations: map[string]string{tt.annotation: tt.value},
 				},
 			}
@@ -1770,18 +1770,18 @@ func TestCalculateServiceIPsErrorsOnUnknownRangeOrSubnet(t *testing.T) {
 // change whenever the set does. Without the first, every reconcile would look
 // like a change and the operator would rewrite the Service forever.
 func TestFingerprintAddresses(t *testing.T) {
-	a := fingerprintAddresses([]string{"192.0.2.1", "2001:db8::1", "2001:db8::2"})
-	reordered := fingerprintAddresses([]string{"2001:db8::2", "192.0.2.1", "2001:db8::1"})
+	a := fingerprintAddresses([]string{testIPv4Assigned, testAddr, testAddr2})
+	reordered := fingerprintAddresses([]string{testAddr2, testIPv4Assigned, testAddr})
 	if a != reordered {
 		t.Errorf("fingerprint depends on order: %q vs %q", a, reordered)
 	}
 
-	added := fingerprintAddresses([]string{"192.0.2.1", "2001:db8::1", "2001:db8::2", "2001:db8::3"})
+	added := fingerprintAddresses([]string{testIPv4Assigned, testAddr, testAddr2, testAddr3})
 	if a == added {
 		t.Errorf("fingerprint unchanged after adding an address: %q", added)
 	}
 
-	removed := fingerprintAddresses([]string{"192.0.2.1", "2001:db8::1"})
+	removed := fingerprintAddresses([]string{testIPv4Assigned, testAddr})
 	if a == removed {
 		t.Errorf("fingerprint unchanged after removing an address: %q", removed)
 	}
@@ -1796,16 +1796,16 @@ func TestAssignedLoadBalancerIPs(t *testing.T) {
 		Status: corev1.ServiceStatus{
 			LoadBalancer: corev1.LoadBalancerStatus{
 				Ingress: []corev1.LoadBalancerIngress{
-					{IP: "2001:db8::2"},
+					{IP: testAddr2},
 					{Hostname: "lb.example.com"}, // hostname-only entries carry no address
-					{IP: "192.0.2.1"},
+					{IP: testIPv4Assigned},
 				},
 			},
 		},
 	}
 
 	got := assignedLoadBalancerIPs(svc)
-	want := []string{"192.0.2.1", "2001:db8::2"}
+	want := []string{testIPv4Assigned, testAddr2}
 	if len(got) != len(want) {
 		t.Fatalf("assignedLoadBalancerIPs() = %v, want %v", got, want)
 	}
@@ -1830,8 +1830,8 @@ func TestNudgeL2Announcer(t *testing.T) {
 		}
 		return &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:        "svc",
-				Namespace:   "default",
+				Name:        testServiceName,
+				Namespace:   testNamespace,
 				Annotations: annotations,
 			},
 			Spec: corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
@@ -1851,42 +1851,42 @@ func TestNudgeL2Announcer(t *testing.T) {
 	}{
 		{
 			name:        "writes the fingerprint once the current address is assigned",
-			annotations: map[string]string{AnnotationName: "home-ipv6"},
-			assigned:    []string{"192.0.2.1", currentIP},
+			annotations: map[string]string{AnnotationName: testDynamicPrefixName},
+			assigned:    []string{testIPv4Assigned, currentIP},
 			wantNudge:   true,
 		},
 		{
 			name:        "defers while LB-IPAM has not assigned the current address",
-			annotations: map[string]string{AnnotationName: "home-ipv6"},
-			assigned:    []string{"192.0.2.1"},
+			annotations: map[string]string{AnnotationName: testDynamicPrefixName},
+			assigned:    []string{testIPv4Assigned},
 			wantRequeue: true,
 		},
 		{
 			name: "opting out suppresses the nudge entirely",
 			annotations: map[string]string{
-				AnnotationName:        "home-ipv6",
+				AnnotationName:        testDynamicPrefixName,
 				AnnotationSkipL2Nudge: AnnotationValueTrue,
 			},
-			assigned:      []string{"192.0.2.1", currentIP},
+			assigned:      []string{testIPv4Assigned, currentIP},
 			wantUnchanged: true,
 		},
 		{
 			name: "already nudged for this address set is a no-op",
 			annotations: map[string]string{
-				AnnotationName: "home-ipv6",
+				AnnotationName: testDynamicPrefixName,
 				AnnotationL2Nudge: fingerprintAddresses(
-					[]string{"192.0.2.1", currentIP}),
+					[]string{testIPv4Assigned, currentIP}),
 			},
-			assigned:      []string{"192.0.2.1", currentIP},
+			assigned:      []string{testIPv4Assigned, currentIP},
 			wantUnchanged: true,
 		},
 		{
 			name: "a stale fingerprint from the previous rotation is refreshed",
 			annotations: map[string]string{
-				AnnotationName:    "home-ipv6",
-				AnnotationL2Nudge: fingerprintAddresses([]string{"192.0.2.1"}),
+				AnnotationName:    testDynamicPrefixName,
+				AnnotationL2Nudge: fingerprintAddresses([]string{testIPv4Assigned}),
 			},
-			assigned:  []string{"192.0.2.1", currentIP},
+			assigned:  []string{testIPv4Assigned, currentIP},
 			wantNudge: true,
 		},
 	}
@@ -1916,7 +1916,8 @@ func TestNudgeL2Announcer(t *testing.T) {
 			}
 
 			var stored corev1.Service
-			if err := fakeClient.Get(ctx, types.NamespacedName{Name: "svc", Namespace: "default"}, &stored); err != nil {
+			key := types.NamespacedName{Name: testServiceName, Namespace: testNamespace}
+			if err := fakeClient.Get(ctx, key, &stored); err != nil {
 				t.Fatalf("Get() error = %v", err)
 			}
 			got := stored.GetAnnotations()[AnnotationL2Nudge]

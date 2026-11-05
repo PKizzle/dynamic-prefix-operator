@@ -33,7 +33,7 @@ func TestValidateDelegatedPrefix(t *testing.T) {
 		requireGUA bool
 		wantErr    bool
 	}{
-		{name: "global unicast /64", prefix: "2001:db8::/64", requireGUA: true},
+		{name: "global unicast /64", prefix: testPrefixLen64, requireGUA: true},
 		{name: "global unicast /56", prefix: "2001:db8:abcd::/56", requireGUA: true},
 		{name: "unique-local rejected when GUA required", prefix: "fd00::/64", requireGUA: true, wantErr: true},
 		{name: "unique-local allowed when GUA not required", prefix: "fd00::/64", requireGUA: false},
@@ -77,7 +77,7 @@ func ulaOnlyRouterAdvertisement() *ndp.RouterAdvertisement {
 }
 
 func TestRAReceiverRejectsULAOnlyAdvertisement(t *testing.T) {
-	r := NewRAReceiver("eth0") // defaults to requiring global unicast
+	r := NewRAReceiver(testInterface) // defaults to requiring global unicast
 
 	r.handleRouterAdvertisement(ulaOnlyRouterAdvertisement())
 
@@ -88,7 +88,7 @@ func TestRAReceiverRejectsULAOnlyAdvertisement(t *testing.T) {
 }
 
 func TestRAReceiverAcceptsULAOnlyWhenPolicyAllows(t *testing.T) {
-	r := NewRAReceiverWithPolicy("eth0", RAPolicy{})
+	r := NewRAReceiverWithPolicy(testInterface, RAPolicy{})
 
 	r.handleRouterAdvertisement(ulaOnlyRouterAdvertisement())
 
@@ -105,7 +105,7 @@ func TestRAReceiverAcceptsULAOnlyWhenPolicyAllows(t *testing.T) {
 // the sequence that matters in practice: the delegation is acquired normally, then
 // an advertisement without the global prefix arrives.
 func TestRAReceiverKeepsGlobalPrefixWhenULAOnlyArrives(t *testing.T) {
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 
 	r.handleRouterAdvertisement(testRouterAdvertisement())
 	first := r.CurrentPrefix()
@@ -130,7 +130,7 @@ func TestProcessIAPDReplyMasksHostBits(t *testing.T) {
 	// low 8 bits (0x00ff) and the interface identifier both sit outside the /56.
 	dirty := decodeIAPrefix(t, iaPrefixBytes(900, 3600, 56, net.ParseIP("2001:db8:1:20ff::1")))
 
-	r := NewDHCPv6PDReceiver("eth0", 56)
+	r := NewDHCPv6PDReceiver(testInterface, 56)
 	if err := r.processIAPDReply(replyWithPrefixes(iaid, dirty), iaid, nil); err != nil {
 		t.Fatalf("processIAPDReply() unexpected error: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestProcessIAPDReplyRejectsULAWhenGUARequired(t *testing.T) {
 	iaid := [4]byte{5, 5, 5, 5}
 	ula := decodeIAPrefix(t, iaPrefixBytes(1800, 7200, 56, net.ParseIP("fd00::")))
 
-	r := NewDHCPv6PDReceiver("eth0", 56) // defaults to requiring global unicast
+	r := NewDHCPv6PDReceiver(testInterface, 56) // defaults to requiring global unicast
 	if err := r.processIAPDReply(replyWithPrefixes(iaid, ula), iaid, nil); err == nil {
 		t.Fatal("processIAPDReply() = nil, want an error for a unique-local delegation")
 	}
@@ -166,15 +166,15 @@ func TestSharedRAPoolSeparatesReceiversByPolicy(t *testing.T) {
 	})
 
 	// Same interface, same policy: one receiver, shared.
-	pool.subscribe("eth0", DefaultRAPolicy())
-	pool.subscribe("eth0", DefaultRAPolicy())
+	pool.subscribe(testInterface, DefaultRAPolicy())
+	pool.subscribe(testInterface, DefaultRAPolicy())
 	if created != 1 {
 		t.Fatalf("created %d receivers for one interface and policy, want 1", created)
 	}
 
 	// Same interface, different policy: a second receiver, because the policy is
 	// baked in and the stricter subscriber must not see what the looser one accepts.
-	pool.subscribe("eth0", RAPolicy{})
+	pool.subscribe(testInterface, RAPolicy{})
 	if created != 2 {
 		t.Fatalf("created %d receivers after adding a second policy, want 2", created)
 	}

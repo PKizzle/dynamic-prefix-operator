@@ -51,17 +51,17 @@ var _ = Describe("DynamicPrefix Controller", func() {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{
-							Interface: "eth0",
+							Interface: testInterface,
 						},
 					},
 					Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
 						{
-							Name:         "loadbalancers",
+							Name:         testSubnetLoadBalancers,
 							Offset:       0,
 							PrefixLength: 64,
 						},
 						{
-							Name:         "services",
+							Name:         testSubnetServices,
 							Offset:       1,
 							PrefixLength: 64,
 						},
@@ -82,7 +82,7 @@ var _ = Describe("DynamicPrefix Controller", func() {
 
 			// Inject a mock receiver with a prefix
 			mockReceiver := prefix.NewMockReceiver(prefix.SourceDHCPv6PD)
-			mockPrefix := netip.MustParsePrefix("2001:db8::/48")
+			mockPrefix := netip.MustParsePrefix(testPrefixLen48)
 			mockReceiver.SimulatePrefix(mockPrefix, time.Hour)
 
 			reconciler.receivers[dpName] = mockReceiver
@@ -110,12 +110,12 @@ var _ = Describe("DynamicPrefix Controller", func() {
 				return err == nil && updatedDP.Status.CurrentPrefix != ""
 			}, timeout, interval).Should(BeTrue())
 
-			Expect(updatedDP.Status.CurrentPrefix).To(Equal("2001:db8::/48"))
+			Expect(updatedDP.Status.CurrentPrefix).To(Equal(testPrefixLen48))
 			Expect(updatedDP.Status.PrefixSource).To(Equal(dynamicprefixiov1alpha1.PrefixSourceDHCPv6PD))
 			Expect(updatedDP.Status.Subnets).To(HaveLen(2))
-			Expect(updatedDP.Status.Subnets[0].Name).To(Equal("loadbalancers"))
-			Expect(updatedDP.Status.Subnets[0].CIDR).To(Equal("2001:db8::/64"))
-			Expect(updatedDP.Status.Subnets[1].Name).To(Equal("services"))
+			Expect(updatedDP.Status.Subnets[0].Name).To(Equal(testSubnetLoadBalancers))
+			Expect(updatedDP.Status.Subnets[0].CIDR).To(Equal(testPrefixLen64))
+			Expect(updatedDP.Status.Subnets[1].Name).To(Equal(testSubnetServices))
 			Expect(updatedDP.Status.Subnets[1].CIDR).To(Equal("2001:db8:0:1::/64"))
 			Eventually(func() string {
 				select {
@@ -153,12 +153,12 @@ var _ = Describe("DynamicPrefix Controller", func() {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{
-							Interface: "eth0",
+							Interface: testInterface,
 						},
 					},
 					Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
 						{
-							Name:         "services",
+							Name:         testSubnetServices,
 							Offset:       0,
 							PrefixLength: 64,
 						},
@@ -181,7 +181,7 @@ var _ = Describe("DynamicPrefix Controller", func() {
 
 			// Start with first prefix
 			mockReceiver := prefix.NewMockReceiver(prefix.SourceDHCPv6PD)
-			prefix1 := netip.MustParsePrefix("2001:db8:1::/48")
+			prefix1 := netip.MustParsePrefix(testPrefix1Len48)
 			mockReceiver.SimulatePrefix(prefix1, time.Hour)
 			reconciler.receivers[dpName] = mockReceiver
 
@@ -197,7 +197,7 @@ var _ = Describe("DynamicPrefix Controller", func() {
 			// Verify first prefix
 			var updatedDP dynamicprefixiov1alpha1.DynamicPrefix
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dpName}, &updatedDP)).Should(Succeed())
-			Expect(updatedDP.Status.CurrentPrefix).To(Equal("2001:db8:1::/48"))
+			Expect(updatedDP.Status.CurrentPrefix).To(Equal(testPrefix1Len48))
 			Expect(updatedDP.Status.History).To(BeEmpty())
 			Eventually(func() string {
 				select {
@@ -209,7 +209,7 @@ var _ = Describe("DynamicPrefix Controller", func() {
 			}, timeout, interval).Should(ContainSubstring(eventReasonPrefixReceived))
 
 			// Simulate prefix change
-			prefix2 := netip.MustParsePrefix("2001:db8:2::/48")
+			prefix2 := netip.MustParsePrefix(testPrefix2Len48)
 			mockReceiver.SimulatePrefix(prefix2, time.Hour)
 			<-mockReceiver.Events() // drain the event
 
@@ -219,10 +219,10 @@ var _ = Describe("DynamicPrefix Controller", func() {
 
 			// Verify new prefix and history
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: dpName}, &updatedDP)).Should(Succeed())
-			Expect(updatedDP.Status.CurrentPrefix).To(Equal("2001:db8:2::/48"))
-			Expect(updatedDP.Status.Subnets[0].CIDR).To(Equal("2001:db8:2::/64"))
+			Expect(updatedDP.Status.CurrentPrefix).To(Equal(testPrefix2Len48))
+			Expect(updatedDP.Status.Subnets[0].CIDR).To(Equal(testPrefix2Len64))
 			Expect(updatedDP.Status.History).To(HaveLen(1))
-			Expect(updatedDP.Status.History[0].Prefix).To(Equal("2001:db8:1::/48"))
+			Expect(updatedDP.Status.History[0].Prefix).To(Equal(testPrefix1Len48))
 			Expect(updatedDP.Status.History[0].State).To(Equal(dynamicprefixiov1alpha1.PrefixStateDraining))
 			Eventually(func() string {
 				select {
@@ -250,7 +250,7 @@ var _ = Describe("DynamicPrefix Controller", func() {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{
-							Interface: "eth0",
+							Interface: testInterface,
 						},
 					},
 				},
@@ -300,7 +300,7 @@ var _ = Describe("DynamicPrefix Controller", func() {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{
-							Interface: "eth0",
+							Interface: testInterface,
 						},
 					},
 				},

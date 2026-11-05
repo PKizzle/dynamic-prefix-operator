@@ -60,10 +60,10 @@ func newHealthTestReconciler(
 
 	scheme := newPoolBackendTestScheme(t)
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6", Finalizers: []string{finalizerName}},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName, Finalizers: []string{finalizerName}},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
-				DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: "eth0"},
+				DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: testInterface},
 			},
 		},
 	}

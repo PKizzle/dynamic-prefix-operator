@@ -79,10 +79,10 @@ func TestWriteLBAddressesTargetsTheSelectedProvider(t *testing.T) {
 	annotations := map[string]string{}
 	newAnnotations := map[string]string{}
 
-	if !writeLBAddresses(annotations, newAnnotations, AnnotationKubevipLBIPs, "2001:db8::1", ownershipRecord{}, nil) {
+	if !writeLBAddresses(annotations, newAnnotations, AnnotationKubevipLBIPs, testAddr, ownershipRecord{}, nil) {
 		t.Fatal("writing addresses reported no change")
 	}
-	if got := newAnnotations[AnnotationKubevipLBIPs]; got != "2001:db8::1" {
+	if got := newAnnotations[AnnotationKubevipLBIPs]; got != testAddr {
 		t.Errorf("%s = %q, want the calculated address", AnnotationKubevipLBIPs, got)
 	}
 	if _, written := newAnnotations[AnnotationCiliumIPs]; written {
@@ -93,22 +93,22 @@ func TestWriteLBAddressesTargetsTheSelectedProvider(t *testing.T) {
 // Flipping the provider has to take the addresses with it. Left behind, they
 // keep requesting a prefix that stops existing at the next rotation.
 func TestWriteLBAddressesMovesEntriesOffTheOtherProvider(t *testing.T) {
-	record := parseOwnershipRecord("2001:db8::1", true)
+	record := parseOwnershipRecord(testAddr, true)
 	annotations := map[string]string{
 		AnnotationCiliumIPs:  "192.0.2.5,2001:db8::1",
-		AnnotationManagedIPs: "2001:db8::1",
+		AnnotationManagedIPs: testAddr,
 	}
 	newAnnotations := map[string]string{}
 	for k, v := range annotations {
 		newAnnotations[k] = v
 	}
 
-	managed := []netip.Prefix{netip.MustParsePrefix("2001:db8::/64")}
-	if !writeLBAddresses(annotations, newAnnotations, AnnotationKubevipLBIPs, "2001:db8::1", record, managed) {
+	managed := []netip.Prefix{netip.MustParsePrefix(testPrefixLen64)}
+	if !writeLBAddresses(annotations, newAnnotations, AnnotationKubevipLBIPs, testAddr, record, managed) {
 		t.Fatal("the flip reported no change")
 	}
 
-	if got := newAnnotations[AnnotationKubevipLBIPs]; got != "2001:db8::1" {
+	if got := newAnnotations[AnnotationKubevipLBIPs]; got != testAddr {
 		t.Errorf("%s = %q, want the address moved to the new provider", AnnotationKubevipLBIPs, got)
 	}
 	// The user's own IPv4 entry was never the operator's to remove.
@@ -118,11 +118,11 @@ func TestWriteLBAddressesMovesEntriesOffTheOtherProvider(t *testing.T) {
 }
 
 func TestWriteLBAddressesRemovesAnEmptiedAnnotation(t *testing.T) {
-	record := parseOwnershipRecord("2001:db8::1", true)
-	annotations := map[string]string{AnnotationCiliumIPs: "2001:db8::1"}
-	newAnnotations := map[string]string{AnnotationCiliumIPs: "2001:db8::1"}
+	record := parseOwnershipRecord(testAddr, true)
+	annotations := map[string]string{AnnotationCiliumIPs: testAddr}
+	newAnnotations := map[string]string{AnnotationCiliumIPs: testAddr}
 
-	writeLBAddresses(annotations, newAnnotations, AnnotationKubevipLBIPs, "2001:db8::1", record, nil)
+	writeLBAddresses(annotations, newAnnotations, AnnotationKubevipLBIPs, testAddr, record, nil)
 
 	if _, present := newAnnotations[AnnotationCiliumIPs]; present {
 		t.Errorf("%s = %q, want the annotation removed once nothing of the user's is left in it",

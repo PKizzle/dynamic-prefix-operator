@@ -31,9 +31,9 @@ import (
 // a trustedRouters change -- left the receiver serving its last prefix forever
 // with every condition green.
 func TestRALeaseExpiresWhenNothingRenewsIt(t *testing.T) {
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 
-	r.updatePrefix(netip.MustParsePrefix("2001:db8::/64"), time.Hour, 30*time.Minute)
+	r.updatePrefix(netip.MustParsePrefix(testPrefixLen64), time.Hour, 30*time.Minute)
 	if r.CurrentPrefix() == nil {
 		t.Fatal("CurrentPrefix() = nil right after acquiring, want the prefix")
 	}
@@ -74,8 +74,8 @@ func TestRALeaseExpiresWhenNothingRenewsIt(t *testing.T) {
 // accepted advertisement restamps ReceivedAt, which is what keeps the deadline
 // moving.
 func TestRALeaseSurvivesWhileAdvertisementsKeepArriving(t *testing.T) {
-	r := NewRAReceiver("eth0")
-	r.updatePrefix(netip.MustParsePrefix("2001:db8::/64"), time.Hour, 30*time.Minute)
+	r := NewRAReceiver(testInterface)
+	r.updatePrefix(netip.MustParsePrefix(testPrefixLen64), time.Hour, 30*time.Minute)
 
 	r.expireLeaseIfStale()
 

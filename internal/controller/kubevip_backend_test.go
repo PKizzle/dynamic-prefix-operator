@@ -40,18 +40,18 @@ func kubevipConfigMap(t *testing.T, key string, data map[string]string) *unstruc
 		values[k] = v
 	}
 
-	annotations := map[string]interface{}{AnnotationName: "home-ipv6"}
+	annotations := map[string]interface{}{AnnotationName: testDynamicPrefixName}
 	if key != "" {
 		annotations[AnnotationKubevipKey] = key
 	}
 
 	cm := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "v1",
-		"kind":       "ConfigMap",
-		"metadata": map[string]interface{}{
-			"name":        "kubevip",
-			"namespace":   "kube-system",
-			"annotations": annotations,
+		keyAPIVersion: "v1",
+		keyKind:       "ConfigMap",
+		keyMetadata: map[string]interface{}{
+			keyName:        "kubevip",
+			"namespace":    "kube-system",
+			keyAnnotations: annotations,
 		},
 		"data": values,
 	}}
@@ -106,18 +106,18 @@ func mustPrefixes(t *testing.T, cidrs ...string) []netip.Prefix {
 }
 
 func TestKubevipWritesCurrentAndHistoricalEntries(t *testing.T) {
-	cm := kubevipConfigMap(t, "cidr-global", nil)
+	cm := kubevipConfigMap(t, testKubevipKey, nil)
 	configs := []poolConfiguration{
 		{cidr: testPoolPrefix},
-		{cidr: "2001:db8:2::/64"},
+		{cidr: testPrefix2Len64},
 	}
 
-	got, err := syncKubevip(t, cm, configs, mustPrefixes(t, testPoolPrefix, "2001:db8:2::/64"))
+	got, err := syncKubevip(t, cm, configs, mustPrefixes(t, testPoolPrefix, testPrefix2Len64))
 	if err != nil {
 		t.Fatalf("update() = %v", err)
 	}
 
-	if value := dataValue(t, got, "cidr-global"); value != testPoolPrefix+",2001:db8:2::/64" {
+	if value := dataValue(t, got, testKubevipKey); value != testPoolPrefix+",2001:db8:2::/64" {
 		t.Errorf("cidr-global = %q, want the current prefix followed by the historical one", value)
 	}
 	record := got.GetAnnotations()[AnnotationManagedKubevipEntries]
@@ -129,9 +129,9 @@ func TestKubevipWritesCurrentAndHistoricalEntries(t *testing.T) {
 // A kube-vip pool is routinely dual-stack, and the whole IPv4 half of it is
 // somebody else's business.
 func TestKubevipPreservesEntriesItDoesNotOwn(t *testing.T) {
-	cm := kubevipConfigMap(t, "cidr-global", map[string]string{
-		"cidr-global": "192.0.2.0/24, 2001:db8:ffff::/64",
-		"range-other": "192.0.2.10-192.0.2.20",
+	cm := kubevipConfigMap(t, testKubevipKey, map[string]string{
+		testKubevipKey: "192.0.2.0/24, 2001:db8:ffff::/64",
+		"range-other":  "192.0.2.10-192.0.2.20",
 	})
 
 	got, err := syncKubevip(t, cm, []poolConfiguration{{cidr: testPoolPrefix}}, mustPrefixes(t, testPoolPrefix))
@@ -139,8 +139,8 @@ func TestKubevipPreservesEntriesItDoesNotOwn(t *testing.T) {
 		t.Fatalf("update() = %v", err)
 	}
 
-	value := dataValue(t, got, "cidr-global")
-	for _, want := range []string{"192.0.2.0/24", "2001:db8:ffff::/64", testPoolPrefix} {
+	value := dataValue(t, got, testKubevipKey)
+	for _, want := range []string{testIPv4CIDR, "2001:db8:ffff::/64", testPoolPrefix} {
 		if !strings.Contains(value, want) {
 			t.Errorf("cidr-global = %q, want it to contain %q", value, want)
 		}
@@ -172,15 +172,15 @@ func TestKubevipRendersRangeKeys(t *testing.T) {
 		},
 		{
 			name:   "a CIDR-aligned address range may go into a cidr key",
-			key:    "cidr-global",
-			config: poolConfiguration{useAddressRange: true, start: "2001:db8::", end: "2001:db8::3"},
+			key:    testKubevipKey,
+			config: poolConfiguration{useAddressRange: true, start: "2001:db8::", end: testAddr3},
 			want:   "2001:db8::/126",
 		},
 		{
 			// Widening it would hand kube-vip addresses the user deliberately
 			// left out of the range.
 			name:    "a range that is not CIDR-aligned is refused rather than widened",
-			key:     "cidr-global",
+			key:     testKubevipKey,
 			config:  poolConfiguration{useAddressRange: true, start: "2001:db8::100", end: "2001:db8::200"},
 			wantErr: "not CIDR-aligned",
 		},
@@ -225,7 +225,7 @@ func TestKubevipRequiresTheKeyToBeNamed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cm := kubevipConfigMap(t, tt.key, nil)
-			_, err := syncKubevip(t, cm, []poolConfiguration{{cidr: "2001:db8::/64"}}, nil)
+			_, err := syncKubevip(t, cm, []poolConfiguration{{cidr: testPrefixLen64}}, nil)
 			if err == nil {
 				t.Fatal("expected the sync to fail")
 			}
@@ -239,7 +239,7 @@ func TestKubevipRequiresTheKeyToBeNamed(t *testing.T) {
 // Re-pointing the annotation must not strand entries under the old key: nothing
 // afterwards looks at a key the annotation no longer names.
 func TestKubevipMovesItsEntriesWhenTheKeyChanges(t *testing.T) {
-	cm := kubevipConfigMap(t, "cidr-global", nil)
+	cm := kubevipConfigMap(t, testKubevipKey, nil)
 	got, err := syncKubevip(t, cm, []poolConfiguration{{cidr: testPoolPrefix}}, mustPrefixes(t, testPoolPrefix))
 	if err != nil {
 		t.Fatalf("first update: %v", err)
@@ -254,7 +254,7 @@ func TestKubevipMovesItsEntriesWhenTheKeyChanges(t *testing.T) {
 		t.Fatalf("second update: %v", err)
 	}
 
-	if left := dataValue(t, moved, "cidr-global"); left != "" {
+	if left := dataValue(t, moved, testKubevipKey); left != "" {
 		t.Errorf("cidr-global = %q, want the entry removed from the key that is no longer managed", left)
 	}
 	if value := dataValue(t, moved, "cidr-production"); value != testPoolPrefix {
@@ -263,8 +263,8 @@ func TestKubevipMovesItsEntriesWhenTheKeyChanges(t *testing.T) {
 }
 
 func TestKubevipReleaseRemovesOnlyItsOwnEntries(t *testing.T) {
-	cm := kubevipConfigMap(t, "cidr-global", map[string]string{
-		"cidr-global": "192.0.2.0/24",
+	cm := kubevipConfigMap(t, testKubevipKey, map[string]string{
+		testKubevipKey: testIPv4CIDR,
 	})
 	got, err := syncKubevip(t, cm, []poolConfiguration{{cidr: testPoolPrefix}}, mustPrefixes(t, testPoolPrefix))
 	if err != nil {
@@ -280,7 +280,7 @@ func TestKubevipReleaseRemovesOnlyItsOwnEntries(t *testing.T) {
 		t.Fatal("release() reported no change despite having written entries")
 	}
 
-	if value := dataValue(t, got, "cidr-global"); value != "192.0.2.0/24" {
+	if value := dataValue(t, got, testKubevipKey); value != testIPv4CIDR {
 		t.Errorf("cidr-global = %q, want the user's entry kept and the operator's removed", value)
 	}
 	if _, ok := got.GetAnnotations()[AnnotationManagedKubevipEntries]; ok {
@@ -291,7 +291,7 @@ func TestKubevipReleaseRemovesOnlyItsOwnEntries(t *testing.T) {
 // A present-but-empty key is a pool kube-vip cannot allocate from, which is not
 // the same as no pool at all.
 func TestKubevipRemovesAKeyItHasEmptied(t *testing.T) {
-	cm := kubevipConfigMap(t, "cidr-global", nil)
+	cm := kubevipConfigMap(t, testKubevipKey, nil)
 	got, err := syncKubevip(t, cm, []poolConfiguration{{cidr: testPoolPrefix}}, mustPrefixes(t, testPoolPrefix))
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -306,33 +306,33 @@ func TestKubevipRemovesAKeyItHasEmptied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading data: %v", err)
 	}
-	if _, present := data["cidr-global"]; present {
-		t.Errorf("cidr-global is still present as %q, want the key removed once nothing is left in it", data["cidr-global"])
+	if _, present := data[testKubevipKey]; present {
+		t.Errorf("cidr-global is still present as %q, want the key removed once nothing is left in it", data[testKubevipKey])
 	}
 }
 
 // A rotation must replace the operator's entries, not accumulate them.
 func TestKubevipDoesNotLeakEntriesAcrossRotations(t *testing.T) {
-	cm := kubevipConfigMap(t, "cidr-global", nil)
+	cm := kubevipConfigMap(t, testKubevipKey, nil)
 
 	got, err := syncKubevip(t, cm, []poolConfiguration{{cidr: testPoolPrefix}}, mustPrefixes(t, testPoolPrefix))
 	if err != nil {
 		t.Fatalf("first rotation: %v", err)
 	}
 	got, err = syncKubevip(t, got,
-		[]poolConfiguration{{cidr: "2001:db8:2::/64"}, {cidr: testPoolPrefix}},
-		mustPrefixes(t, "2001:db8:2::/64", testPoolPrefix))
+		[]poolConfiguration{{cidr: testPrefix2Len64}, {cidr: testPoolPrefix}},
+		mustPrefixes(t, testPrefix2Len64, testPoolPrefix))
 	if err != nil {
 		t.Fatalf("second rotation: %v", err)
 	}
 	got, err = syncKubevip(t, got,
-		[]poolConfiguration{{cidr: "2001:db8:3::/64"}, {cidr: "2001:db8:2::/64"}},
-		mustPrefixes(t, "2001:db8:3::/64", "2001:db8:2::/64"))
+		[]poolConfiguration{{cidr: testPrefix3Len64}, {cidr: testPrefix2Len64}},
+		mustPrefixes(t, testPrefix3Len64, testPrefix2Len64))
 	if err != nil {
 		t.Fatalf("third rotation: %v", err)
 	}
 
-	value := dataValue(t, got, "cidr-global")
+	value := dataValue(t, got, testKubevipKey)
 	if value != "2001:db8:3::/64,2001:db8:2::/64" {
 		t.Fatalf("cidr-global = %q, want only the current prefix and the one retained in history", value)
 	}
@@ -342,7 +342,7 @@ func TestKubevipDoesNotLeakEntriesAcrossRotations(t *testing.T) {
 }
 
 func TestKubevipRecordIsRegisteredForOwnershipChecks(t *testing.T) {
-	annotations := map[string]string{AnnotationManagedKubevipEntries: "2001:db8::/64"}
+	annotations := map[string]string{AnnotationManagedKubevipEntries: testPrefixLen64}
 	if !hasOwnershipRecord(annotations) {
 		t.Error("a ConfigMap carrying only a kube-vip record is not recognised as still bound, " +
 			"so the watch would stop matching it before its entries are handed back")

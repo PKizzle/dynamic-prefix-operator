@@ -48,6 +48,13 @@ const (
 	kindCalicoIPPool             = "IPPool"
 )
 
+// Resource names (plurals) the Cilium kinds are served under.
+const (
+	resourceCiliumLoadBalancerIPPools = "ciliumloadbalancerippools"
+	resourceCiliumCIDRGroups          = "ciliumcidrgroups"
+	resourceCiliumBGPAdvertisements   = "ciliumbgpadvertisements"
+)
+
 // preferredVersions lists API versions in order of preference (most preferred first).
 // Cilium 1.16+ serves v2 as the stable API; v2alpha1 is deprecated but still
 // served for backward compatibility with older clusters.
@@ -93,15 +100,15 @@ func DiscoverCiliumVersions(dc discovery.DiscoveryInterface) (*CiliumVersions, e
 		return gvk, nil
 	}
 
-	lbPool, err := resolve(kindCiliumLoadBalancerIPPool, "ciliumloadbalancerippools")
+	lbPool, err := resolve(kindCiliumLoadBalancerIPPool, resourceCiliumLoadBalancerIPPools)
 	if err != nil {
 		return nil, err
 	}
-	cidrGroup, err := resolve(kindCiliumCIDRGroup, "ciliumcidrgroups")
+	cidrGroup, err := resolve(kindCiliumCIDRGroup, resourceCiliumCIDRGroups)
 	if err != nil {
 		return nil, err
 	}
-	bgpAdv, err := resolve(kindCiliumBGPAdvertisement, "ciliumbgpadvertisements")
+	bgpAdv, err := resolve(kindCiliumBGPAdvertisement, resourceCiliumBGPAdvertisements)
 	if err != nil {
 		return nil, err
 	}
@@ -127,13 +134,13 @@ func DiscoverPoolBackendGVKs(dc discovery.DiscoveryInterface) ([]schema.GroupVer
 		{
 			group:             ciliumAPIGroup,
 			kind:              kindCiliumLoadBalancerIPPool,
-			plural:            "ciliumloadbalancerippools",
+			plural:            resourceCiliumLoadBalancerIPPools,
 			preferredVersions: preferredVersions,
 		},
 		{
 			group:             ciliumAPIGroup,
 			kind:              kindCiliumCIDRGroup,
-			plural:            "ciliumcidrgroups",
+			plural:            resourceCiliumCIDRGroups,
 			preferredVersions: preferredVersions,
 		},
 		{

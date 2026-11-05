@@ -34,31 +34,31 @@ func TestCalculateAddressRange(t *testing.T) {
 	}{
 		{
 			name:       "simple range in /64",
-			basePrefix: "2001:db8:abcd:1::/64",
+			basePrefix: testRangeBase,
 			config: AddressRangeConfig{
 				Name:  "lb-pool",
-				Start: "::f000:0:0:0",
-				End:   "::ffff:ffff:ffff:ffff",
+				Start: testRangeStartSuffix,
+				End:   testRangeEndSuffix,
 			},
 			wantStart: "2001:db8:abcd:1:f000::",
-			wantEnd:   "2001:db8:abcd:1:ffff:ffff:ffff:ffff",
+			wantEnd:   testRangeBaseLast,
 			wantErr:   false,
 		},
 		{
 			name:       "small range at end of /64",
-			basePrefix: "2001:db8:abcd:1::/64",
+			basePrefix: testRangeBase,
 			config: AddressRangeConfig{
 				Name:  "small",
 				Start: "::ffff:ff00:0:0",
-				End:   "::ffff:ffff:ffff:ffff",
+				End:   testRangeEndSuffix,
 			},
 			wantStart: "2001:db8:abcd:1:ffff:ff00::",
-			wantEnd:   "2001:db8:abcd:1:ffff:ffff:ffff:ffff",
+			wantEnd:   testRangeBaseLast,
 			wantErr:   false,
 		},
 		{
 			name:       "range with specific addresses",
-			basePrefix: "2001:db8::/32",
+			basePrefix: testPrefixLen32,
 			config: AddressRangeConfig{
 				Name:  "specific",
 				Start: "::1:0:0:0:1",
@@ -70,21 +70,21 @@ func TestCalculateAddressRange(t *testing.T) {
 		},
 		{
 			name:       "start greater than end",
-			basePrefix: "2001:db8:abcd:1::/64",
+			basePrefix: testRangeBase,
 			config: AddressRangeConfig{
-				Name:  "invalid",
+				Name:  testNameInvalid,
 				Start: "::ffff:0:0:0",
-				End:   "::f000:0:0:0",
+				End:   testRangeStartSuffix,
 			},
 			wantErr:     true,
 			errContains: "greater than end",
 		},
 		{
 			name:       "invalid start suffix",
-			basePrefix: "2001:db8:abcd:1::/64",
+			basePrefix: testRangeBase,
 			config: AddressRangeConfig{
-				Name:  "invalid",
-				Start: "not-an-address",
+				Name:  testNameInvalid,
+				Start: testNotAnAddress,
 				End:   "::ffff::",
 			},
 			wantErr:     true,
@@ -92,11 +92,11 @@ func TestCalculateAddressRange(t *testing.T) {
 		},
 		{
 			name:       "invalid end suffix",
-			basePrefix: "2001:db8:abcd:1::/64",
+			basePrefix: testRangeBase,
 			config: AddressRangeConfig{
-				Name:  "invalid",
-				Start: "::1",
-				End:   "not-an-address",
+				Name:  testNameInvalid,
+				Start: testSuffixOne,
+				End:   testNotAnAddress,
 			},
 			wantErr:     true,
 			errContains: "invalid end offset",
@@ -138,11 +138,11 @@ func TestCalculateAddressRange(t *testing.T) {
 }
 
 func TestCalculateAddressRanges(t *testing.T) {
-	basePrefix := netip.MustParsePrefix("2001:db8:abcd:1::/64")
+	basePrefix := netip.MustParsePrefix(testRangeBase)
 	configs := []AddressRangeConfig{
 		{
 			Name:  "pool1",
-			Start: "::f000:0:0:0",
+			Start: testRangeStartSuffix,
 			End:   "::f0ff:ffff:ffff:ffff",
 		},
 		{
@@ -172,7 +172,7 @@ func TestCalculateAddressRanges(t *testing.T) {
 func TestCalculateAddressRanges_IPv4Error(t *testing.T) {
 	basePrefix := netip.MustParsePrefix("192.168.1.0/24")
 	configs := []AddressRangeConfig{
-		{Name: "test", Start: "::1", End: "::ff"},
+		{Name: testName, Start: testSuffixOne, End: "::ff"},
 	}
 
 	_, err := CalculateAddressRanges(basePrefix, configs)
@@ -197,12 +197,12 @@ func TestRangeToCIDR(t *testing.T) {
 		{
 			name:     "aligned /64",
 			start:    "2001:db8:abcd:1::",
-			end:      "2001:db8:abcd:1:ffff:ffff:ffff:ffff",
-			wantCIDR: "2001:db8:abcd:1::/64",
+			end:      testRangeBaseLast,
+			wantCIDR: testRangeBase,
 		},
 		{
 			name:     "unaligned range",
-			start:    "2001:db8::1",
+			start:    testAddr,
 			end:      "2001:db8::10",
 			wantCIDR: "2001:db8::/123", // Smallest containing CIDR (covers 0-31)
 		},
@@ -230,8 +230,8 @@ func TestAddressCount(t *testing.T) {
 	}{
 		{
 			name:  "single address",
-			start: "2001:db8::1",
-			end:   "2001:db8::1",
+			start: testAddr,
+			end:   testAddr,
 			want:  1,
 		},
 		{
@@ -277,21 +277,21 @@ func TestParseOffsetSuffix(t *testing.T) {
 	}{
 		{
 			name:       "simple suffix in /64",
-			basePrefix: "2001:db8:abcd:1::/64",
-			suffix:     "::1",
+			basePrefix: testRangeBase,
+			suffix:     testSuffixOne,
 			want:       "2001:db8:abcd:1::1",
 		},
 		{
 			name:       "high suffix in /64",
-			basePrefix: "2001:db8:abcd:1::/64",
-			suffix:     "::f000:0:0:0",
+			basePrefix: testRangeBase,
+			suffix:     testRangeStartSuffix,
 			want:       "2001:db8:abcd:1:f000::",
 		},
 		{
 			name:       "max suffix in /64",
-			basePrefix: "2001:db8:abcd:1::/64",
-			suffix:     "::ffff:ffff:ffff:ffff",
-			want:       "2001:db8:abcd:1:ffff:ffff:ffff:ffff",
+			basePrefix: testRangeBase,
+			suffix:     testRangeEndSuffix,
+			want:       testRangeBaseLast,
 		},
 		{
 			name:       "suffix in /48",

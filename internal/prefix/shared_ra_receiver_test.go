@@ -41,7 +41,7 @@ func TestDefaultReceiverFactory_SharesRAReceiverByInterface(t *testing.T) {
 
 	spec := dynamicprefixiov1alpha1.AcquisitionSpec{
 		RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-			Interface: "eth0",
+			Interface: testInterface,
 			Enabled:   ptr.To(true),
 		},
 	}
@@ -73,7 +73,7 @@ func TestDefaultReceiverFactory_SharesRAReceiverByInterface(t *testing.T) {
 	}
 
 	prefix := &Prefix{
-		Network:           netip.MustParsePrefix("2001:db8::/48"),
+		Network:           netip.MustParsePrefix(testPrefixLen48),
 		ValidLifetime:     time.Hour,
 		PreferredLifetime: time.Hour,
 		Source:            SourceRouterAdvertisement,
@@ -116,7 +116,7 @@ func TestDefaultReceiverFactory_CreatesSeparateRAReceiversForDifferentInterfaces
 		},
 	}
 
-	for _, iface := range []string{"eth0", "eth1", "eth0"} {
+	for _, iface := range []string{testInterface, "eth1", testInterface} {
 		_, err := factory.CreateReceiver(dynamicprefixiov1alpha1.AcquisitionSpec{
 			RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
 				Interface: iface,
@@ -128,8 +128,8 @@ func TestDefaultReceiverFactory_CreatesSeparateRAReceiversForDifferentInterfaces
 		}
 	}
 
-	if createdByInterface["eth0"] != 1 {
-		t.Fatalf("eth0 created %d receivers, want 1", createdByInterface["eth0"])
+	if createdByInterface[testInterface] != 1 {
+		t.Fatalf("eth0 created %d receivers, want 1", createdByInterface[testInterface])
 	}
 	if createdByInterface["eth1"] != 1 {
 		t.Fatalf("eth1 created %d receivers, want 1", createdByInterface["eth1"])

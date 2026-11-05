@@ -39,19 +39,19 @@ func TestDiscoverCiliumVersions_PrefersV2(t *testing.T) {
 	}
 	dc.Resources = []*metav1.APIResourceList{
 		{
-			GroupVersion: "cilium.io/v2",
+			GroupVersion: testCiliumV2,
 			APIResources: []metav1.APIResource{
-				{Name: "ciliumloadbalancerippools", Kind: "CiliumLoadBalancerIPPool"},
-				{Name: "ciliumcidrgroups", Kind: "CiliumCIDRGroup"},
-				{Name: "ciliumbgpadvertisements", Kind: "CiliumBGPAdvertisement"},
+				{Name: resourceCiliumLoadBalancerIPPools, Kind: kindCiliumLoadBalancerIPPool},
+				{Name: resourceCiliumCIDRGroups, Kind: kindCiliumCIDRGroup},
+				{Name: resourceCiliumBGPAdvertisements, Kind: kindCiliumBGPAdvertisement},
 			},
 		},
 		{
-			GroupVersion: "cilium.io/v2alpha1",
+			GroupVersion: testCiliumV2alpha1,
 			APIResources: []metav1.APIResource{
-				{Name: "ciliumloadbalancerippools", Kind: "CiliumLoadBalancerIPPool"},
-				{Name: "ciliumcidrgroups", Kind: "CiliumCIDRGroup"},
-				{Name: "ciliumbgpadvertisements", Kind: "CiliumBGPAdvertisement"},
+				{Name: resourceCiliumLoadBalancerIPPools, Kind: kindCiliumLoadBalancerIPPool},
+				{Name: resourceCiliumCIDRGroups, Kind: kindCiliumCIDRGroup},
+				{Name: resourceCiliumBGPAdvertisements, Kind: kindCiliumBGPAdvertisement},
 			},
 		},
 	}
@@ -62,9 +62,9 @@ func TestDiscoverCiliumVersions_PrefersV2(t *testing.T) {
 	}
 
 	// Should prefer v2
-	assertGVK(t, versions.LoadBalancerIPPool, "v2", "CiliumLoadBalancerIPPool")
-	assertGVK(t, versions.CIDRGroup, "v2", "CiliumCIDRGroup")
-	assertGVK(t, versions.BGPAdvertisement, "v2", "CiliumBGPAdvertisement")
+	assertGVK(t, versions.LoadBalancerIPPool, "v2", kindCiliumLoadBalancerIPPool)
+	assertGVK(t, versions.CIDRGroup, "v2", kindCiliumCIDRGroup)
+	assertGVK(t, versions.BGPAdvertisement, "v2", kindCiliumBGPAdvertisement)
 }
 
 func TestDiscoverCiliumVersions_FallsBackToV2Alpha1(t *testing.T) {
@@ -74,11 +74,11 @@ func TestDiscoverCiliumVersions_FallsBackToV2Alpha1(t *testing.T) {
 	}
 	dc.Resources = []*metav1.APIResourceList{
 		{
-			GroupVersion: "cilium.io/v2alpha1",
+			GroupVersion: testCiliumV2alpha1,
 			APIResources: []metav1.APIResource{
-				{Name: "ciliumloadbalancerippools", Kind: "CiliumLoadBalancerIPPool"},
-				{Name: "ciliumcidrgroups", Kind: "CiliumCIDRGroup"},
-				{Name: "ciliumbgpadvertisements", Kind: "CiliumBGPAdvertisement"},
+				{Name: resourceCiliumLoadBalancerIPPools, Kind: kindCiliumLoadBalancerIPPool},
+				{Name: resourceCiliumCIDRGroups, Kind: kindCiliumCIDRGroup},
+				{Name: resourceCiliumBGPAdvertisements, Kind: kindCiliumBGPAdvertisement},
 			},
 		},
 	}
@@ -89,9 +89,9 @@ func TestDiscoverCiliumVersions_FallsBackToV2Alpha1(t *testing.T) {
 	}
 
 	// Should fall back to v2alpha1
-	assertGVK(t, versions.LoadBalancerIPPool, "v2alpha1", "CiliumLoadBalancerIPPool")
-	assertGVK(t, versions.CIDRGroup, "v2alpha1", "CiliumCIDRGroup")
-	assertGVK(t, versions.BGPAdvertisement, "v2alpha1", "CiliumBGPAdvertisement")
+	assertGVK(t, versions.LoadBalancerIPPool, "v2alpha1", kindCiliumLoadBalancerIPPool)
+	assertGVK(t, versions.CIDRGroup, "v2alpha1", kindCiliumCIDRGroup)
+	assertGVK(t, versions.BGPAdvertisement, "v2alpha1", kindCiliumBGPAdvertisement)
 }
 
 func TestDiscoverCiliumVersions_MixedVersions(t *testing.T) {
@@ -101,17 +101,17 @@ func TestDiscoverCiliumVersions_MixedVersions(t *testing.T) {
 	}
 	dc.Resources = []*metav1.APIResourceList{
 		{
-			GroupVersion: "cilium.io/v2",
+			GroupVersion: testCiliumV2,
 			APIResources: []metav1.APIResource{
-				{Name: "ciliumloadbalancerippools", Kind: "CiliumLoadBalancerIPPool"},
+				{Name: resourceCiliumLoadBalancerIPPools, Kind: kindCiliumLoadBalancerIPPool},
 			},
 		},
 		{
-			GroupVersion: "cilium.io/v2alpha1",
+			GroupVersion: testCiliumV2alpha1,
 			APIResources: []metav1.APIResource{
-				{Name: "ciliumloadbalancerippools", Kind: "CiliumLoadBalancerIPPool"},
-				{Name: "ciliumcidrgroups", Kind: "CiliumCIDRGroup"},
-				{Name: "ciliumbgpadvertisements", Kind: "CiliumBGPAdvertisement"},
+				{Name: resourceCiliumLoadBalancerIPPools, Kind: kindCiliumLoadBalancerIPPool},
+				{Name: resourceCiliumCIDRGroups, Kind: kindCiliumCIDRGroup},
+				{Name: resourceCiliumBGPAdvertisements, Kind: kindCiliumBGPAdvertisement},
 			},
 		},
 	}
@@ -122,10 +122,10 @@ func TestDiscoverCiliumVersions_MixedVersions(t *testing.T) {
 	}
 
 	// LBPool should prefer v2
-	assertGVK(t, versions.LoadBalancerIPPool, "v2", "CiliumLoadBalancerIPPool")
+	assertGVK(t, versions.LoadBalancerIPPool, "v2", kindCiliumLoadBalancerIPPool)
 	// Others should fall back to v2alpha1
-	assertGVK(t, versions.CIDRGroup, "v2alpha1", "CiliumCIDRGroup")
-	assertGVK(t, versions.BGPAdvertisement, "v2alpha1", "CiliumBGPAdvertisement")
+	assertGVK(t, versions.CIDRGroup, "v2alpha1", kindCiliumCIDRGroup)
+	assertGVK(t, versions.BGPAdvertisement, "v2alpha1", kindCiliumBGPAdvertisement)
 }
 
 func TestDiscoverCiliumVersions_NoCilium(t *testing.T) {
@@ -135,9 +135,9 @@ func TestDiscoverCiliumVersions_NoCilium(t *testing.T) {
 	}
 	dc.Resources = []*metav1.APIResourceList{
 		{
-			GroupVersion: "apps/v1",
+			GroupVersion: testAppsV1,
 			APIResources: []metav1.APIResource{
-				{Name: "deployments", Kind: "Deployment"},
+				{Name: testResourceDeployments, Kind: testKindDeployment},
 			},
 		},
 	}
@@ -155,9 +155,9 @@ func TestDiscoverCiliumVersions_MissingResource(t *testing.T) {
 	}
 	dc.Resources = []*metav1.APIResourceList{
 		{
-			GroupVersion: "cilium.io/v2",
+			GroupVersion: testCiliumV2,
 			APIResources: []metav1.APIResource{
-				{Name: "ciliumloadbalancerippools", Kind: "CiliumLoadBalancerIPPool"},
+				{Name: resourceCiliumLoadBalancerIPPools, Kind: kindCiliumLoadBalancerIPPool},
 				// Missing: ciliumcidrgroups, ciliumbgpadvertisements
 			},
 		},
@@ -172,16 +172,16 @@ func TestDiscoverPoolBackendGVKs_DetectsAvailableBackends(t *testing.T) {
 	dc := &fake.FakeDiscovery{Fake: &coretesting.Fake{}}
 	dc.Resources = []*metav1.APIResourceList{
 		{
-			GroupVersion: "cilium.io/v2",
+			GroupVersion: testCiliumV2,
 			APIResources: []metav1.APIResource{
-				{Name: "ciliumloadbalancerippools", Kind: "CiliumLoadBalancerIPPool"},
-				{Name: "ciliumcidrgroups", Kind: "CiliumCIDRGroup"},
+				{Name: resourceCiliumLoadBalancerIPPools, Kind: kindCiliumLoadBalancerIPPool},
+				{Name: resourceCiliumCIDRGroups, Kind: kindCiliumCIDRGroup},
 			},
 		},
 		{
 			GroupVersion: "metallb.io/v1beta1",
 			APIResources: []metav1.APIResource{
-				{Name: "ipaddresspools", Kind: "IPAddressPool"},
+				{Name: "ipaddresspools", Kind: kindMetalLBIPAddressPool},
 			},
 		},
 		{
@@ -216,7 +216,7 @@ func TestDiscoverPoolBackendGVKs_AllowsNonCiliumBackends(t *testing.T) {
 		{
 			GroupVersion: "metallb.io/v1beta1",
 			APIResources: []metav1.APIResource{
-				{Name: "ipaddresspools", Kind: "IPAddressPool"},
+				{Name: "ipaddresspools", Kind: kindMetalLBIPAddressPool},
 			},
 		},
 	}
@@ -233,7 +233,10 @@ func TestDiscoverPoolBackendGVKs_AllowsNonCiliumBackends(t *testing.T) {
 func TestDiscoverPoolBackendGVKs_NoBackends(t *testing.T) {
 	dc := &fake.FakeDiscovery{Fake: &coretesting.Fake{}}
 	dc.Resources = []*metav1.APIResourceList{
-		{GroupVersion: "apps/v1", APIResources: []metav1.APIResource{{Name: "deployments", Kind: "Deployment"}}},
+		{
+			GroupVersion: testAppsV1,
+			APIResources: []metav1.APIResource{{Name: testResourceDeployments, Kind: testKindDeployment}},
+		},
 	}
 
 	_, err := DiscoverPoolBackendGVKs(dc)
@@ -243,7 +246,7 @@ func TestDiscoverPoolBackendGVKs_NoBackends(t *testing.T) {
 }
 
 func TestListGVK(t *testing.T) {
-	gvk := schema.GroupVersionKind{Group: ciliumAPIGroup, Version: "v2", Kind: "CiliumLoadBalancerIPPool"}
+	gvk := schema.GroupVersionKind{Group: ciliumAPIGroup, Version: "v2", Kind: kindCiliumLoadBalancerIPPool}
 	listGVK := ListGVK(gvk)
 
 	if listGVK.Kind != "CiliumLoadBalancerIPPoolList" {
@@ -265,12 +268,12 @@ func TestAPIVersion(t *testing.T) {
 	}{
 		{
 			name:     "v2",
-			gvk:      schema.GroupVersionKind{Group: ciliumAPIGroup, Version: "v2", Kind: "CiliumLoadBalancerIPPool"},
+			gvk:      schema.GroupVersionKind{Group: ciliumAPIGroup, Version: "v2", Kind: kindCiliumLoadBalancerIPPool},
 			expected: ciliumAPIGroup + "/v2",
 		},
 		{
 			name:     "v2alpha1",
-			gvk:      schema.GroupVersionKind{Group: ciliumAPIGroup, Version: "v2alpha1", Kind: "CiliumBGPAdvertisement"},
+			gvk:      schema.GroupVersionKind{Group: ciliumAPIGroup, Version: "v2alpha1", Kind: kindCiliumBGPAdvertisement},
 			expected: ciliumAPIGroup + "/v2alpha1",
 		},
 	}
@@ -311,11 +314,11 @@ func containsGVK(gvks []schema.GroupVersionKind, want schema.GroupVersionKind) b
 func ciliumResources() []*metav1.APIResourceList {
 	return []*metav1.APIResourceList{
 		{
-			GroupVersion: "cilium.io/v2",
+			GroupVersion: testCiliumV2,
 			APIResources: []metav1.APIResource{
-				{Name: "ciliumloadbalancerippools", Kind: "CiliumLoadBalancerIPPool"},
-				{Name: "ciliumcidrgroups", Kind: "CiliumCIDRGroup"},
-				{Name: "ciliumbgpadvertisements", Kind: "CiliumBGPAdvertisement"},
+				{Name: resourceCiliumLoadBalancerIPPools, Kind: kindCiliumLoadBalancerIPPool},
+				{Name: resourceCiliumCIDRGroups, Kind: kindCiliumCIDRGroup},
+				{Name: resourceCiliumBGPAdvertisements, Kind: kindCiliumBGPAdvertisement},
 			},
 		},
 	}
@@ -381,7 +384,10 @@ func TestCiliumControllerStarter_WaitsForCilium(t *testing.T) {
 	dc := &syncedDiscovery{FakeDiscovery: &fake.FakeDiscovery{Fake: &coretesting.Fake{}}}
 	// Start with no Cilium resources
 	dc.setResources([]*metav1.APIResourceList{
-		{GroupVersion: "apps/v1", APIResources: []metav1.APIResource{{Name: "deployments", Kind: "Deployment"}}},
+		{
+			GroupVersion: testAppsV1,
+			APIResources: []metav1.APIResource{{Name: testResourceDeployments, Kind: testKindDeployment}},
+		},
 	})
 
 	var called atomic.Bool

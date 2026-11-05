@@ -51,10 +51,10 @@ var _ = Describe("PoolSync Controller", func() {
 	Context("When reconciling a CiliumLoadBalancerIPPool", func() {
 		const (
 			poolName   = "test-pool"
-			dpName     = "test-dp"
-			subnetName = "lb-pool"
+			dpName     = testDPName
+			subnetName = testLBPoolName
 			// Expected CIDR is calculated from base prefix 2001:db8::/48 with offset 0 and prefixLength 64
-			subnetCIDR = "2001:db8::/64"
+			subnetCIDR = testPrefixLen64
 		)
 
 		ctx := context.Background()
@@ -71,7 +71,7 @@ var _ = Describe("PoolSync Controller", func() {
 				AnnotationSubnet: subnetName,
 			})
 			// Set required spec fields
-			Expect(unstructured.SetNestedField(pool.Object, []interface{}{}, "spec", "blocks")).To(Succeed())
+			Expect(unstructured.SetNestedField(pool.Object, []interface{}{}, fieldSpec, fieldBlocks)).To(Succeed())
 
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
 		})
@@ -107,13 +107,13 @@ var _ = Describe("PoolSync Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: poolName}, pool)).To(Succeed())
 
 			// Check spec.blocks
-			blocks, found, err := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+			blocks, found, err := unstructured.NestedSlice(pool.Object, fieldSpec, fieldBlocks)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(blocks).To(HaveLen(1))
 
 			block := blocks[0].(map[string]interface{})
-			Expect(block["cidr"]).To(Equal(subnetCIDR))
+			Expect(block[fieldCIDR]).To(Equal(subnetCIDR))
 
 			// Check last-sync annotation
 			annotations := pool.GetAnnotations()
@@ -147,7 +147,7 @@ var _ = Describe("PoolSync Controller", func() {
 			dpName     = "test-dp-cidr"
 			subnetName = "egress"
 			// Expected CIDR is calculated from base prefix 2001:db8::/48 with offset 0 and prefixLength 64
-			subnetCIDR = "2001:db8::/64"
+			subnetCIDR = testPrefixLen64
 		)
 
 		ctx := context.Background()
@@ -164,7 +164,7 @@ var _ = Describe("PoolSync Controller", func() {
 				AnnotationSubnet: subnetName,
 			})
 			// Set required spec fields
-			Expect(unstructured.SetNestedField(group.Object, []interface{}{}, "spec", "externalCIDRs")).To(Succeed())
+			Expect(unstructured.SetNestedField(group.Object, []interface{}{}, fieldSpec, fieldExternalCIDRs)).To(Succeed())
 
 			Expect(k8sClient.Create(ctx, group)).To(Succeed())
 		})
@@ -198,7 +198,7 @@ var _ = Describe("PoolSync Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: groupName}, group)).To(Succeed())
 
 			// Check spec.externalCIDRs
-			cidrs, found, err := unstructured.NestedStringSlice(group.Object, "spec", "externalCIDRs")
+			cidrs, found, err := unstructured.NestedStringSlice(group.Object, fieldSpec, fieldExternalCIDRs)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(cidrs).To(HaveLen(1))
@@ -226,7 +226,7 @@ var _ = Describe("PoolSync Controller", func() {
 		const (
 			poolName      = "test-pool-main"
 			dpName        = "test-dp-main"
-			currentPrefix = "2001:db8:abcd::/48"
+			currentPrefix = testPrefixABCDLen48
 		)
 
 		ctx := context.Background()
@@ -240,7 +240,7 @@ var _ = Describe("PoolSync Controller", func() {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-							Interface: "eth0",
+							Interface: testInterface,
 							Enabled:   ptr.To(true),
 						},
 					},
@@ -262,7 +262,7 @@ var _ = Describe("PoolSync Controller", func() {
 				AnnotationName: dpName,
 				// No AnnotationSubnet - should use main prefix
 			})
-			Expect(unstructured.SetNestedField(pool.Object, []interface{}{}, "spec", "blocks")).To(Succeed())
+			Expect(unstructured.SetNestedField(pool.Object, []interface{}{}, fieldSpec, fieldBlocks)).To(Succeed())
 
 			Expect(k8sClient.Create(ctx, pool)).To(Succeed())
 		})
@@ -295,13 +295,13 @@ var _ = Describe("PoolSync Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: poolName}, pool)).To(Succeed())
 
 			// Check spec.blocks uses main prefix
-			blocks, found, err := unstructured.NestedSlice(pool.Object, "spec", "blocks")
+			blocks, found, err := unstructured.NestedSlice(pool.Object, fieldSpec, fieldBlocks)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(blocks).To(HaveLen(1))
 
 			block := blocks[0].(map[string]interface{})
-			Expect(block["cidr"]).To(Equal(currentPrefix))
+			Expect(block[fieldCIDR]).To(Equal(currentPrefix))
 		})
 	})
 })
@@ -315,7 +315,7 @@ func TestAnnotationConstants(t *testing.T) {
 		{
 			name:     "AnnotationName",
 			constant: AnnotationName,
-			expected: "dynamic-prefix.io/name",
+			expected: testAnnotationNameKey,
 		},
 		{
 			name:     "AnnotationSubnet",
@@ -344,16 +344,16 @@ func TestMetalLBIPAddressPoolBackendUpdate(t *testing.T) {
 
 	pool := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultMetalLBIPAddressPoolGVK),
-			"kind":       "IPAddressPool",
-			"metadata": map[string]interface{}{
-				"name": "metallb-pool",
+			keyAPIVersion: APIVersion(DefaultMetalLBIPAddressPoolGVK),
+			keyKind:       kindMetalLBIPAddressPool,
+			keyMetadata: map[string]interface{}{
+				keyName: "metallb-pool",
 			},
-			"spec": map[string]interface{}{
+			fieldSpec: map[string]interface{}{
 				"addresses": []interface{}{
 					"198.51.100.1-198.51.100.10",
-					"fd00::/64",
-					"2001:db8:1::/64",
+					testULAPrefix,
+					testPoolPrefix,
 				},
 				"autoAssign": false,
 			},
@@ -366,7 +366,7 @@ func TestMetalLBIPAddressPoolBackendUpdate(t *testing.T) {
 	backend := metalLBIPAddressPoolBackend{resourceGVK: DefaultMetalLBIPAddressPoolGVK}
 	configs := []poolConfiguration{
 		{useAddressRange: true, start: "2001:db8:2::1", end: "2001:db8:2::ff"},
-		{cidr: "2001:db8:3::/64"},
+		{cidr: testPrefix3Len64},
 	}
 	managedPrefixes := []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}
 
@@ -384,15 +384,15 @@ func TestMetalLBIPAddressPoolBackendUpdate(t *testing.T) {
 		t.Fatalf("failed to fetch updated MetalLB pool: %v", err)
 	}
 
-	addresses, found, err := unstructured.NestedStringSlice(fetched.Object, "spec", "addresses")
+	addresses, found, err := unstructured.NestedStringSlice(fetched.Object, fieldSpec, "addresses")
 	if err != nil || !found {
 		t.Fatalf("failed to read spec.addresses: found=%v err=%v", found, err)
 	}
 	expected := []string{
 		"198.51.100.1-198.51.100.10",
-		"fd00::/64",
+		testULAPrefix,
 		"2001:db8:2::1-2001:db8:2::ff",
-		"2001:db8:3::/64",
+		testPrefix3Len64,
 	}
 	if strings.Join(addresses, ",") != strings.Join(expected, ",") {
 		t.Fatalf("spec.addresses = %v, want %v", addresses, expected)
@@ -400,7 +400,7 @@ func TestMetalLBIPAddressPoolBackendUpdate(t *testing.T) {
 	if _, ok := fetched.GetAnnotations()[AnnotationLastSync]; !ok {
 		t.Fatal("last-sync annotation was not set")
 	}
-	autoAssign, found, err := unstructured.NestedBool(fetched.Object, "spec", "autoAssign")
+	autoAssign, found, err := unstructured.NestedBool(fetched.Object, fieldSpec, "autoAssign")
 	if err != nil || !found || autoAssign {
 		t.Fatalf("spec.autoAssign = %v found=%v err=%v, want false", autoAssign, found, err)
 	}
@@ -420,13 +420,13 @@ func TestCalicoIPPoolBackendUpdateCIDR(t *testing.T) {
 
 	pool := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultCalicoIPPoolGVK),
-			"kind":       "IPPool",
-			"metadata": map[string]interface{}{
-				"name": "calico-pool",
+			keyAPIVersion: APIVersion(DefaultCalicoIPPoolGVK),
+			keyKind:       "IPPool",
+			keyMetadata: map[string]interface{}{
+				keyName: testCalicoPoolName,
 			},
-			"spec": map[string]interface{}{
-				"cidr":         "2001:db8:1::/64",
+			fieldSpec: map[string]interface{}{
+				fieldCIDR:      testPoolPrefix,
 				"blockSize":    int64(122),
 				"nodeSelector": "all()",
 				"allowedUses":  []interface{}{"LoadBalancer"},
@@ -438,7 +438,7 @@ func TestCalicoIPPoolBackendUpdateCIDR(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool).Build()
 	reconciler := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
 	backend := calicoIPPoolBackend{resourceGVK: DefaultCalicoIPPoolGVK}
-	configs := []poolConfiguration{{cidr: "2001:db8:2::/64"}}
+	configs := []poolConfiguration{{cidr: testPrefix2Len64}}
 
 	updated, err := backend.update(ctx, reconciler, pool, configs, nil)
 	if err != nil {
@@ -450,15 +450,15 @@ func TestCalicoIPPoolBackendUpdateCIDR(t *testing.T) {
 
 	fetched := &unstructured.Unstructured{}
 	fetched.SetGroupVersionKind(DefaultCalicoIPPoolGVK)
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "calico-pool"}, fetched); err != nil {
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: testCalicoPoolName}, fetched); err != nil {
 		t.Fatalf("failed to fetch updated Calico pool: %v", err)
 	}
 
-	cidr, _, err := unstructured.NestedString(fetched.Object, "spec", "cidr")
-	if err != nil || cidr != "2001:db8:2::/64" {
+	cidr, _, err := unstructured.NestedString(fetched.Object, fieldSpec, fieldCIDR)
+	if err != nil || cidr != testPrefix2Len64 {
 		t.Fatalf("spec.cidr = %q err=%v, want 2001:db8:2::/64", cidr, err)
 	}
-	blockSize, _, err := unstructured.NestedInt64(fetched.Object, "spec", "blockSize")
+	blockSize, _, err := unstructured.NestedInt64(fetched.Object, fieldSpec, "blockSize")
 	if err != nil || blockSize != 122 {
 		t.Fatalf("spec.blockSize = %d err=%v, want 122", blockSize, err)
 	}
@@ -470,8 +470,8 @@ func TestCalicoIPPoolBackendUpdateCIDR(t *testing.T) {
 func TestCalicoCIDRForConfigRejectsNonExactAddressRange(t *testing.T) {
 	_, err := calicoCIDRForConfig(poolConfiguration{
 		useAddressRange: true,
-		start:           "2001:db8::1",
-		end:             "2001:db8::3",
+		start:           testAddr,
+		end:             testAddr3,
 	})
 	if err == nil {
 		t.Fatal("calicoCIDRForConfig() expected error, got nil")
@@ -502,8 +502,8 @@ func TestGVKConstants(t *testing.T) {
 	if DefaultCiliumLBIPPoolGVK.Version != "v2" {
 		t.Errorf("DefaultCiliumLBIPPoolGVK.Version = %q, want %q", DefaultCiliumLBIPPoolGVK.Version, "v2")
 	}
-	if DefaultCiliumLBIPPoolGVK.Kind != "CiliumLoadBalancerIPPool" {
-		t.Errorf("DefaultCiliumLBIPPoolGVK.Kind = %q, want %q", DefaultCiliumLBIPPoolGVK.Kind, "CiliumLoadBalancerIPPool")
+	if DefaultCiliumLBIPPoolGVK.Kind != kindCiliumLoadBalancerIPPool {
+		t.Errorf("DefaultCiliumLBIPPoolGVK.Kind = %q, want %q", DefaultCiliumLBIPPoolGVK.Kind, kindCiliumLoadBalancerIPPool)
 	}
 
 	if DefaultCiliumCIDRGroupGVK.Group != ciliumAPIGroup {
@@ -512,8 +512,8 @@ func TestGVKConstants(t *testing.T) {
 	if DefaultCiliumCIDRGroupGVK.Version != "v2" {
 		t.Errorf("DefaultCiliumCIDRGroupGVK.Version = %q, want %q", DefaultCiliumCIDRGroupGVK.Version, "v2")
 	}
-	if DefaultCiliumCIDRGroupGVK.Kind != "CiliumCIDRGroup" {
-		t.Errorf("DefaultCiliumCIDRGroupGVK.Kind = %q, want %q", DefaultCiliumCIDRGroupGVK.Kind, "CiliumCIDRGroup")
+	if DefaultCiliumCIDRGroupGVK.Kind != kindCiliumCIDRGroup {
+		t.Errorf("DefaultCiliumCIDRGroupGVK.Kind = %q, want %q", DefaultCiliumCIDRGroupGVK.Kind, kindCiliumCIDRGroup)
 	}
 }
 
@@ -525,22 +525,22 @@ func TestIsIPv4Block(t *testing.T) {
 	}{
 		{
 			name:     "IPv4 CIDR block",
-			block:    map[string]interface{}{"cidr": "198.51.100.224/28"},
+			block:    map[string]interface{}{fieldCIDR: "198.51.100.224/28"},
 			expected: true,
 		},
 		{
 			name:     "IPv6 CIDR block",
-			block:    map[string]interface{}{"cidr": "2001:db8::/48"},
+			block:    map[string]interface{}{fieldCIDR: testPrefixLen48},
 			expected: false,
 		},
 		{
 			name:     "IPv4 start/stop block",
-			block:    map[string]interface{}{"start": "198.51.100.224", "stop": "198.51.100.254"},
+			block:    map[string]interface{}{fieldStart: "198.51.100.224", fieldStop: "198.51.100.254"},
 			expected: true,
 		},
 		{
 			name:     "IPv6 start/stop block",
-			block:    map[string]interface{}{"start": "2001:db8::f000:0:0:0", "stop": "2001:db8::ffff:ffff:ffff:ffff"},
+			block:    map[string]interface{}{fieldStart: "2001:db8::f000:0:0:0", fieldStop: "2001:db8::ffff:ffff:ffff:ffff"},
 			expected: false,
 		},
 		{
@@ -550,7 +550,7 @@ func TestIsIPv4Block(t *testing.T) {
 		},
 		{
 			name:     "mixed - IPv4 start with IPv6 stop (edge case)",
-			block:    map[string]interface{}{"start": "10.0.0.1"},
+			block:    map[string]interface{}{fieldStart: testIPv4Addr},
 			expected: true,
 		},
 	}
@@ -567,8 +567,8 @@ func TestIsIPv4Block(t *testing.T) {
 
 func TestIsManagedBlock(t *testing.T) {
 	managedPrefixes := []netip.Prefix{
-		netip.MustParsePrefix("2001:db8:1::/48"),
-		netip.MustParsePrefix("2001:db8:2::/48"),
+		netip.MustParsePrefix(testPrefix1Len48),
+		netip.MustParsePrefix(testPrefix2Len48),
 	}
 
 	tests := []struct {
@@ -578,37 +578,37 @@ func TestIsManagedBlock(t *testing.T) {
 	}{
 		{
 			name:     "IPv4 CIDR — never managed",
-			block:    map[string]interface{}{"cidr": "198.51.100.0/24"},
+			block:    map[string]interface{}{fieldCIDR: "198.51.100.0/24"},
 			expected: false,
 		},
 		{
 			name:     "IPv6 within managed prefix (CIDR)",
-			block:    map[string]interface{}{"cidr": "2001:db8:1:0:f000::/80"},
+			block:    map[string]interface{}{fieldCIDR: "2001:db8:1:0:f000::/80"},
 			expected: true,
 		},
 		{
 			name:     "IPv6 outside managed prefix (CIDR)",
-			block:    map[string]interface{}{"cidr": "fd00::/64"},
+			block:    map[string]interface{}{fieldCIDR: testULAPrefix},
 			expected: false,
 		},
 		{
 			name:     "IPv6 within managed prefix (start/stop)",
-			block:    map[string]interface{}{"start": "2001:db8:1::f000:0:0:0", "stop": "2001:db8:1::ffff:ffff:ffff:ffff"},
+			block:    map[string]interface{}{fieldStart: "2001:db8:1::f000:0:0:0", fieldStop: "2001:db8:1::ffff:ffff:ffff:ffff"},
 			expected: true,
 		},
 		{
 			name:     "IPv6 outside managed prefix (start/stop)",
-			block:    map[string]interface{}{"start": "fd00::1", "stop": "fd00::ff"},
+			block:    map[string]interface{}{fieldStart: testULAAddr, fieldStop: "fd00::ff"},
 			expected: false,
 		},
 		{
 			name:     "IPv4 start/stop — never managed",
-			block:    map[string]interface{}{"start": "10.0.0.1", "stop": "10.0.0.254"},
+			block:    map[string]interface{}{fieldStart: testIPv4Addr, fieldStop: "10.0.0.254"},
 			expected: false,
 		},
 		{
 			name:     "historical prefix — also managed",
-			block:    map[string]interface{}{"cidr": "2001:db8:2::/64"},
+			block:    map[string]interface{}{fieldCIDR: testPrefix2Len64},
 			expected: true,
 		},
 		{
@@ -631,10 +631,10 @@ func TestIsManagedBlock(t *testing.T) {
 func TestCollectManagedPrefixes(t *testing.T) {
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8:1::/48",
+			CurrentPrefix: testPrefix1Len48,
 			History: []dynamicprefixiov1alpha1.PrefixHistoryEntry{
-				{Prefix: "2001:db8:2::/48"},
-				{Prefix: "2001:db8:3::/48"},
+				{Prefix: testPrefix2Len48},
+				{Prefix: testPrefix3Len48},
 			},
 		},
 	}
@@ -644,7 +644,7 @@ func TestCollectManagedPrefixes(t *testing.T) {
 	if len(prefixes) != 3 {
 		t.Fatalf("collectManagedPrefixes returned %d prefixes, want 3", len(prefixes))
 	}
-	expected := []string{"2001:db8:1::/48", "2001:db8:2::/48", "2001:db8:3::/48"}
+	expected := []string{testPrefix1Len48, testPrefix2Len48, testPrefix3Len48}
 	for i, p := range prefixes {
 		if p.String() != expected[i] {
 			t.Errorf("prefix[%d] = %q, want %q", i, p.String(), expected[i])
@@ -668,52 +668,52 @@ func TestIsManagedBlock_MalformedInput(t *testing.T) {
 	}{
 		{
 			name:     "garbage CIDR string",
-			block:    map[string]interface{}{"cidr": "not-a-cidr"},
+			block:    map[string]interface{}{fieldCIDR: "not-a-cidr"},
 			expected: false,
 		},
 		{
 			name:     "bare address in CIDR field (no /nn)",
-			block:    map[string]interface{}{"cidr": "2001:db8::1"},
+			block:    map[string]interface{}{fieldCIDR: testAddr},
 			expected: false, // ParsePrefix fails
 		},
 		{
 			name:     "garbage start address",
-			block:    map[string]interface{}{"start": "garbage", "stop": "2001:db8::ff"},
+			block:    map[string]interface{}{fieldStart: testGarbage, fieldStop: testAddrFF},
 			expected: false,
 		},
 		{
 			name:     "numeric value in CIDR field (wrong type)",
-			block:    map[string]interface{}{"cidr": 12345},
+			block:    map[string]interface{}{fieldCIDR: 12345},
 			expected: false,
 		},
 		{
 			name:     "nil value in CIDR field",
-			block:    map[string]interface{}{"cidr": nil},
+			block:    map[string]interface{}{fieldCIDR: nil},
 			expected: false,
 		},
 		{
 			name:     "empty CIDR string",
-			block:    map[string]interface{}{"cidr": ""},
+			block:    map[string]interface{}{fieldCIDR: ""},
 			expected: false,
 		},
 		{
 			name:     "empty start string",
-			block:    map[string]interface{}{"start": "", "stop": "2001:db8::ff"},
+			block:    map[string]interface{}{fieldStart: "", fieldStop: testAddrFF},
 			expected: false,
 		},
 		{
 			name:     "only stop field (no start or cidr)",
-			block:    map[string]interface{}{"stop": "2001:db8::ff"},
+			block:    map[string]interface{}{fieldStop: testAddrFF},
 			expected: false,
 		},
 		{
 			name:     "IPv4 CIDR string in managed IPv6 context",
-			block:    map[string]interface{}{"cidr": "10.0.0.0/8"},
+			block:    map[string]interface{}{fieldCIDR: "10.0.0.0/8"},
 			expected: false,
 		},
 		{
 			name:     "nil managed prefixes — nothing is managed",
-			block:    map[string]interface{}{"cidr": "2001:db8::/48"},
+			block:    map[string]interface{}{fieldCIDR: testPrefixLen48},
 			expected: false, // tested with nil below
 		},
 	}
@@ -740,27 +740,27 @@ func TestIsIPv4Block_MalformedInput(t *testing.T) {
 	}{
 		{
 			name:     "garbage CIDR",
-			block:    map[string]interface{}{"cidr": "not-a-cidr"},
+			block:    map[string]interface{}{fieldCIDR: "not-a-cidr"},
 			expected: false,
 		},
 		{
 			name:     "numeric CIDR (wrong type)",
-			block:    map[string]interface{}{"cidr": 42},
+			block:    map[string]interface{}{fieldCIDR: 42},
 			expected: false,
 		},
 		{
 			name:     "nil block values",
-			block:    map[string]interface{}{"cidr": nil, "start": nil, "stop": nil},
+			block:    map[string]interface{}{fieldCIDR: nil, fieldStart: nil, fieldStop: nil},
 			expected: false,
 		},
 		{
 			name:     "empty strings everywhere",
-			block:    map[string]interface{}{"cidr": "", "start": "", "stop": ""},
+			block:    map[string]interface{}{fieldCIDR: "", fieldStart: "", fieldStop: ""},
 			expected: false,
 		},
 		{
 			name:     "IPv4 with port in start field",
-			block:    map[string]interface{}{"start": "192.168.1.1:80"},
+			block:    map[string]interface{}{fieldStart: "192.168.1.1:80"},
 			expected: false, // ParseAddr fails
 		},
 	}
@@ -784,25 +784,25 @@ func TestIsPrefixSubsetOfManaged_EdgeCases(t *testing.T) {
 	}{
 		{
 			name:     "nil managed list",
-			prefix:   "2001:db8::/48",
+			prefix:   testPrefixLen48,
 			managed:  nil,
 			expected: false,
 		},
 		{
 			name:     "empty managed list",
-			prefix:   "2001:db8::/48",
+			prefix:   testPrefixLen48,
 			managed:  []netip.Prefix{},
 			expected: false,
 		},
 		{
 			name:     "exact same prefix",
-			prefix:   "2001:db8::/48",
-			managed:  []netip.Prefix{netip.MustParsePrefix("2001:db8::/48")},
+			prefix:   testPrefixLen48,
+			managed:  []netip.Prefix{netip.MustParsePrefix(testPrefixLen48)},
 			expected: true,
 		},
 		{
 			name:     "child prefix inside managed parent",
-			prefix:   "2001:db8:1::/64",
+			prefix:   testPoolPrefix,
 			managed:  []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")},
 			expected: true,
 		},
@@ -813,18 +813,18 @@ func TestIsPrefixSubsetOfManaged_EdgeCases(t *testing.T) {
 			// on the first reconcile after an upgrade.
 			name:     "parent prefix containing a managed child is NOT ours",
 			prefix:   "2001:db8::/32",
-			managed:  []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/48")},
+			managed:  []netip.Prefix{netip.MustParsePrefix(testPrefix1Len48)},
 			expected: false,
 		},
 		{
 			name:     "sibling prefix sharing a parent is not ours",
-			prefix:   "2001:db8:2::/48",
-			managed:  []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/48")},
+			prefix:   testPrefix2Len48,
+			managed:  []netip.Prefix{netip.MustParsePrefix(testPrefix1Len48)},
 			expected: false,
 		},
 		{
 			name:     "completely disjoint",
-			prefix:   "fd00::/64",
+			prefix:   testULAPrefix,
 			managed:  []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")},
 			expected: false,
 		},
@@ -880,13 +880,13 @@ func TestGetPoolDiscriminatesBackendsByScope(t *testing.T) {
 			name:        "namespaced request resolves to the namespaced backend",
 			key:         types.NamespacedName{Namespace: "metallb-system", Name: sharedName},
 			wantBackend: "metallb-ip-address-pool",
-			wantProbed:  []string{"IPAddressPool"},
+			wantProbed:  []string{kindMetalLBIPAddressPool},
 		},
 		{
 			name:        "cluster-scoped request resolves to the cluster-scoped backend",
 			key:         types.NamespacedName{Name: sharedName},
-			wantBackend: "cilium-load-balancer-ip-pool",
-			wantProbed:  []string{"CiliumLoadBalancerIPPool"},
+			wantBackend: testBackendCiliumLBIPPool,
+			wantProbed:  []string{kindCiliumLoadBalancerIPPool},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -954,7 +954,7 @@ func createSubnetDynamicPrefix(ctx context.Context, dpName, subnetName, subnetCI
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 					Enabled:   ptr.To(true),
 				},
 			},
@@ -970,7 +970,7 @@ func createSubnetDynamicPrefix(ctx context.Context, dpName, subnetName, subnetCI
 	Expect(k8sClient.Create(ctx, dp)).To(Succeed())
 
 	dp.Status = dynamicprefixiov1alpha1.DynamicPrefixStatus{
-		CurrentPrefix: "2001:db8::/48",
+		CurrentPrefix: testPrefixLen48,
 		Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
 			{
 				Name: subnetName,

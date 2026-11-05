@@ -47,7 +47,7 @@ const wireTestIfIndex = 3
 
 var wireTestInterface = &net.Interface{
 	Index:        wireTestIfIndex,
-	Name:         "eth0",
+	Name:         testInterface,
 	HardwareAddr: net.HardwareAddr{0x02, 0x00, 0x5e, 0x10, 0x00, 0x01},
 }
 
@@ -306,7 +306,7 @@ func TestDHCPv6PDAcquiresFromAServerThatOnlyDelegates(t *testing.T) {
 // address association as well makes the exchange depend on the server having
 // one to give, and leaves a lease nothing ever renews or releases.
 func TestDHCPv6PDSolicitAsksOnlyForAPrefix(t *testing.T) {
-	r, client := newWireTestReceiver(t, delegating("2001:db8::/48"))
+	r, client := newWireTestReceiver(t, delegating(testPrefixLen48))
 	r.requestedPrefixLength = 48
 
 	if err := r.acquirePrefix(context.Background()); err != nil {
@@ -362,7 +362,7 @@ func TestDHCPv6PDAcquireRejectsUnusableAdvertisements(t *testing.T) {
 		{
 			name: "advertisement without a server identity",
 			respond: func(req *dhcpv6.Message) (*dhcpv6.Message, error) {
-				iapd, err := iaPDFor(req, "2001:db8::/56", leaseLifetime)
+				iapd, err := iaPDFor(req, testPrefixLen56, leaseLifetime)
 				if err != nil {
 					return nil, err
 				}
@@ -426,7 +426,7 @@ func TestDHCPv6PDAcquireSurfacesServerStatus(t *testing.T) {
 		{
 			name: "status on the message",
 			respond: func(req *dhcpv6.Message) (*dhcpv6.Message, error) {
-				iapd, err := iaPDFor(req, "2001:db8::/56", leaseLifetime)
+				iapd, err := iaPDFor(req, testPrefixLen56, leaseLifetime)
 				if err != nil {
 					return nil, err
 				}

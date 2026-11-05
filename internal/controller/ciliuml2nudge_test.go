@@ -63,17 +63,17 @@ func TestParseCiliumImageVersion(t *testing.T) {
 		{
 			name:  "plain tag",
 			image: "quay.io/cilium/cilium:v1.20.0",
-			want:  "1.20.0",
+			want:  testCiliumVersion,
 		},
 		{
 			name:  "tag without the v prefix",
 			image: "quay.io/cilium/cilium:1.20.0",
-			want:  "1.20.0",
+			want:  testCiliumVersion,
 		},
 		{
 			name:  "registry with a port",
 			image: "registry.internal:5000/cilium/cilium:v1.20.0",
-			want:  "1.20.0",
+			want:  testCiliumVersion,
 		},
 		{
 			name:    "digest only carries no version",
@@ -330,11 +330,11 @@ func TestL2NudgeDetector_NilDetectorNudges(t *testing.T) {
 // leave the decider nil -- so without this one, "a fixed Cilium is not nudged"
 // is asserted nowhere.
 func TestNudgeL2Announcer_VersionGate(t *testing.T) {
-	const assigned = "2001:db8::1"
+	const assigned = testAddr
 
 	service := func(annotations map[string]string) *corev1.Service {
 		return &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "default", Annotations: annotations},
+			ObjectMeta: metav1.ObjectMeta{Name: testServiceWeb, Namespace: testNamespace, Annotations: annotations},
 			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer},
 			Status: corev1.ServiceStatus{
 				LoadBalancer: corev1.LoadBalancerStatus{
@@ -402,7 +402,7 @@ func TestNudgeL2Announcer_VersionGate(t *testing.T) {
 
 			var got corev1.Service
 			if err := fakeClient.Get(context.Background(),
-				types.NamespacedName{Name: "web", Namespace: "default"}, &got); err != nil {
+				types.NamespacedName{Name: testServiceWeb, Namespace: testNamespace}, &got); err != nil {
 				t.Fatalf("Get() error = %v", err)
 			}
 			_, nudged := got.Annotations[AnnotationL2Nudge]
