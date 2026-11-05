@@ -75,7 +75,6 @@ func defaultZapOptions() zap.Options {
 	}
 }
 
-// nolint:gocyclo
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
@@ -190,46 +189,16 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	var kubevipRef *types.NamespacedName
-	if kubevipConfigMap != "" {
-		namespace, name, found := strings.Cut(kubevipConfigMap, "/")
-		if !found || namespace == "" || name == "" {
-			setupLog.Error(nil, "invalid kube-vip ConfigMap reference; expected namespace/name", "value", kubevipConfigMap)
-			os.Exit(1)
-		}
-		kubevipRef = &types.NamespacedName{Namespace: namespace, Name: name}
+	kubevipRef, err := parseKubevipConfigMapRef(kubevipConfigMap)
+	if err != nil {
+		setupLog.Error(err, "invalid kube-vip ConfigMap reference", "value", kubevipConfigMap)
+		os.Exit(1)
 	}
 
-	cacheOptions := cache.Options{}
-	if serviceCacheLabelSelector != "" {
-		selector, err := labels.Parse(serviceCacheLabelSelector)
-		if err != nil {
-			setupLog.Error(err, "invalid service cache label selector", "selector", serviceCacheLabelSelector)
-			os.Exit(1)
-		}
-
-		cacheOptions.ByObject = map[client.Object]cache.ByObject{
-			&corev1.Service{}: {Label: selector},
-		}
-		setupLog.Info("restricting Service informer cache", "selector", serviceCacheLabelSelector)
-	}
-
-	if kubevipRef != nil {
-		// Scope the informer to the one ConfigMap named. Every cluster has
-		// ConfigMaps, many of them large, and caching all of them to watch one
-		// pool would cost more memory than the rest of the operator.
-		if cacheOptions.ByObject == nil {
-			cacheOptions.ByObject = map[client.Object]cache.ByObject{}
-		}
-		cacheOptions.ByObject[&corev1.ConfigMap{}] = cache.ByObject{
-			Namespaces: map[string]cache.Config{
-				kubevipRef.Namespace: {
-					FieldSelector: fields.OneTermEqualSelector("metadata.name", kubevipRef.Name),
-				},
-			},
-		}
-		setupLog.Info("managing the kube-vip pool ConfigMap",
-			"namespace", kubevipRef.Namespace, "name", kubevipRef.Name)
+	cacheOptions, err := newCacheOptions(serviceCacheLabelSelector, kubevipRef)
+	if err != nil {
+		setupLog.Error(err, "invalid service cache label selector", "selector", serviceCacheLabelSelector)
+		os.Exit(1)
 	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
@@ -440,4 +409,54 @@ func parseAnnotationKeyList(raw string) ([]string, error) {
 		return nil, fmt.Errorf("no annotation keys given")
 	}
 	return keys, nil
+}
+
+// parseKubevipConfigMapRef parses the --kubevip-configmap value. Empty disables
+// the kube-vip backend and yields nil.
+func parseKubevipConfigMapRef(raw string) (*types.NamespacedName, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	namespace, name, found := strings.Cut(raw, "/")
+	if !found || namespace == "" || name == "" {
+		return nil, fmt.Errorf("expected namespace/name")
+	}
+	return &types.NamespacedName{Namespace: namespace, Name: name}, nil
+}
+
+// newCacheOptions scopes the Service informer to the label selector, when one
+// is given, and the ConfigMap informer to the kube-vip pool ConfigMap, when the
+// kube-vip backend is enabled.
+func newCacheOptions(serviceSelector string, kubevipRef *types.NamespacedName) (cache.Options, error) {
+	cacheOptions := cache.Options{}
+	if serviceSelector != "" {
+		selector, err := labels.Parse(serviceSelector)
+		if err != nil {
+			return cache.Options{}, err
+		}
+
+		cacheOptions.ByObject = map[client.Object]cache.ByObject{
+			&corev1.Service{}: {Label: selector},
+		}
+		setupLog.Info("restricting Service informer cache", "selector", serviceSelector)
+	}
+
+	if kubevipRef != nil {
+		// Scope the informer to the one ConfigMap named. Every cluster has
+		// ConfigMaps, many of them large, and caching all of them to watch one
+		// pool would cost more memory than the rest of the operator.
+		if cacheOptions.ByObject == nil {
+			cacheOptions.ByObject = map[client.Object]cache.ByObject{}
+		}
+		cacheOptions.ByObject[&corev1.ConfigMap{}] = cache.ByObject{
+			Namespaces: map[string]cache.Config{
+				kubevipRef.Namespace: {
+					FieldSelector: fields.OneTermEqualSelector("metadata.name", kubevipRef.Name),
+				},
+			},
+		}
+		setupLog.Info("managing the kube-vip pool ConfigMap",
+			"namespace", kubevipRef.Namespace, "name", kubevipRef.Name)
+	}
+	return cacheOptions, nil
 }
