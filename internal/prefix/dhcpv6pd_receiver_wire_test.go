@@ -42,15 +42,18 @@ import (
 
 // wireTestInterface is the interface the scripted exchanges pretend to run on.
 // The index matters: the IA_PD's IAID is derived from it.
+// wireTestIfIndex is the test interface's index, and therefore its IAID.
+const wireTestIfIndex = 3
+
 var wireTestInterface = &net.Interface{
-	Index:        3,
+	Index:        wireTestIfIndex,
 	Name:         "eth0",
 	HardwareAddr: net.HardwareAddr{0x02, 0x00, 0x5e, 0x10, 0x00, 0x01},
 }
 
 func wireTestIAID() [4]byte {
 	var iaid [4]byte
-	binary.BigEndian.PutUint32(iaid[:], uint32(wireTestInterface.Index)) // #nosec G115 -- fixed small index
+	binary.BigEndian.PutUint32(iaid[:], wireTestIfIndex)
 	return iaid
 }
 
@@ -136,10 +139,14 @@ func iaPrefixFor(cidr string, preferred, valid time.Duration) (*dhcpv6.OptIAPref
 	if err != nil {
 		return nil, err
 	}
+	bits := p.Bits()
+	if bits < 0 || bits > 128 {
+		return nil, fmt.Errorf("prefix length %d of %s does not fit IA_PREFIX", bits, cidr)
+	}
 	body := iaPrefixBytes(
 		uint32(preferred.Seconds()),
 		uint32(valid.Seconds()),
-		uint8(p.Bits()), // #nosec G115 -- prefix lengths are 0..128
+		uint8(bits),
 		net.IP(p.Addr().AsSlice()),
 	)
 	opt := &dhcpv6.OptIAPrefix{}

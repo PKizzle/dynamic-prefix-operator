@@ -22,6 +22,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"net"
 	"net/netip"
@@ -396,10 +397,13 @@ func (r *DHCPv6PDReceiver) openClient() (dhcpv6Client, *net.Interface, error) {
 // iaidForInterface derives the association's identifier from the interface
 // index. The IAID is four bytes of identity rather than a number, so it is
 // written as an explicit big-endian encoding.
-func iaidForInterface(ifi *net.Interface) [4]byte {
+func iaidForInterface(ifi *net.Interface) ([4]byte, error) {
 	var iaid [4]byte
-	binary.BigEndian.PutUint32(iaid[:], uint32(ifi.Index)) // #nosec G115 -- interface indexes are small positive integers
-	return iaid
+	if ifi.Index <= 0 || ifi.Index > math.MaxUint32 {
+		return iaid, fmt.Errorf("interface %s has index %d, which does not fit an IAID", ifi.Name, ifi.Index)
+	}
+	binary.BigEndian.PutUint32(iaid[:], uint32(ifi.Index))
+	return iaid, nil
 }
 
 // newPDMessage starts a message carrying the identity every exchange needs.
@@ -478,7 +482,10 @@ func (r *DHCPv6PDReceiver) acquirePrefix(ctx context.Context) error {
 	}
 	defer func() { _ = client.Close() }()
 
-	iaid := iaidForInterface(ifi)
+	iaid, err := iaidForInterface(ifi)
+	if err != nil {
+		return err
+	}
 
 	// This client delegates and nothing else, so it asks for a prefix and not
 	// for an address as well. Soliciting an IA_NA it never reads would leave a

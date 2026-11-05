@@ -487,7 +487,7 @@ func (r *DynamicPrefixReconciler) getOrCreateReceiver(ctx context.Context, dp *d
 		// The cancel is stored, not deferred: it belongs to the receiver's
 		// lifetime, and stopReceiverLocked calls it when the receiver is removed
 		// or rebuilt. Deferring it here would kill the forwarder immediately.
-		forwardCtx, cancel := context.WithCancel(receiverCtx) // #nosec G118 -- cancel is retained in receiverStops and invoked by stopReceiverLocked
+		forwardCtx, cancel := context.WithCancel(receiverCtx)
 		r.receiverStops[dp.Name] = cancel
 		go r.forwardPrefixEvents(forwardCtx, dp.Name, receiver.Events())
 	}

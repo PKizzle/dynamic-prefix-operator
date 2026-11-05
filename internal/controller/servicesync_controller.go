@@ -1326,18 +1326,17 @@ func (r *ServiceSyncReconciler) calculateIPOffset(base, target netip.Addr) ([16]
 	targetBytes := target.As16()
 	var offset [16]byte
 
-	borrow := uint16(0)
+	var borrow byte
 	for i := 15; i >= 0; i-- {
-		diff := int16(targetBytes[i]) - int16(baseBytes[i]) - int16(borrow)
-		if diff < 0 {
-			diff += 256
+		t, b := targetBytes[i], baseBytes[i]
+		// Byte arithmetic wraps modulo 256, which is the digit subtraction
+		// needs; the borrow records whether it wrapped.
+		offset[i] = t - b - borrow
+		if t < b || (t == b && borrow == 1) {
 			borrow = 1
 		} else {
 			borrow = 0
 		}
-		// diff has just been normalised into [0, 255] by the borrow above, so
-		// this is the byte it already is.
-		offset[i] = byte(diff) // #nosec G115 -- diff is in [0,255] after the borrow adjustment
 	}
 
 	return offset, borrow == 0

@@ -53,13 +53,6 @@ linters:
       - linters:
           - dupl
         path: _test\.go$
-      # gosec's subprocess and integer-conversion rules are about untrusted
-      # input reaching a shell or an overflow. Test helpers shell out to kubectl
-      # with values the test itself chose, and test fixtures build byte arrays
-      # from constants; neither is the threat this operator has.
-      - linters:
-          - gosec
-        path: (_test\.go|^test/utils/)
     paths:
       - third_party$
       - builtin$

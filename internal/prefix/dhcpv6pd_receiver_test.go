@@ -19,6 +19,7 @@ package prefix
 
 import (
 	"context"
+	"encoding/binary"
 	"net"
 	"testing"
 	"time"
@@ -33,9 +34,8 @@ import (
 // prefix (16).
 func iaPrefixBytes(preferred, valid uint32, prefixLength uint8, ip net.IP) []byte {
 	b := make([]byte, 0, 25)
-	be := func(v uint32) { b = append(b, byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) }
-	be(preferred)
-	be(valid)
+	b = binary.BigEndian.AppendUint32(b, preferred)
+	b = binary.BigEndian.AppendUint32(b, valid)
 	b = append(b, prefixLength)
 	return append(b, ip.To16()...)
 }
