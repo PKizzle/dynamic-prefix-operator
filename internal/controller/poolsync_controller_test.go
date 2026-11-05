@@ -60,40 +60,7 @@ var _ = Describe("PoolSync Controller", func() {
 		ctx := context.Background()
 
 		BeforeEach(func() {
-			// Create DynamicPrefix
-			dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: dpName,
-				},
-				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
-					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
-						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-							Interface: "eth0",
-							Enabled:   ptr.To(true),
-						},
-					},
-					Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
-						{
-							Name:         subnetName,
-							Offset:       0, // First /64 subnet
-							PrefixLength: 64,
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, dp)).To(Succeed())
-
-			// Update DynamicPrefix status
-			dp.Status = dynamicprefixiov1alpha1.DynamicPrefixStatus{
-				CurrentPrefix: "2001:db8::/48",
-				Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
-					{
-						Name: subnetName,
-						CIDR: subnetCIDR,
-					},
-				},
-			}
-			Expect(k8sClient.Status().Update(ctx, dp)).To(Succeed())
+			createSubnetDynamicPrefix(ctx, dpName, subnetName, subnetCIDR)
 
 			// Create CiliumLoadBalancerIPPool
 			pool := &unstructured.Unstructured{}
@@ -186,40 +153,7 @@ var _ = Describe("PoolSync Controller", func() {
 		ctx := context.Background()
 
 		BeforeEach(func() {
-			// Create DynamicPrefix
-			dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: dpName,
-				},
-				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
-					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
-						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-							Interface: "eth0",
-							Enabled:   ptr.To(true),
-						},
-					},
-					Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
-						{
-							Name:         subnetName,
-							Offset:       0, // First /64 subnet
-							PrefixLength: 64,
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, dp)).To(Succeed())
-
-			// Update DynamicPrefix status
-			dp.Status = dynamicprefixiov1alpha1.DynamicPrefixStatus{
-				CurrentPrefix: "2001:db8::/48",
-				Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
-					{
-						Name: subnetName,
-						CIDR: subnetCIDR,
-					},
-				},
-			}
-			Expect(k8sClient.Status().Update(ctx, dp)).To(Succeed())
+			createSubnetDynamicPrefix(ctx, dpName, subnetName, subnetCIDR)
 
 			// Create CiliumCIDRGroup
 			group := &unstructured.Unstructured{}
@@ -1006,4 +940,43 @@ func TestGetPoolDiscriminatesBackendsByScope(t *testing.T) {
 			}
 		})
 	}
+}
+
+// createSubnetDynamicPrefix creates a DynamicPrefix with one /64 subnet at
+// offset 0 and records that subnet's CIDR in its status, as the DynamicPrefix
+// controller would once a 2001:db8::/48 prefix was received.
+func createSubnetDynamicPrefix(ctx context.Context, dpName, subnetName, subnetCIDR string) {
+	GinkgoHelper()
+	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: dpName,
+		},
+		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
+			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
+				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
+					Interface: "eth0",
+					Enabled:   ptr.To(true),
+				},
+			},
+			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
+				{
+					Name:         subnetName,
+					Offset:       0, // First /64 subnet
+					PrefixLength: 64,
+				},
+			},
+		},
+	}
+	Expect(k8sClient.Create(ctx, dp)).To(Succeed())
+
+	dp.Status = dynamicprefixiov1alpha1.DynamicPrefixStatus{
+		CurrentPrefix: "2001:db8::/48",
+		Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
+			{
+				Name: subnetName,
+				CIDR: subnetCIDR,
+			},
+		},
+	}
+	Expect(k8sClient.Status().Update(ctx, dp)).To(Succeed())
 }
