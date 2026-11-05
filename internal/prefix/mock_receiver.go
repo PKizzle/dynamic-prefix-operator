@@ -44,7 +44,7 @@ func NewMockReceiver(source Source) *MockReceiver {
 }
 
 // Start implements Receiver
-func (m *MockReceiver) Start(ctx context.Context) error {
+func (m *MockReceiver) Start(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// Fresh stop channel per run, as the real receivers take: Stop closes this
@@ -191,7 +191,7 @@ func (isp *MockISP) GetLeaseTime() time.Duration {
 }
 
 // DelegatePrefix simulates DHCPv6-PD prefix delegation
-func (isp *MockISP) DelegatePrefix(requestedLength int) (netip.Prefix, time.Duration, error) {
+func (isp *MockISP) DelegatePrefix(_ int) (netip.Prefix, time.Duration, error) {
 	isp.mu.RLock()
 	defer isp.mu.RUnlock()
 

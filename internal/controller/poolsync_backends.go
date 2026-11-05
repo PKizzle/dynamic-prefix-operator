@@ -304,7 +304,7 @@ func (b calicoIPPoolBackend) update(
 	r *PoolSyncReconciler,
 	pool *unstructured.Unstructured,
 	configs []poolConfiguration,
-	managedPrefixes []netip.Prefix,
+	_ []netip.Prefix,
 ) (bool, error) {
 	logger := log.FromContext(ctx)
 

@@ -15,6 +15,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Command manager runs the dynamic-prefix operator: it acquires delegated IPv6
+// prefixes and keeps load-balancer pools, Services and BGP advertisements in
+// step with them.
 package main
 
 import (

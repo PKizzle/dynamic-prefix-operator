@@ -33,7 +33,7 @@ func TestDefaultReceiverFactory_SharesRAReceiverByInterface(t *testing.T) {
 	created := 0
 
 	factory := &DefaultReceiverFactory{
-		newRAReceiver: func(iface string, _ RAPolicy) Receiver {
+		newRAReceiver: func(_ string, _ RAPolicy) Receiver {
 			created++
 			return underlying
 		},
@@ -168,7 +168,7 @@ func newInstrumentedReceiver(source Source) *instrumentedReceiver {
 	}
 }
 
-func (r *instrumentedReceiver) Start(ctx context.Context) error {
+func (r *instrumentedReceiver) Start(_ context.Context) error {
 	r.startCount++
 	r.started = true
 	return nil

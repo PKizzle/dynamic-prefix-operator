@@ -15,6 +15,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package controller holds the reconcilers that track a DynamicPrefix and
+// propagate its prefixes to Services, address pools and BGP advertisements.
 package controller
 
 import (

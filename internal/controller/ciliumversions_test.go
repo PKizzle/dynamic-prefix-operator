@@ -395,7 +395,7 @@ func TestCiliumControllerStarter_WaitsForCilium(t *testing.T) {
 	starter := &CiliumControllerStarter{
 		Discovery:    dc,
 		PollInterval: 10 * time.Millisecond,
-		SetupControllers: func(versions *CiliumVersions) error {
+		SetupControllers: func(_ *CiliumVersions) error {
 			called.Store(true)
 			return nil
 		},
@@ -432,7 +432,7 @@ func TestCiliumControllerStarter_StopsOnContextCancel(t *testing.T) {
 	starter := &CiliumControllerStarter{
 		Discovery:    dc,
 		PollInterval: 10 * time.Millisecond,
-		SetupControllers: func(versions *CiliumVersions) error {
+		SetupControllers: func(_ *CiliumVersions) error {
 			called.Store(true)
 			return nil
 		},
@@ -458,7 +458,7 @@ func TestCiliumControllerStarter_PropagatesSetupError(t *testing.T) {
 	starter := &CiliumControllerStarter{
 		Discovery:    dc,
 		PollInterval: 10 * time.Millisecond,
-		SetupControllers: func(versions *CiliumVersions) error {
+		SetupControllers: func(_ *CiliumVersions) error {
 			return setupErr
 		},
 	}

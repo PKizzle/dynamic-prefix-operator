@@ -15,6 +15,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package prefix acquires delegated IPv6 prefixes over DHCPv6-PD and Router
+// Advertisements and derives the subnets and address ranges inside them.
 package prefix
 
 import (
@@ -26,6 +28,7 @@ import (
 // Source indicates how a prefix was obtained
 type Source string
 
+// Source values.
 const (
 	SourceDHCPv6PD            Source = "dhcpv6-pd"
 	SourceRouterAdvertisement Source = "router-advertisement"
@@ -66,6 +69,7 @@ type Event struct {
 // EventType indicates the type of prefix event
 type EventType string
 
+// EventType values.
 const (
 	EventTypeAcquired EventType = "acquired"
 	EventTypeRenewed  EventType = "renewed"

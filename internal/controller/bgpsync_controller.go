@@ -457,7 +457,7 @@ func (r *BGPSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // findDynamicPrefixForPool maps a CiliumLoadBalancerIPPool to its referenced DynamicPrefix.
-func (r *BGPSyncReconciler) findDynamicPrefixForPool(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *BGPSyncReconciler) findDynamicPrefixForPool(_ context.Context, obj client.Object) []reconcile.Request {
 	annotations := obj.GetAnnotations()
 	if annotations == nil {
 		return nil

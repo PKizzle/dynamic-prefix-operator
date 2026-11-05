@@ -119,7 +119,7 @@ func NewDHCPv6PDReceiverWithPolicy(iface string, requestedPrefixLength int, poli
 		stopCh:                make(chan struct{}),
 		dial:                  defaultDHCPv6Dial,
 		lookupInterface:       net.InterfaceByName,
-		acquireBackoffMin:     defaultAcquireBackoffMin,
+		acquireBackoffMin:     defaultInitialAcquireBackoff,
 		acquireBackoffMax:     defaultAcquireBackoffMax,
 	}
 }
@@ -203,8 +203,8 @@ func (r *DHCPv6PDReceiver) Source() Source {
 }
 
 const (
-	// defaultAcquireBackoffMin is the first pause after a failed acquisition.
-	defaultAcquireBackoffMin = 10 * time.Second
+	// defaultInitialAcquireBackoff is the first pause after a failed acquisition.
+	defaultInitialAcquireBackoff = 10 * time.Second
 	// defaultAcquireBackoffMax caps it. An uplink that has been down for an hour
 	// is not about to come back because it was asked a 360th time, but the delay
 	// still has to be short enough that a rotation is picked up promptly.
@@ -219,9 +219,9 @@ const (
 // nextBackoff doubles a delay without passing a ceiling. Doubling near the end
 // of the duration range wraps negative, and a negative timer fires at once --
 // the busy loop the ceiling exists to prevent -- so the overflow is checked.
-func nextBackoff(cur, max time.Duration) time.Duration {
-	if cur >= max || cur > max/2 {
-		return max
+func nextBackoff(cur, ceiling time.Duration) time.Duration {
+	if cur >= ceiling || cur > ceiling/2 {
+		return ceiling
 	}
 	return cur * 2
 }

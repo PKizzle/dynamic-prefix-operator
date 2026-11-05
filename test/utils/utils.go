@@ -15,6 +15,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package utils holds helpers for the end-to-end suite: running kubectl and
+// kind, and installing cert-manager.
 package utils
 
 import (

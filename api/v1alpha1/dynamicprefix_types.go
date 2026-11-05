@@ -329,6 +329,7 @@ type DynamicPrefixStatus struct {
 // +kubebuilder:validation:Enum=dhcpv6-pd;router-advertisement;static;unknown
 type PrefixSource string
 
+// PrefixSource values.
 const (
 	PrefixSourceDHCPv6PD            PrefixSource = "dhcpv6-pd"
 	PrefixSourceRouterAdvertisement PrefixSource = "router-advertisement"
@@ -388,6 +389,7 @@ type PrefixHistoryEntry struct {
 // +kubebuilder:validation:Enum=active;draining;expired
 type PrefixState string
 
+// PrefixState values.
 const (
 	PrefixStateActive   PrefixState = "active"
 	PrefixStateDraining PrefixState = "draining"
