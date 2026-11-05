@@ -32,9 +32,6 @@ const (
 	// certmanagerURL is a constant so that every kubectl invocation below is
 	// built from literals only.
 	certmanagerURL = "https://github.com/cert-manager/cert-manager/releases/download/v1.19.1/cert-manager.yaml"
-
-	defaultKindBinary  = "kind"
-	defaultKindCluster = "kind"
 )
 
 func warnError(err error) {
@@ -126,24 +123,6 @@ func IsCertManagerCRDsInstalled() bool {
 	}
 
 	return false
-}
-
-// LoadImageToKindClusterWithName loads a local docker image to the kind cluster
-func LoadImageToKindClusterWithName(name string) error {
-	cluster := defaultKindCluster
-	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
-		cluster = v
-	}
-	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
-	kindBinary := defaultKindBinary
-	if v, ok := os.LookupEnv("KIND"); ok {
-		kindBinary = v
-	}
-	// The binary and cluster come from the KIND and KIND_CLUSTER variables the
-	// Makefile's test-e2e target exports, and name is the image the suite built.
-	cmd := exec.Command(kindBinary, kindOptions...) //nolint:gosec // G204: developer-supplied, see above
-	_, err := Run(cmd)
-	return err
 }
 
 // GetNonEmptyLines converts given command output string into individual objects
