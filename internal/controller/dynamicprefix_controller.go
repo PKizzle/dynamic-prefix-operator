@@ -399,7 +399,10 @@ func ownedDynamicPrefixStatus(
 }
 
 // getOrCreateReceiver returns an existing receiver or creates a new one
-func (r *DynamicPrefixReconciler) getOrCreateReceiver(ctx context.Context, dp *dynamicprefixiov1alpha1.DynamicPrefix) (prefix.Receiver, error) {
+func (r *DynamicPrefixReconciler) getOrCreateReceiver(
+	ctx context.Context,
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+) (prefix.Receiver, error) {
 	log := logf.FromContext(ctx)
 
 	r.receiversMu.RLock()
@@ -615,7 +618,10 @@ func (r *DynamicPrefixReconciler) calculateSubnets(
 }
 
 // calculateAddressRanges calculates address ranges from the base prefix (Mode 1)
-func (r *DynamicPrefixReconciler) calculateAddressRanges(basePrefix netip.Prefix, specs []dynamicprefixiov1alpha1.AddressRangeSpec) ([]dynamicprefixiov1alpha1.AddressRangeStatus, error) {
+func (r *DynamicPrefixReconciler) calculateAddressRanges(
+	basePrefix netip.Prefix,
+	specs []dynamicprefixiov1alpha1.AddressRangeSpec,
+) ([]dynamicprefixiov1alpha1.AddressRangeStatus, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
@@ -650,7 +656,11 @@ func (r *DynamicPrefixReconciler) calculateAddressRanges(basePrefix netip.Prefix
 }
 
 // handlePrefixChange handles graceful prefix transitions
-func (r *DynamicPrefixReconciler) handlePrefixChange(ctx context.Context, dp *dynamicprefixiov1alpha1.DynamicPrefix, newPrefix *prefix.Prefix) {
+func (r *DynamicPrefixReconciler) handlePrefixChange(
+	ctx context.Context,
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	newPrefix *prefix.Prefix,
+) {
 	log := logf.FromContext(ctx)
 	now := metav1.Now()
 
@@ -697,7 +707,8 @@ func (r *DynamicPrefixReconciler) handlePrefixChange(ctx context.Context, dp *dy
 			dp.Status.History = dp.Status.History[len(dp.Status.History)-maxHistory:]
 			for _, entry := range completed {
 				emitNormalEvent(r.Recorder, dp, eventReasonTransitionCompleted,
-					fmt.Sprintf("Completed transition for historical prefix %s after retaining %d prefix history entry(s)", entry.Prefix, maxHistory))
+					fmt.Sprintf("Completed transition for historical prefix %s after retaining %d prefix history entry(s)",
+						entry.Prefix, maxHistory))
 			}
 		}
 
@@ -711,7 +722,13 @@ func (r *DynamicPrefixReconciler) handlePrefixChange(ctx context.Context, dp *dy
 }
 
 // setCondition sets a condition on the DynamicPrefix status
-func (r *DynamicPrefixReconciler) setCondition(dp *dynamicprefixiov1alpha1.DynamicPrefix, condType string, status metav1.ConditionStatus, reason, message string) {
+func (r *DynamicPrefixReconciler) setCondition(
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	condType string,
+	status metav1.ConditionStatus,
+	reason,
+	message string,
+) {
 	condition := metav1.Condition{
 		Type:               condType,
 		Status:             status,
@@ -731,7 +748,13 @@ func (r *DynamicPrefixReconciler) setCondition(dp *dynamicprefixiov1alpha1.Dynam
 // of that. Tying the event to the message changing means one event per distinct
 // failure, and the comparison is against the persisted condition, so it holds
 // across operator restarts too.
-func (r *DynamicPrefixReconciler) warnOnConditionChange(dp *dynamicprefixiov1alpha1.DynamicPrefix, condType, reason, message, eventReason string) {
+func (r *DynamicPrefixReconciler) warnOnConditionChange(
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	condType,
+	reason,
+	message,
+	eventReason string,
+) {
 	existing := meta.FindStatusCondition(dp.Status.Conditions, condType)
 	if existing != nil && existing.Reason == reason && existing.Message == message {
 		return

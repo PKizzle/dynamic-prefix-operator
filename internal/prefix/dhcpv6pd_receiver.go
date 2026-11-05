@@ -39,7 +39,12 @@ import (
 // is what lets the tests script a server, so the messages this client puts on
 // the wire are checked rather than assumed.
 type dhcpv6Client interface {
-	SendAndRead(ctx context.Context, dest *net.UDPAddr, msg *dhcpv6.Message, match nclient6.Matcher) (*dhcpv6.Message, error)
+	SendAndRead(
+		ctx context.Context,
+		dest *net.UDPAddr,
+		msg *dhcpv6.Message,
+		match nclient6.Matcher,
+	) (*dhcpv6.Message, error)
 	Close() error
 }
 
@@ -501,7 +506,12 @@ func (r *DHCPv6PDReceiver) acquirePrefix(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, exchangeTimeout)
 	defer cancel()
 
-	advertise, err := client.SendAndRead(ctx, nclient6.AllDHCPRelayAgentsAndServers, solicit, nclient6.IsMessageType(dhcpv6.MessageTypeAdvertise))
+	advertise, err := client.SendAndRead(
+		ctx,
+		nclient6.AllDHCPRelayAgentsAndServers,
+		solicit,
+		nclient6.IsMessageType(dhcpv6.MessageTypeAdvertise),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to receive ADVERTISE: %w", err)
 	}
@@ -531,7 +541,12 @@ func (r *DHCPv6PDReceiver) acquirePrefix(ctx context.Context) error {
 	request.AddOption(dhcpv6.OptServerID(serverID))
 	request.AddOption(advIAPD)
 
-	reply, err := client.SendAndRead(ctx, nclient6.AllDHCPRelayAgentsAndServers, request, nclient6.IsMessageType(dhcpv6.MessageTypeReply))
+	reply, err := client.SendAndRead(
+		ctx,
+		nclient6.AllDHCPRelayAgentsAndServers,
+		request,
+		nclient6.IsMessageType(dhcpv6.MessageTypeReply),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to receive REPLY: %w", err)
 	}
@@ -567,7 +582,12 @@ func (r *DHCPv6PDReceiver) renewPrefix(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, exchangeTimeout)
 	defer cancel()
 
-	reply, err := client.SendAndRead(ctx, nclient6.AllDHCPRelayAgentsAndServers, renew, nclient6.IsMessageType(dhcpv6.MessageTypeReply))
+	reply, err := client.SendAndRead(
+		ctx,
+		nclient6.AllDHCPRelayAgentsAndServers,
+		renew,
+		nclient6.IsMessageType(dhcpv6.MessageTypeReply),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to receive REPLY for RENEW: %w", err)
 	}
@@ -602,7 +622,12 @@ func (r *DHCPv6PDReceiver) rebindPrefix(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, exchangeTimeout)
 	defer cancel()
 
-	reply, err := client.SendAndRead(ctx, nclient6.AllDHCPRelayAgentsAndServers, rebind, nclient6.IsMessageType(dhcpv6.MessageTypeReply))
+	reply, err := client.SendAndRead(
+		ctx,
+		nclient6.AllDHCPRelayAgentsAndServers,
+		rebind,
+		nclient6.IsMessageType(dhcpv6.MessageTypeReply),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to receive REPLY for REBIND: %w", err)
 	}

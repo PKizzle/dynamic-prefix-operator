@@ -40,7 +40,9 @@ type countingReceiverFactory struct {
 	specs []dynamicprefixiov1alpha1.AcquisitionSpec
 }
 
-func (f *countingReceiverFactory) CreateReceiver(spec dynamicprefixiov1alpha1.AcquisitionSpec) (prefix.Receiver, error) {
+func (f *countingReceiverFactory) CreateReceiver(
+	spec dynamicprefixiov1alpha1.AcquisitionSpec,
+) (prefix.Receiver, error) {
 	f.specs = append(f.specs, spec)
 	return prefix.NewMockReceiver(prefix.SourceDHCPv6PD), nil
 }

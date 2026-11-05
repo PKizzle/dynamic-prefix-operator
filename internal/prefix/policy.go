@@ -127,13 +127,15 @@ func ParseTrustedRouters(values []string) ([]netip.Addr, error) {
 			return nil, fmt.Errorf("trusted router %q is not an IP address: %w", value, err)
 		}
 		if addr.Zone() != "" {
-			return nil, fmt.Errorf("trusted router %q must not carry a zone; the interface is set on the acquisition spec", value)
+			return nil, fmt.Errorf(
+				"trusted router %q must not carry a zone; the interface is set on the acquisition spec", value)
 		}
 		if !addr.Is6() || addr.Is4In6() {
 			return nil, fmt.Errorf("trusted router %q is not an IPv6 address", value)
 		}
 		if !addr.IsLinkLocalUnicast() {
-			return nil, fmt.Errorf("trusted router %q is not link-local; a Router Advertisement is sent from the router's fe80:: address on this link", value)
+			return nil, fmt.Errorf("trusted router %q is not link-local; "+
+				"a Router Advertisement is sent from the router's fe80:: address on this link", value)
 		}
 		routers = append(routers, addr)
 	}

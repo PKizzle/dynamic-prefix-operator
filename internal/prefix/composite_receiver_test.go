@@ -63,7 +63,8 @@ func TestCompositeReceiver_CurrentPrefix(t *testing.T) {
 
 	// Should still prefer primary
 	if composite.CurrentPrefix().Network != primaryPrefix {
-		t.Errorf("CurrentPrefix().Network = %v, want %v (should prefer primary)", composite.CurrentPrefix().Network, primaryPrefix)
+		t.Errorf("CurrentPrefix().Network = %v, want %v (should prefer primary)",
+			composite.CurrentPrefix().Network, primaryPrefix)
 	}
 
 	// Clear primary prefix

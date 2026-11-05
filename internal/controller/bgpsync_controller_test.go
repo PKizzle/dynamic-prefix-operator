@@ -1120,10 +1120,12 @@ func TestDefaultCiliumBGPAdvertisementGVK(t *testing.T) {
 	)
 
 	if DefaultCiliumBGPAdvertisementGVK.Group != expectedGroup {
-		t.Errorf("DefaultCiliumBGPAdvertisementGVK.Group = %q, want %q", DefaultCiliumBGPAdvertisementGVK.Group, expectedGroup)
+		t.Errorf("DefaultCiliumBGPAdvertisementGVK.Group = %q, want %q",
+			DefaultCiliumBGPAdvertisementGVK.Group, expectedGroup)
 	}
 	if DefaultCiliumBGPAdvertisementGVK.Version != expectedVersion {
-		t.Errorf("DefaultCiliumBGPAdvertisementGVK.Version = %q, want %q", DefaultCiliumBGPAdvertisementGVK.Version, expectedVersion)
+		t.Errorf("DefaultCiliumBGPAdvertisementGVK.Version = %q, want %q",
+			DefaultCiliumBGPAdvertisementGVK.Version, expectedVersion)
 	}
 	if DefaultCiliumBGPAdvertisementGVK.Kind != expectedKind {
 		t.Errorf("DefaultCiliumBGPAdvertisementGVK.Kind = %q, want %q", DefaultCiliumBGPAdvertisementGVK.Kind, expectedKind)

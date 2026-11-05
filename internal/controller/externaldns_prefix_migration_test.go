@@ -39,7 +39,8 @@ func TestExternalDNSTargetWrittenUnderEveryConfiguredKey(t *testing.T) {
 		t.Fatal("expected a target under the alpha key")
 	}
 	if old != newKey {
-		t.Errorf("keys disagree: alpha=%q new=%q; both must hold the same target or one consumer resolves a stale address", old, newKey)
+		t.Errorf("keys disagree: alpha=%q new=%q; "+
+			"both must hold the same target or one consumer resolves a stale address", old, newKey)
 	}
 }
 

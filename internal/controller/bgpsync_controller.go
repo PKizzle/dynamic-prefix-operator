@@ -139,7 +139,9 @@ func (r *BGPSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 // getSubnetsWithBGP returns subnets that have BGP advertisement enabled.
-func (r *BGPSyncReconciler) getSubnetsWithBGP(dp *dynamicprefixiov1alpha1.DynamicPrefix) []dynamicprefixiov1alpha1.SubnetSpec {
+func (r *BGPSyncReconciler) getSubnetsWithBGP(
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+) []dynamicprefixiov1alpha1.SubnetSpec {
 	var result []dynamicprefixiov1alpha1.SubnetSpec
 	for _, subnet := range dp.Spec.Subnets {
 		if subnet.BGP != nil && subnet.BGP.Advertise {

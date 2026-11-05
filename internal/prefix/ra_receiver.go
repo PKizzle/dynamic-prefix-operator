@@ -182,7 +182,8 @@ func (r *RAReceiver) Start(ctx context.Context) error {
 	r.verifyHopLimit = true
 	if err := conn.SetControlMessage(ipv6.FlagHopLimit, true); err != nil {
 		r.verifyHopLimit = false
-		log.Info("Could not enable hop-limit reporting; Router Advertisements will be accepted without the RFC 4861 hop-limit check",
+		log.Info("Could not enable hop-limit reporting; "+
+			"Router Advertisements will be accepted without the RFC 4861 hop-limit check",
 			"interface", r.iface, "error", err.Error())
 	}
 	// Reported every start, not only on failure, so the series exists and can be
@@ -392,7 +393,11 @@ func (r *RAReceiver) receiveLoop(ctx context.Context, stopCh <-chan struct{}, co
 	}
 }
 
-func (r *RAReceiver) sendInitialRouterSolicitations(ctx context.Context, stopCh <-chan struct{}, hwAddr net.HardwareAddr) {
+func (r *RAReceiver) sendInitialRouterSolicitations(
+	ctx context.Context,
+	stopCh <-chan struct{},
+	hwAddr net.HardwareAddr,
+) {
 	log := logf.Log.WithName("ra-receiver")
 	maxSolicitations := r.maxRouterSolicitations
 	if maxSolicitations <= 0 {
@@ -423,7 +428,8 @@ func (r *RAReceiver) sendInitialRouterSolicitations(ctx context.Context, stopCh 
 		}
 
 		if err := r.sendRouterSolicitation(hwAddr); err != nil {
-			log.Error(err, "Failed to send Router Solicitation", "interface", r.iface, "attempt", attempt, "maxAttempts", maxSolicitations)
+			log.Error(err, "Failed to send Router Solicitation",
+				"interface", r.iface, "attempt", attempt, "maxAttempts", maxSolicitations)
 		} else {
 			log.V(1).Info("Router Solicitation sent", "interface", r.iface, "attempt", attempt, "maxAttempts", maxSolicitations)
 		}
@@ -509,7 +515,11 @@ const (
 // control needs the routers that may be believed named explicitly -- the job a
 // switch does with RA Guard, done here for the links where that is not
 // available.
-func (r *RAReceiver) rejectRouterAdvertisement(from netip.Addr, cm *ipv6.ControlMessage, verifyHopLimit bool) (reason, detail string) {
+func (r *RAReceiver) rejectRouterAdvertisement(
+	from netip.Addr,
+	cm *ipv6.ControlMessage,
+	verifyHopLimit bool,
+) (reason, detail string) {
 	if !isLinkLocal(from) {
 		return rejectReasonNotLinkLocal, "source address is not link-local"
 	}

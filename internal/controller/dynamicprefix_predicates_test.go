@@ -40,12 +40,20 @@ func TestDynamicPrefixAffectsDependents(t *testing.T) {
 				Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
 					{Name: "services", Offset: 0, PrefixLength: 64},
 				},
-				Transition: &dynamicprefixiov1alpha1.TransitionSpec{Mode: dynamicprefixiov1alpha1.TransitionModeHA, MaxPrefixHistory: 2},
+				Transition: &dynamicprefixiov1alpha1.TransitionSpec{
+					Mode:             dynamicprefixiov1alpha1.TransitionModeHA,
+					MaxPrefixHistory: 2,
+				},
 			},
 			Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
 				CurrentPrefix: "2001:db8::/64",
 				AddressRanges: []dynamicprefixiov1alpha1.AddressRangeStatus{
-					{Name: "loadbalancers", Start: "2001:db8::f000:0:0:0", End: "2001:db8::ffff:ffff:ffff:ffff", CIDR: "2001:db8::/64"},
+					{
+						Name:  "loadbalancers",
+						Start: "2001:db8::f000:0:0:0",
+						End:   "2001:db8::ffff:ffff:ffff:ffff",
+						CIDR:  "2001:db8::/64",
+					},
 				},
 				Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
 					{Name: "services", CIDR: "2001:db8::/64"},
@@ -69,7 +77,13 @@ func TestDynamicPrefixAffectsDependents(t *testing.T) {
 		{
 			name: "condition only ignored",
 			mutate: func(dp *dynamicprefixiov1alpha1.DynamicPrefix) {
-				dp.Status.Conditions = []metav1.Condition{{Type: dynamicprefixiov1alpha1.ConditionTypePrefixAcquired, Status: metav1.ConditionTrue, Reason: "PrefixAcquired", Message: "ok", LastTransitionTime: metav1.Now()}}
+				dp.Status.Conditions = []metav1.Condition{{
+					Type:               dynamicprefixiov1alpha1.ConditionTypePrefixAcquired,
+					Status:             metav1.ConditionTrue,
+					Reason:             "PrefixAcquired",
+					Message:            "ok",
+					LastTransitionTime: metav1.Now(),
+				}}
 			},
 		},
 		{
@@ -102,7 +116,10 @@ func TestDynamicPrefixAffectsDependents(t *testing.T) {
 		{
 			name: "history change affects dependents",
 			mutate: func(dp *dynamicprefixiov1alpha1.DynamicPrefix) {
-				dp.Status.History = []dynamicprefixiov1alpha1.PrefixHistoryEntry{{Prefix: "2001:db8:ffff::/64", State: dynamicprefixiov1alpha1.PrefixStateDraining}}
+				dp.Status.History = []dynamicprefixiov1alpha1.PrefixHistoryEntry{{
+					Prefix: "2001:db8:ffff::/64",
+					State:  dynamicprefixiov1alpha1.PrefixStateDraining,
+				}}
 			},
 			want: true,
 		},

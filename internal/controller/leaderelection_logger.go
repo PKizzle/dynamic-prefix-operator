@@ -25,7 +25,8 @@ import (
 )
 
 const (
-	leaderElectionWaitingMessage  = "Leader election enabled; this replica will stay on standby until it acquires the leader lease"
+	leaderElectionWaitingMessage = "Leader election enabled; " +
+		"this replica will stay on standby until it acquires the leader lease"
 	leaderElectionAcquiredMessage = "Leader lease acquired; controllers are now active on this replica"
 	leaderElectionStoppedMessage  = "Manager stopped before acquiring the leader lease"
 	leaderElectionDisabledMessage = "Leader election disabled; controllers are active on this replica"

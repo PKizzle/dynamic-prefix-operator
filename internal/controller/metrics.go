@@ -44,7 +44,8 @@ var (
 	prefixLeaseExpirySeconds = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dynamic_prefix_lease_expiry_seconds",
-			Help: "Unix timestamp, in seconds, when the current dynamic prefix lease expires. Zero means no lease expiry is known.",
+			Help: "Unix timestamp, in seconds, when the current dynamic prefix lease expires. " +
+				"Zero means no lease expiry is known.",
 		},
 		[]string{"name"},
 	)
@@ -52,7 +53,8 @@ var (
 	receiverHealthy = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dynamic_prefix_receiver_healthy",
-			Help: "Whether the prefix receiver's last acquisition attempt succeeded. A value of 0 means acquisition or renewal is currently failing.",
+			Help: "Whether the prefix receiver's last acquisition attempt succeeded. " +
+				"A value of 0 means acquisition or renewal is currently failing.",
 		},
 		[]string{"name"},
 	)
@@ -74,7 +76,9 @@ var (
 	raHopLimitCheckEnabled = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "dynamic_prefix_ra_hop_limit_check_enabled",
-			Help: "Whether the RFC 4861 hop-limit check is in force for Router Advertisements on this interface. A value of 0 means the socket would not report hop limits, so off-link advertisements are no longer excluded by that check.",
+			Help: "Whether the RFC 4861 hop-limit check is in force for Router Advertisements on this interface. " +
+				"A value of 0 means the socket would not report hop limits, " +
+				"so off-link advertisements are no longer excluded by that check.",
 		},
 		[]string{"interface"},
 	)

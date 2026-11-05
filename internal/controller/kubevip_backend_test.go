@@ -59,7 +59,12 @@ func kubevipConfigMap(t *testing.T, key string, data map[string]string) *unstruc
 	return cm
 }
 
-func syncKubevip(t *testing.T, cm *unstructured.Unstructured, configs []poolConfiguration, managed []netip.Prefix) (*unstructured.Unstructured, error) {
+func syncKubevip(
+	t *testing.T,
+	cm *unstructured.Unstructured,
+	configs []poolConfiguration,
+	managed []netip.Prefix,
+) (*unstructured.Unstructured, error) {
 	t.Helper()
 
 	// v1/ConfigMap is already in the scheme via the client-go types; unlike the
@@ -75,7 +80,8 @@ func syncKubevip(t *testing.T, cm *unstructured.Unstructured, configs []poolConf
 
 	got := &unstructured.Unstructured{}
 	got.SetGroupVersionKind(KubevipConfigMapGVK)
-	if err := fakeClient.Get(context.Background(), types.NamespacedName{Namespace: "kube-system", Name: "kubevip"}, got); err != nil {
+	key := types.NamespacedName{Namespace: "kube-system", Name: "kubevip"}
+	if err := fakeClient.Get(context.Background(), key, got); err != nil {
 		t.Fatalf("reading the ConfigMap back: %v", err)
 	}
 	return got, nil

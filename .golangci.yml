@@ -39,12 +39,11 @@ linters:
   exclusions:
     generated: lax
     rules:
+      # controller-gen reads a marker from one comment line, so a
+      # +kubebuilder marker carrying a CEL rule and its message cannot wrap.
       - linters:
           - lll
-        path: api/*
-      - linters:
-          - lll
-        path: internal/*
+        source: '^\s*// \+kubebuilder:'
     paths:
       - third_party$
       - builtin$

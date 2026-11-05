@@ -111,10 +111,30 @@ func DiscoverPoolBackendGVKs(dc discovery.DiscoveryInterface) ([]schema.GroupVer
 		plural            string
 		preferredVersions []string
 	}{
-		{group: ciliumAPIGroup, kind: "CiliumLoadBalancerIPPool", plural: "ciliumloadbalancerippools", preferredVersions: preferredVersions},
-		{group: ciliumAPIGroup, kind: "CiliumCIDRGroup", plural: "ciliumcidrgroups", preferredVersions: preferredVersions},
-		{group: metallbAPIGroup, kind: "IPAddressPool", plural: "ipaddresspools", preferredVersions: preferredMetalLBVersions},
-		{group: calicoAPIGroup, kind: "IPPool", plural: "ippools", preferredVersions: preferredCalicoVersions},
+		{
+			group:             ciliumAPIGroup,
+			kind:              "CiliumLoadBalancerIPPool",
+			plural:            "ciliumloadbalancerippools",
+			preferredVersions: preferredVersions,
+		},
+		{
+			group:             ciliumAPIGroup,
+			kind:              "CiliumCIDRGroup",
+			plural:            "ciliumcidrgroups",
+			preferredVersions: preferredVersions,
+		},
+		{
+			group:             metallbAPIGroup,
+			kind:              "IPAddressPool",
+			plural:            "ipaddresspools",
+			preferredVersions: preferredMetalLBVersions,
+		},
+		{
+			group:             calicoAPIGroup,
+			kind:              "IPPool",
+			plural:            "ippools",
+			preferredVersions: preferredCalicoVersions,
+		},
 	}
 
 	resourceVersionsByGroup := make(map[string]resourceSet)
@@ -220,7 +240,8 @@ func resolveResource(rs resourceSet, group, kind, plural string, preferred []str
 			return schema.GroupVersionKind{Group: group, Version: v, Kind: kind}, nil
 		}
 	}
-	return schema.GroupVersionKind{}, fmt.Errorf("no supported API version found for %s/%s (checked %v)", group, kind, preferred)
+	return schema.GroupVersionKind{}, fmt.Errorf("no supported API version found for %s/%s (checked %v)",
+		group, kind, preferred)
 }
 
 // hasResource checks whether a resource is served under a specific version.

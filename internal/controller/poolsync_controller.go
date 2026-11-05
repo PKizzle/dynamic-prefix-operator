@@ -175,7 +175,12 @@ func (r *PoolSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 // syncPool reconciles one pool object against its DynamicPrefix.
-func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, pool *unstructured.Unstructured, backend poolBackend) (ctrl.Result, error) {
+func (r *PoolSyncReconciler) syncPool(
+	ctx context.Context,
+	req ctrl.Request,
+	pool *unstructured.Unstructured,
+	backend poolBackend,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	// Get annotations
@@ -198,7 +203,8 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("Syncing pool", "backend", backend.name(), "pool", req.Name, "dynamicPrefix", dpName, "subnet", subnetName, "addressRange", addressRangeName)
+	log.Info("Syncing pool", "backend", backend.name(), "pool", req.Name,
+		"dynamicPrefix", dpName, "subnet", subnetName, "addressRange", addressRangeName)
 
 	stateKey := poolStateKey{backend: backend.name(), pool: req.String()}
 
@@ -274,7 +280,8 @@ func (r *PoolSyncReconciler) syncPool(ctx context.Context, req ctrl.Request, poo
 	if updated {
 		log.Info("Pool updated successfully", "backend", backend.name(), "pool", req.Name, "blockCount", len(configs))
 		emitNormalEvent(r.Recorder, pool, eventReasonPoolUpdated,
-			fmt.Sprintf("Synced %s pool %s from DynamicPrefix %s with %d managed configuration(s)", backend.name(), req.Name, dpName, len(configs)))
+			fmt.Sprintf("Synced %s pool %s from DynamicPrefix %s with %d managed configuration(s)",
+				backend.name(), req.Name, dpName, len(configs)))
 	} else {
 		log.Info("Pool already up-to-date", "backend", backend.name(), "pool", req.Name, "blockCount", len(configs))
 	}
@@ -640,7 +647,12 @@ func (r *PoolSyncReconciler) calculateSubnetConfig(
 // Multiple blocks are created for current prefix plus historical prefixes.
 // Existing blocks that are not within the operator's managed prefixes (IPv4 blocks,
 // static IPv6 blocks from other prefixes) are preserved.
-func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
+func (r *PoolSyncReconciler) updateLoadBalancerIPPool(
+	ctx context.Context,
+	pool *unstructured.Unstructured,
+	configs []poolConfiguration,
+	managedPrefixes []netip.Prefix,
+) (bool, error) {
 	record := parseOwnershipRecord(recordFor(pool, AnnotationManagedBlocks))
 
 	// spec.blocks entries are objects: either a cidr, or a start/stop pair
@@ -673,7 +685,12 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(ctx context.Context, pool 
 // updateCIDRGroup updates a CiliumCIDRGroup with the new CIDRs.
 // Multiple CIDRs are added for current prefix plus historical prefixes.
 // Existing CIDRs that are not within managed prefixes are preserved.
-func (r *PoolSyncReconciler) updateCIDRGroup(ctx context.Context, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
+func (r *PoolSyncReconciler) updateCIDRGroup(
+	ctx context.Context,
+	pool *unstructured.Unstructured,
+	configs []poolConfiguration,
+	managedPrefixes []netip.Prefix,
+) (bool, error) {
 	record := parseOwnershipRecord(recordFor(pool, AnnotationManagedCIDRs))
 
 	desired := make([]ownedEntry, 0, len(configs))
@@ -836,7 +853,11 @@ func (r *PoolSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Watch DynamicPrefix and enqueue referencing pools
 	controllerBuilder = controllerBuilder.
-		Watches(&dynamicprefixiov1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findReferencingPools), builder.WithPredicates(dynamicPrefixDependentChangePredicate()))
+		Watches(
+			&dynamicprefixiov1alpha1.DynamicPrefix{},
+			handler.EnqueueRequestsFromMapFunc(r.findReferencingPools),
+			builder.WithPredicates(dynamicPrefixDependentChangePredicate()),
+		)
 
 	return controllerBuilder.Complete(r)
 }

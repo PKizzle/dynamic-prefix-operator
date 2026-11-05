@@ -65,7 +65,10 @@ func rotatePrefix(dp *dynamicprefixiov1alpha1.DynamicPrefix, gen, maxHistory int
 	}
 }
 
-func newOwnershipTestFixture(t *testing.T, maxHistory int) (*ServiceSyncReconciler, *dynamicprefixiov1alpha1.DynamicPrefix, types.NamespacedName) {
+func newOwnershipTestFixture(
+	t *testing.T,
+	maxHistory int,
+) (*ServiceSyncReconciler, *dynamicprefixiov1alpha1.DynamicPrefix, types.NamespacedName) {
 	t.Helper()
 
 	scheme := runtime.NewScheme()
@@ -264,7 +267,9 @@ func TestReconcileIsIdempotentWithoutRotation(t *testing.T) {
 		t.Fatalf("get after second: %v", err)
 	}
 
-	for _, key := range []string{AnnotationCiliumIPs, AnnotationManagedIPs, AnnotationExternalDNSTarget, AnnotationManagedTargets} {
+	for _, key := range []string{
+		AnnotationCiliumIPs, AnnotationManagedIPs, AnnotationExternalDNSTarget, AnnotationManagedTargets,
+	} {
 		if first.Annotations[key] != second.Annotations[key] {
 			t.Errorf("annotation %q churned on a no-op reconcile:\n  first:  %q\n  second: %q",
 				key, first.Annotations[key], second.Annotations[key])
@@ -562,7 +567,11 @@ func TestBlockKey(t *testing.T) {
 		want  string
 	}{
 		{"cidr block", map[string]interface{}{"cidr": "2001:db8::/64"}, "cidr=2001:db8::/64"},
-		{"range block", map[string]interface{}{"start": "2001:db8::1", "stop": "2001:db8::ff"}, "range=2001:db8::1-2001:db8::ff"},
+		{
+			"range block",
+			map[string]interface{}{"start": "2001:db8::1", "stop": "2001:db8::ff"},
+			"range=2001:db8::1-2001:db8::ff",
+		},
 		{"start only", map[string]interface{}{"start": "2001:db8::1"}, "range=2001:db8::1"},
 		{"unrecognised shape yields no key", map[string]interface{}{"foo": "bar"}, ""},
 		{"empty cidr yields no key", map[string]interface{}{"cidr": ""}, ""},

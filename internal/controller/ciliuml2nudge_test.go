@@ -156,7 +156,12 @@ func TestL2NudgeDetector_Needed(t *testing.T) {
 		NumberReady:            3,
 	}
 
-	daemonSetIn := func(namespace, name string, containers []corev1.Container, status appsv1.DaemonSetStatus) *appsv1.DaemonSet {
+	daemonSetIn := func(
+		namespace,
+		name string,
+		containers []corev1.Container,
+		status appsv1.DaemonSetStatus,
+	) *appsv1.DaemonSet {
 		return &appsv1.DaemonSet{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
@@ -371,11 +376,14 @@ func TestNudgeL2Announcer_VersionGate(t *testing.T) {
 			wantCalls:   0,
 		},
 		{
-			name:        "an explicit opt-out wins over the force annotation",
-			decider:     &stubL2NudgeDecider{needed: true},
-			annotations: map[string]string{AnnotationSkipL2Nudge: AnnotationValueTrue, AnnotationForceL2Nudge: AnnotationValueTrue},
-			wantNudge:   false,
-			wantCalls:   0,
+			name:    "an explicit opt-out wins over the force annotation",
+			decider: &stubL2NudgeDecider{needed: true},
+			annotations: map[string]string{
+				AnnotationSkipL2Nudge:  AnnotationValueTrue,
+				AnnotationForceL2Nudge: AnnotationValueTrue,
+			},
+			wantNudge: false,
+			wantCalls: 0,
 		},
 	}
 

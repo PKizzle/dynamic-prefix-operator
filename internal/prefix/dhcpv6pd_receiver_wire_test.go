@@ -75,7 +75,12 @@ type fakeDHCPv6Client struct {
 	closed  int
 }
 
-func (c *fakeDHCPv6Client) SendAndRead(_ context.Context, _ *net.UDPAddr, msg *dhcpv6.Message, match nclient6.Matcher) (*dhcpv6.Message, error) {
+func (c *fakeDHCPv6Client) SendAndRead(
+	_ context.Context,
+	_ *net.UDPAddr,
+	msg *dhcpv6.Message,
+	match nclient6.Matcher,
+) (*dhcpv6.Message, error) {
 	c.mu.Lock()
 	c.sent = append(c.sent, msg)
 	respond := c.respond
@@ -168,7 +173,12 @@ const leaseLifetime = time.Hour
 // asked about so the reply matches the client's association. renewAfter sets
 // T1, so a test can have a lease fall due without waiting out its lifetime --
 // the prefix's own lifetimes travel as whole seconds and cannot be that short.
-func iaPDFor(req *dhcpv6.Message, cidr string, renewAfter time.Duration, extra ...dhcpv6.Option) (*dhcpv6.OptIAPD, error) {
+func iaPDFor(
+	req *dhcpv6.Message,
+	cidr string,
+	renewAfter time.Duration,
+	extra ...dhcpv6.Option,
+) (*dhcpv6.OptIAPD, error) {
 	iaid := wireTestIAID()
 	if opt := req.GetOneOption(dhcpv6.OptionIAPD); opt != nil {
 		if pd, ok := opt.(*dhcpv6.OptIAPD); ok {
