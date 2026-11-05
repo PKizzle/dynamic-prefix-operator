@@ -93,7 +93,7 @@ func TestExternalDNSTargetWaitsForTheAddressToBeAssigned(t *testing.T) {
 		t.Errorf("external-dns target = %q, want the previous address %q: the new one is not "+
 			"assigned yet, so publishing it resolves a name nothing answers on", got, want)
 	}
-	if result.RequeueAfter == 0 && !result.Requeue { //nolint:staticcheck // Requeue is what the older API sets
+	if result.RequeueAfter == 0 {
 		t.Error("reconcile did not requeue while the target was withheld, so nothing would " +
 			"retry if the assignment event had already passed")
 	}
