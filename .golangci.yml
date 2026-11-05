@@ -67,7 +67,6 @@ linters:
         - name: comment-spacings
         - name: import-shadowing
   exclusions:
-    generated: lax
     rules:
       # controller-gen reads a marker from one comment line, so a
       # +kubebuilder marker carrying a CEL rule and its message cannot wrap.
@@ -78,5 +77,3 @@ formatters:
   enable:
     - gofmt
     - goimports
-  exclusions:
-    generated: lax
