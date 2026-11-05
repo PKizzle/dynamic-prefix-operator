@@ -60,24 +60,24 @@ const (
 // Default GVKs used when CiliumVersions is not injected (e.g. in tests).
 var (
 	DefaultCiliumLBIPPoolGVK = schema.GroupVersionKind{
-		Group:   "cilium.io",
+		Group:   ciliumAPIGroup,
 		Version: "v2",
-		Kind:    "CiliumLoadBalancerIPPool",
+		Kind:    kindCiliumLoadBalancerIPPool,
 	}
 	DefaultCiliumCIDRGroupGVK = schema.GroupVersionKind{
-		Group:   "cilium.io",
+		Group:   ciliumAPIGroup,
 		Version: "v2",
-		Kind:    "CiliumCIDRGroup",
+		Kind:    kindCiliumCIDRGroup,
 	}
 	DefaultMetalLBIPAddressPoolGVK = schema.GroupVersionKind{
-		Group:   "metallb.io",
+		Group:   metallbAPIGroup,
 		Version: "v1beta1",
-		Kind:    "IPAddressPool",
+		Kind:    kindMetalLBIPAddressPool,
 	}
 	DefaultCalicoIPPoolGVK = schema.GroupVersionKind{
-		Group:   "projectcalico.org",
+		Group:   calicoAPIGroup,
 		Version: "v3",
-		Kind:    "IPPool",
+		Kind:    kindCalicoIPPool,
 	}
 )
 
@@ -667,7 +667,7 @@ func (r *PoolSyncReconciler) updateLoadBalancerIPPool(
 	}
 
 	return syncOwnedList(ctx, r, pool, ownedListSync{
-		fields:    []string{"spec", "blocks"},
+		fields:    []string{fieldSpec, "blocks"},
 		recordKey: AnnotationManagedBlocks,
 		desired:   desired,
 		keyOf:     blockKeyOf,
@@ -699,7 +699,7 @@ func (r *PoolSyncReconciler) updateCIDRGroup(
 	}
 
 	return syncOwnedList(ctx, r, pool, ownedListSync{
-		fields:    []string{"spec", "externalCIDRs"},
+		fields:    []string{fieldSpec, "externalCIDRs"},
 		recordKey: AnnotationManagedCIDRs,
 		desired:   desired,
 		keyOf:     cidrKeyOf,

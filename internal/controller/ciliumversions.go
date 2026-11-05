@@ -35,6 +35,19 @@ const (
 	calicoAPIGroup  = "projectcalico.org"
 )
 
+// fieldSpec is the top-level spec field of the unstructured resources the
+// operator edits.
+const fieldSpec = "spec"
+
+// Kinds of the third-party resources the operator manages.
+const (
+	kindCiliumLoadBalancerIPPool = "CiliumLoadBalancerIPPool"
+	kindCiliumCIDRGroup          = "CiliumCIDRGroup"
+	kindCiliumBGPAdvertisement   = "CiliumBGPAdvertisement"
+	kindMetalLBIPAddressPool     = "IPAddressPool"
+	kindCalicoIPPool             = "IPPool"
+)
+
 // preferredVersions lists API versions in order of preference (most preferred first).
 // Cilium 1.16+ serves v2 as the stable API; v2alpha1 is deprecated but still
 // served for backward compatibility with older clusters.
@@ -80,15 +93,15 @@ func DiscoverCiliumVersions(dc discovery.DiscoveryInterface) (*CiliumVersions, e
 		return gvk, nil
 	}
 
-	lbPool, err := resolve("CiliumLoadBalancerIPPool", "ciliumloadbalancerippools")
+	lbPool, err := resolve(kindCiliumLoadBalancerIPPool, "ciliumloadbalancerippools")
 	if err != nil {
 		return nil, err
 	}
-	cidrGroup, err := resolve("CiliumCIDRGroup", "ciliumcidrgroups")
+	cidrGroup, err := resolve(kindCiliumCIDRGroup, "ciliumcidrgroups")
 	if err != nil {
 		return nil, err
 	}
-	bgpAdv, err := resolve("CiliumBGPAdvertisement", "ciliumbgpadvertisements")
+	bgpAdv, err := resolve(kindCiliumBGPAdvertisement, "ciliumbgpadvertisements")
 	if err != nil {
 		return nil, err
 	}
@@ -113,25 +126,25 @@ func DiscoverPoolBackendGVKs(dc discovery.DiscoveryInterface) ([]schema.GroupVer
 	}{
 		{
 			group:             ciliumAPIGroup,
-			kind:              "CiliumLoadBalancerIPPool",
+			kind:              kindCiliumLoadBalancerIPPool,
 			plural:            "ciliumloadbalancerippools",
 			preferredVersions: preferredVersions,
 		},
 		{
 			group:             ciliumAPIGroup,
-			kind:              "CiliumCIDRGroup",
+			kind:              kindCiliumCIDRGroup,
 			plural:            "ciliumcidrgroups",
 			preferredVersions: preferredVersions,
 		},
 		{
 			group:             metallbAPIGroup,
-			kind:              "IPAddressPool",
+			kind:              kindMetalLBIPAddressPool,
 			plural:            "ipaddresspools",
 			preferredVersions: preferredMetalLBVersions,
 		},
 		{
 			group:             calicoAPIGroup,
-			kind:              "IPPool",
+			kind:              kindCalicoIPPool,
 			plural:            "ippools",
 			preferredVersions: preferredCalicoVersions,
 		},

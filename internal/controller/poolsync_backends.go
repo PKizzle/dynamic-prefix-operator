@@ -147,7 +147,7 @@ func (b ciliumLoadBalancerIPPoolBackend) release(
 	_ *PoolSyncReconciler,
 	pool *unstructured.Unstructured,
 ) (bool, error) {
-	return releaseRecordedSlice(pool, AnnotationManagedBlocks, blockKeyOf, "spec", "blocks")
+	return releaseRecordedSlice(pool, AnnotationManagedBlocks, blockKeyOf, fieldSpec, "blocks")
 }
 
 type ciliumCIDRGroupBackend struct {
@@ -176,7 +176,7 @@ func (b ciliumCIDRGroupBackend) release(
 	_ *PoolSyncReconciler,
 	pool *unstructured.Unstructured,
 ) (bool, error) {
-	return releaseRecordedSlice(pool, AnnotationManagedCIDRs, cidrKeyOf, "spec", "externalCIDRs")
+	return releaseRecordedSlice(pool, AnnotationManagedCIDRs, cidrKeyOf, fieldSpec, "externalCIDRs")
 }
 
 // cidrKeyOf identifies an entry in a CiliumCIDRGroup's spec.externalCIDRs, for
@@ -233,7 +233,7 @@ func (b metalLBIPAddressPoolBackend) update(
 	}
 
 	return syncOwnedList(ctx, r, pool, ownedListSync{
-		fields:    []string{"spec", "addresses"},
+		fields:    []string{fieldSpec, "addresses"},
 		recordKey: AnnotationManagedAddresses,
 		desired:   desired,
 		keyOf:     addressKeyOf,
@@ -252,7 +252,7 @@ func (b metalLBIPAddressPoolBackend) release(
 	_ *PoolSyncReconciler,
 	pool *unstructured.Unstructured,
 ) (bool, error) {
-	return releaseRecordedSlice(pool, AnnotationManagedAddresses, addressKeyOf, "spec", "addresses")
+	return releaseRecordedSlice(pool, AnnotationManagedAddresses, addressKeyOf, fieldSpec, "addresses")
 }
 
 // canonicalAddressEntry normalises a MetalLB address entry so ownership survives
@@ -323,14 +323,14 @@ func (b calicoIPPoolBackend) update(
 		return false, err
 	}
 
-	if allowedUses, found, err := unstructured.NestedStringSlice(pool.Object, "spec", "allowedUses"); err != nil {
+	if allowedUses, found, err := unstructured.NestedStringSlice(pool.Object, fieldSpec, "allowedUses"); err != nil {
 		return false, fmt.Errorf("failed to read spec.allowedUses: %w", err)
 	} else if found && !containsString(allowedUses, "LoadBalancer") {
 		logger.V(1).Info("Calico IPPool does not include LoadBalancer in spec.allowedUses",
 			"pool", pool.GetName(), "allowedUses", allowedUses)
 	}
 
-	currentCIDR, _, err := unstructured.NestedString(pool.Object, "spec", "cidr")
+	currentCIDR, _, err := unstructured.NestedString(pool.Object, fieldSpec, "cidr")
 	if err != nil {
 		return false, fmt.Errorf("failed to read spec.cidr: %w", err)
 	}
@@ -346,7 +346,7 @@ func (b calicoIPPoolBackend) update(
 		return siblingsChanged, nil
 	}
 
-	if err := unstructured.SetNestedField(pool.Object, cidr, "spec", "cidr"); err != nil {
+	if err := unstructured.SetNestedField(pool.Object, cidr, fieldSpec, "cidr"); err != nil {
 		return false, fmt.Errorf("failed to set spec.cidr: %w", err)
 	}
 
@@ -382,7 +382,7 @@ func (b calicoIPPoolBackend) release(
 		delete(annotations, AnnotationManagedCIDR)
 		pool.SetAnnotations(annotations)
 		changed = true
-		cidr, _, _ := unstructured.NestedString(pool.Object, "spec", "cidr")
+		cidr, _, _ := unstructured.NestedString(pool.Object, fieldSpec, "cidr")
 		logger.Info("Released Calico IPPool; spec.cidr is left as it stands because the field cannot be empty",
 			"pool", pool.GetName(), "cidr", cidr)
 	}
@@ -428,14 +428,14 @@ func (b calicoIPPoolBackend) syncDrainingSiblings(
 		err := r.Get(ctx, types.NamespacedName{Name: name}, sibling)
 		switch {
 		case err == nil:
-			existing, _, readErr := unstructured.NestedString(sibling.Object, "spec", "cidr")
+			existing, _, readErr := unstructured.NestedString(sibling.Object, fieldSpec, "cidr")
 			if readErr != nil {
 				return changed, fmt.Errorf("failed to read sibling spec.cidr: %w", readErr)
 			}
 			if existing == cidr {
 				continue
 			}
-			if err := unstructured.SetNestedField(sibling.Object, cidr, "spec", "cidr"); err != nil {
+			if err := unstructured.SetNestedField(sibling.Object, cidr, fieldSpec, "cidr"); err != nil {
 				return changed, fmt.Errorf("failed to set sibling spec.cidr: %w", err)
 			}
 			if err := r.Update(ctx, sibling); err != nil {
@@ -506,7 +506,7 @@ func newCalicoSibling(
 	spec := map[string]interface{}{"cidr": cidr}
 	// Mirror the parent's allowedUses so the draining prefix keeps serving the
 	// same purpose while connections on it wind down.
-	allowedUses, found, err := unstructured.NestedStringSlice(parent.Object, "spec", "allowedUses")
+	allowedUses, found, err := unstructured.NestedStringSlice(parent.Object, fieldSpec, "allowedUses")
 	if err == nil && found {
 		uses := make([]interface{}, 0, len(allowedUses))
 		for _, u := range allowedUses {
@@ -514,7 +514,7 @@ func newCalicoSibling(
 		}
 		spec["allowedUses"] = uses
 	}
-	sibling.Object["spec"] = spec
+	sibling.Object[fieldSpec] = spec
 	return sibling
 }
 
@@ -548,13 +548,13 @@ func backendsForGVKs(gvks []schema.GroupVersionKind) []poolBackend {
 
 func backendForGVK(gvk schema.GroupVersionKind) poolBackend {
 	switch {
-	case gvk.Group == "cilium.io" && gvk.Kind == "CiliumLoadBalancerIPPool":
+	case gvk.Group == ciliumAPIGroup && gvk.Kind == kindCiliumLoadBalancerIPPool:
 		return ciliumLoadBalancerIPPoolBackend{resourceGVK: gvk}
-	case gvk.Group == "cilium.io" && gvk.Kind == "CiliumCIDRGroup":
+	case gvk.Group == ciliumAPIGroup && gvk.Kind == kindCiliumCIDRGroup:
 		return ciliumCIDRGroupBackend{resourceGVK: gvk}
-	case gvk.Group == "metallb.io" && gvk.Kind == "IPAddressPool":
+	case gvk.Group == metallbAPIGroup && gvk.Kind == kindMetalLBIPAddressPool:
 		return metalLBIPAddressPoolBackend{resourceGVK: gvk}
-	case gvk.Group == "projectcalico.org" && gvk.Kind == "IPPool":
+	case gvk.Group == calicoAPIGroup && gvk.Kind == kindCalicoIPPool:
 		return calicoIPPoolBackend{resourceGVK: gvk}
 	case gvk.Group == "" && gvk.Kind == "ConfigMap":
 		return kubevipConfigMapBackend{resourceGVK: gvk}

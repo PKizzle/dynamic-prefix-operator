@@ -42,9 +42,9 @@ import (
 
 // DefaultCiliumBGPAdvertisementGVK is the default GVK used when CiliumVersions is not injected.
 var DefaultCiliumBGPAdvertisementGVK = schema.GroupVersionKind{
-	Group:   "cilium.io",
+	Group:   ciliumAPIGroup,
 	Version: "v2",
-	Kind:    "CiliumBGPAdvertisement",
+	Kind:    kindCiliumBGPAdvertisement,
 }
 
 const (
@@ -200,7 +200,7 @@ func (r *BGPSyncReconciler) reconcileAdvertisement(
 		adv = &unstructured.Unstructured{
 			Object: map[string]interface{}{
 				"apiVersion": APIVersion(r.bgpAdvGVK()),
-				"kind":       "CiliumBGPAdvertisement",
+				"kind":       kindCiliumBGPAdvertisement,
 				"metadata": map[string]interface{}{
 					"name": advName,
 					"labels": map[string]interface{}{
@@ -209,7 +209,7 @@ func (r *BGPSyncReconciler) reconcileAdvertisement(
 						LabelSubnetName:        subnet.Name,
 					},
 				},
-				"spec": advSpec,
+				fieldSpec: advSpec,
 			},
 		}
 
@@ -232,8 +232,8 @@ func (r *BGPSyncReconciler) reconcileAdvertisement(
 			labels[LabelDynamicPrefixName] != dp.Name ||
 			labels[LabelSubnetName] != subnet.Name
 
-		if !equality.Semantic.DeepEqual(adv.Object["spec"], advSpec) || labelsChanged {
-			adv.Object["spec"] = advSpec
+		if !equality.Semantic.DeepEqual(adv.Object[fieldSpec], advSpec) || labelsChanged {
+			adv.Object[fieldSpec] = advSpec
 			labels[LabelManagedBy] = LabelManagedByValue
 			labels[LabelDynamicPrefixName] = dp.Name
 			labels[LabelSubnetName] = subnet.Name
@@ -277,7 +277,7 @@ func (r *BGPSyncReconciler) getPoolServiceSelector(
 		}
 
 		// Found the matching pool, extract serviceSelector
-		selector, found, err := unstructured.NestedMap(pool.Object, "spec", "serviceSelector")
+		selector, found, err := unstructured.NestedMap(pool.Object, fieldSpec, "serviceSelector")
 		if err != nil {
 			// A selector that is present but unreadable is not the same as one
 			// that is absent: treating it as absent builds an advertisement that
@@ -450,7 +450,7 @@ func (r *BGPSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&unstructured.Unstructured{
 			Object: map[string]interface{}{
 				"apiVersion": APIVersion(r.lbIPPoolGVK()),
-				"kind":       "CiliumLoadBalancerIPPool",
+				"kind":       kindCiliumLoadBalancerIPPool,
 			},
 		}, handler.EnqueueRequestsFromMapFunc(r.findDynamicPrefixForPool)).
 		Complete(r)
