@@ -19,6 +19,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // DynamicPrefixSpec defines the desired state of DynamicPrefix
@@ -451,6 +452,10 @@ type DynamicPrefixList struct {
 	Items           []DynamicPrefix `json:"items"`
 }
 
-func init() {
-	SchemeBuilder.Register(&DynamicPrefix{}, &DynamicPrefixList{})
+// addKnownTypes registers this group-version's types and the shared meta types
+// (ListOptions, DeleteOptions, ...) every group carries.
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(GroupVersion, &DynamicPrefix{}, &DynamicPrefixList{})
+	metav1.AddToGroupVersion(scheme, GroupVersion)
+	return nil
 }

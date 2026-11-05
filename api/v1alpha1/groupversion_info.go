@@ -22,8 +22,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
 var (
@@ -35,12 +35,10 @@ var (
 	// GroupVersion is group version used to register these objects.
 	GroupVersion = schema.GroupVersion{Group: "dynamic-prefix.io", Version: "v1alpha1"}
 
-	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
-	// Deprecated in controller-runtime v0.24 on the grounds that api packages
-	// should carry minimal dependencies. This is kubebuilder scaffolding and
-	// still the supported way to register the group; replacing it by hand
-	// would diverge from the generated layout for no functional gain.
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion} //nolint:staticcheck // SA1019: see above
+	// SchemeBuilder is used to add go types to the GroupVersionKind scheme. It
+	// is apimachinery's builder rather than controller-runtime's, which keeps
+	// this package importable without controller-runtime.
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 
 	// AddToScheme adds the types in this group-version to the given scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
