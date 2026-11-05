@@ -80,7 +80,7 @@ func TestRAReceiverSurvivesStartStopCycles(t *testing.T) {
 		mu.Lock()
 		conns = append(conns, conn)
 		mu.Unlock()
-		return conn, netip.MustParseAddr("fe80::1"), nil
+		return conn, netip.MustParseAddr(testRouterLinkLocal), nil
 	}
 
 	stopChannels := make([]chan struct{}, 0, 3)

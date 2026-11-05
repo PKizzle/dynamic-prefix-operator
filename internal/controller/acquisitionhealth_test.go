@@ -52,15 +52,18 @@ func (f *fixedReceiverFactory) CreateReceiver(dynamicprefixiov1alpha1.Acquisitio
 	return f.receiver, nil
 }
 
-func newHealthTestReconciler(t *testing.T, receiver prefix.Receiver) (*DynamicPrefixReconciler, *events.FakeRecorder, *dynamicprefixiov1alpha1.DynamicPrefix) {
+func newHealthTestReconciler(
+	t *testing.T,
+	receiver prefix.Receiver,
+) (*DynamicPrefixReconciler, *events.FakeRecorder, *dynamicprefixiov1alpha1.DynamicPrefix) {
 	t.Helper()
 
 	scheme := newPoolBackendTestScheme(t)
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6", Finalizers: []string{finalizerName}},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName, Finalizers: []string{finalizerName}},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
-				DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: "eth0"},
+				DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: testInterface},
 			},
 		},
 	}
@@ -205,7 +208,8 @@ func TestFailingRenewalDegradesAResourceThatStillHoldsAPrefix(t *testing.T) {
 		t.Fatalf("reading back the DynamicPrefix: %v", err)
 	}
 
-	if acquired := meta.FindStatusCondition(got.Status.Conditions, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired); acquired == nil || acquired.Status != metav1.ConditionTrue {
+	acquired := meta.FindStatusCondition(got.Status.Conditions, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired)
+	if acquired == nil || acquired.Status != metav1.ConditionTrue {
 		t.Errorf("PrefixAcquired = %v, want True: the prefix is still held", acquired)
 	}
 	degraded := meta.FindStatusCondition(got.Status.Conditions, dynamicprefixiov1alpha1.ConditionTypeDegraded)

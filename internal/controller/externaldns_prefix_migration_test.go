@@ -39,7 +39,8 @@ func TestExternalDNSTargetWrittenUnderEveryConfiguredKey(t *testing.T) {
 		t.Fatal("expected a target under the alpha key")
 	}
 	if old != newKey {
-		t.Errorf("keys disagree: alpha=%q new=%q; both must hold the same target or one consumer resolves a stale address", old, newKey)
+		t.Errorf("keys disagree: alpha=%q new=%q; "+
+			"both must hold the same target or one consumer resolves a stale address", old, newKey)
 	}
 }
 
@@ -141,7 +142,7 @@ func TestReleasingADeConfiguredKeyPreservesUnownedEntries(t *testing.T) {
 	if err := r.Get(ctx, key, &svc); err != nil {
 		t.Fatalf("get after narrowing: %v", err)
 	}
-	if got := svc.Annotations[AnnotationExternalDNSTarget]; got != "example.com" {
+	if got := svc.Annotations[AnnotationExternalDNSTarget]; got != testDNSTarget {
 		t.Errorf("alpha key = %q, want the user's hostname to survive the release", got)
 	}
 }

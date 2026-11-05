@@ -182,7 +182,10 @@ func (f *DefaultReceiverFactory) claimPDInterface(iface string) (func(), error) 
 }
 
 // createDHCPv6PDReceiver creates a DHCPv6-PD receiver from the spec.
-func (f *DefaultReceiverFactory) createDHCPv6PDReceiver(spec *dynamicprefixiov1alpha1.DHCPv6PDSpec, policy Policy) (*DHCPv6PDReceiver, error) {
+func (f *DefaultReceiverFactory) createDHCPv6PDReceiver(
+	spec *dynamicprefixiov1alpha1.DHCPv6PDSpec,
+	policy Policy,
+) (*DHCPv6PDReceiver, error) {
 	if spec.Interface == "" {
 		return nil, fmt.Errorf("DHCPv6-PD interface is required")
 	}
@@ -203,7 +206,10 @@ func (f *DefaultReceiverFactory) createDHCPv6PDReceiver(spec *dynamicprefixiov1a
 }
 
 // createRAReceiver creates a Router Advertisement receiver from the spec.
-func (f *DefaultReceiverFactory) createRAReceiver(spec *dynamicprefixiov1alpha1.RouterAdvertisementSpec, policy RAPolicy) (Receiver, error) {
+func (f *DefaultReceiverFactory) createRAReceiver(
+	spec *dynamicprefixiov1alpha1.RouterAdvertisementSpec,
+	policy RAPolicy,
+) (Receiver, error) {
 	if spec.Interface == "" {
 		return nil, fmt.Errorf("router advertisement interface is required")
 	}
@@ -212,7 +218,9 @@ func (f *DefaultReceiverFactory) createRAReceiver(spec *dynamicprefixiov1alpha1.
 }
 
 // createCompositeReceiver creates a composite receiver with DHCPv6-PD as primary and RA as fallback.
-func (f *DefaultReceiverFactory) createCompositeReceiver(spec dynamicprefixiov1alpha1.AcquisitionSpec) (*CompositeReceiver, error) {
+func (f *DefaultReceiverFactory) createCompositeReceiver(
+	spec dynamicprefixiov1alpha1.AcquisitionSpec,
+) (*CompositeReceiver, error) {
 	raPolicy, err := raPolicyFromSpec(spec)
 	if err != nil {
 		return nil, err

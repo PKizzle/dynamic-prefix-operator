@@ -42,15 +42,18 @@ import (
 
 // wireTestInterface is the interface the scripted exchanges pretend to run on.
 // The index matters: the IA_PD's IAID is derived from it.
+// wireTestIfIndex is the test interface's index, and therefore its IAID.
+const wireTestIfIndex = 3
+
 var wireTestInterface = &net.Interface{
-	Index:        3,
-	Name:         "eth0",
+	Index:        wireTestIfIndex,
+	Name:         testInterface,
 	HardwareAddr: net.HardwareAddr{0x02, 0x00, 0x5e, 0x10, 0x00, 0x01},
 }
 
 func wireTestIAID() [4]byte {
 	var iaid [4]byte
-	binary.BigEndian.PutUint32(iaid[:], uint32(wireTestInterface.Index)) // #nosec G115 -- fixed small index
+	binary.BigEndian.PutUint32(iaid[:], wireTestIfIndex)
 	return iaid
 }
 
@@ -72,7 +75,12 @@ type fakeDHCPv6Client struct {
 	closed  int
 }
 
-func (c *fakeDHCPv6Client) SendAndRead(_ context.Context, _ *net.UDPAddr, msg *dhcpv6.Message, match nclient6.Matcher) (*dhcpv6.Message, error) {
+func (c *fakeDHCPv6Client) SendAndRead(
+	_ context.Context,
+	_ *net.UDPAddr,
+	msg *dhcpv6.Message,
+	match nclient6.Matcher,
+) (*dhcpv6.Message, error) {
 	c.mu.Lock()
 	c.sent = append(c.sent, msg)
 	respond := c.respond
@@ -136,10 +144,14 @@ func iaPrefixFor(cidr string, preferred, valid time.Duration) (*dhcpv6.OptIAPref
 	if err != nil {
 		return nil, err
 	}
+	bits := p.Bits()
+	if bits < 0 || bits > 128 {
+		return nil, fmt.Errorf("prefix length %d of %s does not fit IA_PREFIX", bits, cidr)
+	}
 	body := iaPrefixBytes(
 		uint32(preferred.Seconds()),
 		uint32(valid.Seconds()),
-		uint8(p.Bits()), // #nosec G115 -- prefix lengths are 0..128
+		uint8(bits),
 		net.IP(p.Addr().AsSlice()),
 	)
 	opt := &dhcpv6.OptIAPrefix{}
@@ -161,7 +173,12 @@ const leaseLifetime = time.Hour
 // asked about so the reply matches the client's association. renewAfter sets
 // T1, so a test can have a lease fall due without waiting out its lifetime --
 // the prefix's own lifetimes travel as whole seconds and cannot be that short.
-func iaPDFor(req *dhcpv6.Message, cidr string, renewAfter time.Duration, extra ...dhcpv6.Option) (*dhcpv6.OptIAPD, error) {
+func iaPDFor(
+	req *dhcpv6.Message,
+	cidr string,
+	renewAfter time.Duration,
+	extra ...dhcpv6.Option,
+) (*dhcpv6.OptIAPD, error) {
 	iaid := wireTestIAID()
 	if opt := req.GetOneOption(dhcpv6.OptionIAPD); opt != nil {
 		if pd, ok := opt.(*dhcpv6.OptIAPD); ok {
@@ -289,7 +306,7 @@ func TestDHCPv6PDAcquiresFromAServerThatOnlyDelegates(t *testing.T) {
 // address association as well makes the exchange depend on the server having
 // one to give, and leaves a lease nothing ever renews or releases.
 func TestDHCPv6PDSolicitAsksOnlyForAPrefix(t *testing.T) {
-	r, client := newWireTestReceiver(t, delegating("2001:db8::/48"))
+	r, client := newWireTestReceiver(t, delegating(testPrefixLen48))
 	r.requestedPrefixLength = 48
 
 	if err := r.acquirePrefix(context.Background()); err != nil {
@@ -345,7 +362,7 @@ func TestDHCPv6PDAcquireRejectsUnusableAdvertisements(t *testing.T) {
 		{
 			name: "advertisement without a server identity",
 			respond: func(req *dhcpv6.Message) (*dhcpv6.Message, error) {
-				iapd, err := iaPDFor(req, "2001:db8::/56", leaseLifetime)
+				iapd, err := iaPDFor(req, testPrefixLen56, leaseLifetime)
 				if err != nil {
 					return nil, err
 				}
@@ -409,7 +426,7 @@ func TestDHCPv6PDAcquireSurfacesServerStatus(t *testing.T) {
 		{
 			name: "status on the message",
 			respond: func(req *dhcpv6.Message) (*dhcpv6.Message, error) {
-				iapd, err := iaPDFor(req, "2001:db8::/56", leaseLifetime)
+				iapd, err := iaPDFor(req, testPrefixLen56, leaseLifetime)
 				if err != nil {
 					return nil, err
 				}

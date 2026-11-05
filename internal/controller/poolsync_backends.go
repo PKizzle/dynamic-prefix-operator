@@ -46,7 +46,13 @@ type poolBackend interface {
 	// cluster-scoped resource. Without the scope to discriminate on, a request
 	// for a namespaced pool matches a same-named cluster-scoped one.
 	namespaced() bool
-	update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error)
+	update(
+		ctx context.Context,
+		r *PoolSyncReconciler,
+		pool *unstructured.Unstructured,
+		configs []poolConfiguration,
+		managedPrefixes []netip.Prefix,
+	) (bool, error)
 	// release hands back everything the operator wrote to this pool, leaving the
 	// user's own entries untouched, and reports whether anything changed.
 	//
@@ -126,12 +132,22 @@ func (b ciliumLoadBalancerIPPoolBackend) gvk() schema.GroupVersionKind {
 
 // CiliumLoadBalancerIPPool is cluster-scoped.
 func (b ciliumLoadBalancerIPPoolBackend) namespaced() bool { return false }
-func (b ciliumLoadBalancerIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
+func (b ciliumLoadBalancerIPPoolBackend) update(
+	ctx context.Context,
+	r *PoolSyncReconciler,
+	pool *unstructured.Unstructured,
+	configs []poolConfiguration,
+	managedPrefixes []netip.Prefix,
+) (bool, error) {
 	return r.updateLoadBalancerIPPool(ctx, pool, configs, managedPrefixes)
 }
 
-func (b ciliumLoadBalancerIPPoolBackend) release(_ context.Context, _ *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
-	return releaseRecordedSlice(pool, AnnotationManagedBlocks, blockKeyOf, "spec", "blocks")
+func (b ciliumLoadBalancerIPPoolBackend) release(
+	_ context.Context,
+	_ *PoolSyncReconciler,
+	pool *unstructured.Unstructured,
+) (bool, error) {
+	return releaseRecordedSlice(pool, AnnotationManagedBlocks, blockKeyOf, fieldSpec, "blocks")
 }
 
 type ciliumCIDRGroupBackend struct {
@@ -145,12 +161,22 @@ func (b ciliumCIDRGroupBackend) gvk() schema.GroupVersionKind {
 
 // CiliumCIDRGroup is cluster-scoped.
 func (b ciliumCIDRGroupBackend) namespaced() bool { return false }
-func (b ciliumCIDRGroupBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
+func (b ciliumCIDRGroupBackend) update(
+	ctx context.Context,
+	r *PoolSyncReconciler,
+	pool *unstructured.Unstructured,
+	configs []poolConfiguration,
+	managedPrefixes []netip.Prefix,
+) (bool, error) {
 	return r.updateCIDRGroup(ctx, pool, configs, managedPrefixes)
 }
 
-func (b ciliumCIDRGroupBackend) release(_ context.Context, _ *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
-	return releaseRecordedSlice(pool, AnnotationManagedCIDRs, cidrKeyOf, "spec", "externalCIDRs")
+func (b ciliumCIDRGroupBackend) release(
+	_ context.Context,
+	_ *PoolSyncReconciler,
+	pool *unstructured.Unstructured,
+) (bool, error) {
+	return releaseRecordedSlice(pool, AnnotationManagedCIDRs, cidrKeyOf, fieldSpec, "externalCIDRs")
 }
 
 // cidrKeyOf identifies an entry in a CiliumCIDRGroup's spec.externalCIDRs, for
@@ -179,7 +205,13 @@ func (b metalLBIPAddressPoolBackend) gvk() schema.GroupVersionKind {
 
 // MetalLB IPAddressPool lives in a namespace (metallb-system by default).
 func (b metalLBIPAddressPoolBackend) namespaced() bool { return true }
-func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
+func (b metalLBIPAddressPoolBackend) update(
+	ctx context.Context,
+	r *PoolSyncReconciler,
+	pool *unstructured.Unstructured,
+	configs []poolConfiguration,
+	managedPrefixes []netip.Prefix,
+) (bool, error) {
 	// spec.addresses is shared with the user exactly like the Cilium fields are,
 	// so it needs the same ownership record. Deciding by address geometry alone
 	// loses track of an entry the moment its prefix ages out of history, after
@@ -201,7 +233,7 @@ func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReco
 	}
 
 	return syncOwnedList(ctx, r, pool, ownedListSync{
-		fields:    []string{"spec", "addresses"},
+		fields:    []string{fieldSpec, "addresses"},
 		recordKey: AnnotationManagedAddresses,
 		desired:   desired,
 		keyOf:     addressKeyOf,
@@ -215,8 +247,12 @@ func (b metalLBIPAddressPoolBackend) update(ctx context.Context, r *PoolSyncReco
 	})
 }
 
-func (b metalLBIPAddressPoolBackend) release(_ context.Context, _ *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
-	return releaseRecordedSlice(pool, AnnotationManagedAddresses, addressKeyOf, "spec", "addresses")
+func (b metalLBIPAddressPoolBackend) release(
+	_ context.Context,
+	_ *PoolSyncReconciler,
+	pool *unstructured.Unstructured,
+) (bool, error) {
+	return releaseRecordedSlice(pool, AnnotationManagedAddresses, addressKeyOf, fieldSpec, "addresses")
 }
 
 // canonicalAddressEntry normalises a MetalLB address entry so ownership survives
@@ -263,7 +299,13 @@ func (b calicoIPPoolBackend) namespaced() bool { return false }
 // mechanism exists for fields shared with the user, whereas these objects are
 // entirely the operator's, so labelling them and deleting the ones that no longer
 // correspond to a live prefix is both simpler and unambiguous.
-func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
+func (b calicoIPPoolBackend) update(
+	ctx context.Context,
+	r *PoolSyncReconciler,
+	pool *unstructured.Unstructured,
+	configs []poolConfiguration,
+	_ []netip.Prefix,
+) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	if len(configs) == 0 {
@@ -281,13 +323,14 @@ func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, 
 		return false, err
 	}
 
-	if allowedUses, found, err := unstructured.NestedStringSlice(pool.Object, "spec", "allowedUses"); err != nil {
+	if allowedUses, found, err := unstructured.NestedStringSlice(pool.Object, fieldSpec, "allowedUses"); err != nil {
 		return false, fmt.Errorf("failed to read spec.allowedUses: %w", err)
 	} else if found && !containsString(allowedUses, "LoadBalancer") {
-		logger.V(1).Info("Calico IPPool does not include LoadBalancer in spec.allowedUses", "pool", pool.GetName(), "allowedUses", allowedUses)
+		logger.V(1).Info("Calico IPPool does not include LoadBalancer in spec.allowedUses",
+			"pool", pool.GetName(), "allowedUses", allowedUses)
 	}
 
-	currentCIDR, _, err := unstructured.NestedString(pool.Object, "spec", "cidr")
+	currentCIDR, _, err := unstructured.NestedString(pool.Object, fieldSpec, "cidr")
 	if err != nil {
 		return false, fmt.Errorf("failed to read spec.cidr: %w", err)
 	}
@@ -303,7 +346,7 @@ func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, 
 		return siblingsChanged, nil
 	}
 
-	if err := unstructured.SetNestedField(pool.Object, cidr, "spec", "cidr"); err != nil {
+	if err := unstructured.SetNestedField(pool.Object, cidr, fieldSpec, "cidr"); err != nil {
 		return false, fmt.Errorf("failed to set spec.cidr: %w", err)
 	}
 
@@ -320,7 +363,11 @@ func (b calicoIPPoolBackend) update(ctx context.Context, r *PoolSyncReconciler, 
 // back -- clearing it would reject the object, and deleting a pool the user
 // created is not this operator's decision to make. The siblings are different:
 // those objects exist only because the operator made them.
-func (b calicoIPPoolBackend) release(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
+func (b calicoIPPoolBackend) release(
+	ctx context.Context,
+	r *PoolSyncReconciler,
+	pool *unstructured.Unstructured,
+) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	// No configs means every sibling has aged out, which is exactly the state a
@@ -335,7 +382,7 @@ func (b calicoIPPoolBackend) release(ctx context.Context, r *PoolSyncReconciler,
 		delete(annotations, AnnotationManagedCIDR)
 		pool.SetAnnotations(annotations)
 		changed = true
-		cidr, _, _ := unstructured.NestedString(pool.Object, "spec", "cidr")
+		cidr, _, _ := unstructured.NestedString(pool.Object, fieldSpec, "cidr")
 		logger.Info("Released Calico IPPool; spec.cidr is left as it stands because the field cannot be empty",
 			"pool", pool.GetName(), "cidr", cidr)
 	}
@@ -381,14 +428,14 @@ func (b calicoIPPoolBackend) syncDrainingSiblings(
 		err := r.Get(ctx, types.NamespacedName{Name: name}, sibling)
 		switch {
 		case err == nil:
-			existing, _, readErr := unstructured.NestedString(sibling.Object, "spec", "cidr")
+			existing, _, readErr := unstructured.NestedString(sibling.Object, fieldSpec, "cidr")
 			if readErr != nil {
 				return changed, fmt.Errorf("failed to read sibling spec.cidr: %w", readErr)
 			}
 			if existing == cidr {
 				continue
 			}
-			if err := unstructured.SetNestedField(sibling.Object, cidr, "spec", "cidr"); err != nil {
+			if err := unstructured.SetNestedField(sibling.Object, cidr, fieldSpec, "cidr"); err != nil {
 				return changed, fmt.Errorf("failed to set sibling spec.cidr: %w", err)
 			}
 			if err := r.Update(ctx, sibling); err != nil {
@@ -439,7 +486,12 @@ func siblingPoolName(parent, cidr string) string {
 	return fmt.Sprintf("%s-%s", parent, hex.EncodeToString(sum[:])[:8])
 }
 
-func newCalicoSibling(gvk schema.GroupVersionKind, parent *unstructured.Unstructured, name, cidr string) *unstructured.Unstructured {
+func newCalicoSibling(
+	gvk schema.GroupVersionKind,
+	parent *unstructured.Unstructured,
+	name,
+	cidr string,
+) *unstructured.Unstructured {
 	sibling := &unstructured.Unstructured{}
 	sibling.SetGroupVersionKind(gvk)
 	sibling.SetName(name)
@@ -454,14 +506,15 @@ func newCalicoSibling(gvk schema.GroupVersionKind, parent *unstructured.Unstruct
 	spec := map[string]interface{}{"cidr": cidr}
 	// Mirror the parent's allowedUses so the draining prefix keeps serving the
 	// same purpose while connections on it wind down.
-	if allowedUses, found, err := unstructured.NestedStringSlice(parent.Object, "spec", "allowedUses"); err == nil && found {
+	allowedUses, found, err := unstructured.NestedStringSlice(parent.Object, fieldSpec, "allowedUses")
+	if err == nil && found {
 		uses := make([]interface{}, 0, len(allowedUses))
 		for _, u := range allowedUses {
 			uses = append(uses, u)
 		}
 		spec["allowedUses"] = uses
 	}
-	sibling.Object["spec"] = spec
+	sibling.Object[fieldSpec] = spec
 	return sibling
 }
 
@@ -495,13 +548,13 @@ func backendsForGVKs(gvks []schema.GroupVersionKind) []poolBackend {
 
 func backendForGVK(gvk schema.GroupVersionKind) poolBackend {
 	switch {
-	case gvk.Group == "cilium.io" && gvk.Kind == "CiliumLoadBalancerIPPool":
+	case gvk.Group == ciliumAPIGroup && gvk.Kind == kindCiliumLoadBalancerIPPool:
 		return ciliumLoadBalancerIPPoolBackend{resourceGVK: gvk}
-	case gvk.Group == "cilium.io" && gvk.Kind == "CiliumCIDRGroup":
+	case gvk.Group == ciliumAPIGroup && gvk.Kind == kindCiliumCIDRGroup:
 		return ciliumCIDRGroupBackend{resourceGVK: gvk}
-	case gvk.Group == "metallb.io" && gvk.Kind == "IPAddressPool":
+	case gvk.Group == metallbAPIGroup && gvk.Kind == kindMetalLBIPAddressPool:
 		return metalLBIPAddressPoolBackend{resourceGVK: gvk}
-	case gvk.Group == "projectcalico.org" && gvk.Kind == "IPPool":
+	case gvk.Group == calicoAPIGroup && gvk.Kind == kindCalicoIPPool:
 		return calicoIPPoolBackend{resourceGVK: gvk}
 	case gvk.Group == "" && gvk.Kind == "ConfigMap":
 		return kubevipConfigMapBackend{resourceGVK: gvk}
@@ -523,7 +576,8 @@ func calicoCIDRForConfig(config poolConfiguration) (string, error) {
 		return "", err
 	}
 	if !exact {
-		return "", fmt.Errorf("calico IPPool spec.cidr can only represent exact CIDR ranges; %s-%s is not CIDR-aligned", config.start, config.end)
+		return "", fmt.Errorf("calico IPPool spec.cidr can only represent exact CIDR ranges; %s-%s is not CIDR-aligned",
+			config.start, config.end)
 	}
 	return cidr, nil
 }

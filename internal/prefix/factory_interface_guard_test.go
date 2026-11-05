@@ -42,12 +42,12 @@ func pdSpec(iface string) dynamicprefixiov1alpha1.AcquisitionSpec {
 func TestFactoryRefusesASecondDHCPv6PDReceiverOnOneInterface(t *testing.T) {
 	factory := NewReceiverFactory()
 
-	first, err := factory.CreateReceiver(pdSpec("eth0"))
+	first, err := factory.CreateReceiver(pdSpec(testInterface))
 	if err != nil {
 		t.Fatalf("first receiver: %v", err)
 	}
 
-	_, err = factory.CreateReceiver(pdSpec("eth0"))
+	_, err = factory.CreateReceiver(pdSpec(testInterface))
 	if err == nil {
 		t.Fatal("expected the second receiver on eth0 to be refused")
 	}
@@ -55,7 +55,7 @@ func TestFactoryRefusesASecondDHCPv6PDReceiverOnOneInterface(t *testing.T) {
 	if !errors.As(err, &busy) {
 		t.Fatalf("error = %v (%T), want an *InterfaceBusyError", err, err)
 	}
-	if busy.Interface != "eth0" {
+	if busy.Interface != testInterface {
 		t.Errorf("busy interface = %q, want eth0", busy.Interface)
 	}
 	// The message is what a user sees on the resource, so it has to say what to
@@ -74,7 +74,7 @@ func TestFactoryRefusesASecondDHCPv6PDReceiverOnOneInterface(t *testing.T) {
 	if err := first.Stop(); err != nil {
 		t.Fatalf("Stop() = %v", err)
 	}
-	if _, err := factory.CreateReceiver(pdSpec("eth0")); err != nil {
+	if _, err := factory.CreateReceiver(pdSpec(testInterface)); err != nil {
 		t.Fatalf("receiver after the first was stopped: %v", err)
 	}
 }
@@ -85,8 +85,11 @@ func TestFactoryCountsCompositeReceiversAgainstTheInterface(t *testing.T) {
 	factory := NewReceiverFactory()
 
 	composite := dynamicprefixiov1alpha1.AcquisitionSpec{
-		DHCPv6PD:            &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: "eth0"},
-		RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{Interface: "eth0", Enabled: ptr.To(true)},
+		DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: testInterface},
+		RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
+			Interface: testInterface,
+			Enabled:   ptr.To(true),
+		},
 	}
 
 	receiver, err := factory.CreateReceiver(composite)
@@ -95,14 +98,14 @@ func TestFactoryCountsCompositeReceiversAgainstTheInterface(t *testing.T) {
 	}
 
 	var busy *InterfaceBusyError
-	if _, err := factory.CreateReceiver(pdSpec("eth0")); !errors.As(err, &busy) {
+	if _, err := factory.CreateReceiver(pdSpec(testInterface)); !errors.As(err, &busy) {
 		t.Fatalf("error = %v, want the interface to be reported busy", err)
 	}
 
 	if err := receiver.Stop(); err != nil {
 		t.Fatalf("Stop() = %v", err)
 	}
-	if _, err := factory.CreateReceiver(pdSpec("eth0")); err != nil {
+	if _, err := factory.CreateReceiver(pdSpec(testInterface)); err != nil {
 		t.Fatalf("receiver after the composite was stopped: %v", err)
 	}
 }
@@ -116,14 +119,14 @@ func TestFactoryReleasesTheInterfaceWhenTheCompositeFallbackFails(t *testing.T) 
 	factory := NewReceiverFactory()
 
 	broken := dynamicprefixiov1alpha1.AcquisitionSpec{
-		DHCPv6PD:            &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: "eth0"},
+		DHCPv6PD:            &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: testInterface},
 		RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{Enabled: ptr.To(true)},
 	}
 	if _, err := factory.CreateReceiver(broken); err == nil {
 		t.Fatal("expected the composite to fail without an RA interface")
 	}
 
-	if _, err := factory.CreateReceiver(pdSpec("eth0")); err != nil {
+	if _, err := factory.CreateReceiver(pdSpec(testInterface)); err != nil {
 		t.Fatalf("eth0 stayed claimed after a failed composite: %v", err)
 	}
 }

@@ -52,7 +52,7 @@ func oversizedPrefixAdvertisement() *ndp.RouterAdvertisement {
 // path with a reason from the other.
 func TestPrefixLengthRejectionCountsTowardsRARejections(t *testing.T) {
 	var observed []string
-	r := NewRAReceiverWithPolicy("eth0", RAPolicy{
+	r := NewRAReceiverWithPolicy(testInterface, RAPolicy{
 		Policy: Policy{MaxPrefixLength: 64},
 	}, func(_, reason string) {
 		observed = append(observed, reason)

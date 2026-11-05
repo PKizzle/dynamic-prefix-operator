@@ -45,7 +45,10 @@ type rejectionReport struct {
 // The report is bounded on both sides: nothing is said unless the count moved,
 // and nothing more is said for an interval afterwards, because a flood is a
 // plausible way to attack the event stream as much as the log.
-func (r *DynamicPrefixReconciler) reportRARejections(dp *dynamicprefixiov1alpha1.DynamicPrefix, receiver prefix.Receiver) {
+func (r *DynamicPrefixReconciler) reportRARejections(
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	receiver prefix.Receiver,
+) {
 	stats, ok := receiver.(prefix.RARejectionStats)
 	if !ok {
 		return

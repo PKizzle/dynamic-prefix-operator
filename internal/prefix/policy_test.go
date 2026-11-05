@@ -37,34 +37,34 @@ func TestPolicyValidatesPrefixLengthBounds(t *testing.T) {
 		{
 			name:   "no bounds accepts anything otherwise valid",
 			policy: DefaultPolicy(),
-			prefix: "2001:db8::/56",
+			prefix: testPrefixLen56,
 		},
 		{
 			name:    "shorter than the minimum is rejected",
 			policy:  Policy{RequireGlobalUnicast: true, MinPrefixLength: 56},
-			prefix:  "2001:db8::/48",
+			prefix:  testPrefixLen48,
 			wantErr: "shorter than the configured minimum",
 		},
 		{
 			name:   "exactly the minimum is accepted",
 			policy: Policy{RequireGlobalUnicast: true, MinPrefixLength: 56},
-			prefix: "2001:db8::/56",
+			prefix: testPrefixLen56,
 		},
 		{
 			name:    "longer than the maximum is rejected",
 			policy:  Policy{RequireGlobalUnicast: true, MaxPrefixLength: 60},
-			prefix:  "2001:db8::/64",
+			prefix:  testPrefixLen64,
 			wantErr: "longer than the configured maximum",
 		},
 		{
 			name:   "exactly the maximum is accepted",
 			policy: Policy{RequireGlobalUnicast: true, MaxPrefixLength: 64},
-			prefix: "2001:db8::/64",
+			prefix: testPrefixLen64,
 		},
 		{
 			name:   "inside both bounds is accepted",
 			policy: Policy{RequireGlobalUnicast: true, MinPrefixLength: 48, MaxPrefixLength: 64},
-			prefix: "2001:db8::/56",
+			prefix: testPrefixLen56,
 		},
 		{
 			// The length bounds do not replace the checks that were already
@@ -97,7 +97,7 @@ func TestPolicyValidatesPrefixLengthBounds(t *testing.T) {
 }
 
 func TestRAPolicyTrusts(t *testing.T) {
-	router := netip.MustParseAddr("fe80::1")
+	router := netip.MustParseAddr(testRouterLinkLocal)
 	named := RAPolicy{TrustedRouters: []netip.Addr{router}}
 
 	anyRouter := RAPolicy{}
@@ -113,7 +113,7 @@ func TestRAPolicyTrusts(t *testing.T) {
 	// The source address read off the socket carries the receiving zone; the
 	// configured address cannot, so the comparison has to ignore it or nothing
 	// would ever match.
-	if !named.Trusts(router.WithZone("eth0")) {
+	if !named.Trusts(router.WithZone(testInterface)) {
 		t.Error("a zone on the received source address must not defeat the match")
 	}
 }
@@ -123,7 +123,7 @@ func TestRAPolicyTrusts(t *testing.T) {
 // stricter one is fed advertisements it rejected.
 func TestRAPolicyKeySeparatesDifferentTrust(t *testing.T) {
 	base := DefaultRAPolicy()
-	withRouter := RAPolicy{Policy: base.Policy, TrustedRouters: []netip.Addr{netip.MustParseAddr("fe80::1")}}
+	withRouter := RAPolicy{Policy: base.Policy, TrustedRouters: []netip.Addr{netip.MustParseAddr(testRouterLinkLocal)}}
 	withOther := RAPolicy{Policy: base.Policy, TrustedRouters: []netip.Addr{netip.MustParseAddr("fe80::2")}}
 	bounded := RAPolicy{Policy: Policy{RequireGlobalUnicast: true, MinPrefixLength: 56}}
 
@@ -144,10 +144,10 @@ func TestRAPolicyKeySeparatesDifferentTrust(t *testing.T) {
 	// Order is not a difference, and treating it as one would open a second
 	// socket on the same interface for the same configuration.
 	a := RAPolicy{Policy: base.Policy, TrustedRouters: []netip.Addr{
-		netip.MustParseAddr("fe80::1"), netip.MustParseAddr("fe80::2"),
+		netip.MustParseAddr(testRouterLinkLocal), netip.MustParseAddr("fe80::2"),
 	}}
 	b := RAPolicy{Policy: base.Policy, TrustedRouters: []netip.Addr{
-		netip.MustParseAddr("fe80::2"), netip.MustParseAddr("fe80::1"),
+		netip.MustParseAddr("fe80::2"), netip.MustParseAddr(testRouterLinkLocal),
 	}}
 	if a.Key() != b.Key() {
 		t.Errorf("the same routers in a different order produced %q and %q", a.Key(), b.Key())
@@ -161,10 +161,10 @@ func TestParseTrustedRouters(t *testing.T) {
 		wantErr string
 	}{
 		{name: "empty is allowed", values: nil},
-		{name: "link-local addresses are accepted", values: []string{"fe80::1", "FE80::CAFE"}},
+		{name: "link-local addresses are accepted", values: []string{testRouterLinkLocal, "FE80::CAFE"}},
 		{
 			name:    "a global address could never be an advertisement's source",
-			values:  []string{"2001:db8::1"},
+			values:  []string{testAddr},
 			wantErr: "not link-local",
 		},
 		{
@@ -179,7 +179,7 @@ func TestParseTrustedRouters(t *testing.T) {
 		},
 		{
 			name:    "nonsense is reported rather than ignored",
-			values:  []string{"not-an-address"},
+			values:  []string{testNotAnAddress},
 			wantErr: "not an IP address",
 		},
 	}
@@ -214,9 +214,9 @@ func TestFactoryRejectsAnUnusableTrustedRouterList(t *testing.T) {
 
 	_, err := factory.CreateReceiver(dynamicprefixiov1alpha1.AcquisitionSpec{
 		RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-			Interface:      "eth0",
+			Interface:      testInterface,
 			Enabled:        ptr.To(true),
-			TrustedRouters: []string{"2001:db8::1"},
+			TrustedRouters: []string{testAddr},
 		},
 	})
 	if err == nil {
@@ -229,7 +229,7 @@ func TestFactoryRejectsAnUnusableTrustedRouterList(t *testing.T) {
 
 func TestPolicyFromSpecCarriesTheLengthBounds(t *testing.T) {
 	spec := dynamicprefixiov1alpha1.AcquisitionSpec{
-		DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: "eth0"},
+		DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: testInterface},
 		PrefixFilter: &dynamicprefixiov1alpha1.PrefixFilterSpec{
 			MinPrefixLength: ptr.To(48),
 			MaxPrefixLength: ptr.To(60),

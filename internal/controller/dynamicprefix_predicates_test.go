@@ -32,23 +32,34 @@ func TestDynamicPrefixAffectsDependents(t *testing.T) {
 		return &dynamicprefixiov1alpha1.DynamicPrefix{
 			Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 				Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
-					RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{Interface: "eth0", Enabled: ptr.To(true)},
+					RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
+						Interface: testInterface,
+						Enabled:   ptr.To(true),
+					},
 				},
 				AddressRanges: []dynamicprefixiov1alpha1.AddressRangeSpec{
-					{Name: "loadbalancers", Start: "::f000:0:0:0", End: "::ffff:ffff:ffff:ffff"},
+					{Name: testSubnetLoadBalancers, Start: "::f000:0:0:0", End: "::ffff:ffff:ffff:ffff"},
 				},
 				Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
-					{Name: "services", Offset: 0, PrefixLength: 64},
+					{Name: testSubnetServices, Offset: 0, PrefixLength: 64},
 				},
-				Transition: &dynamicprefixiov1alpha1.TransitionSpec{Mode: dynamicprefixiov1alpha1.TransitionModeHA, MaxPrefixHistory: 2},
+				Transition: &dynamicprefixiov1alpha1.TransitionSpec{
+					Mode:             dynamicprefixiov1alpha1.TransitionModeHA,
+					MaxPrefixHistory: 2,
+				},
 			},
 			Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-				CurrentPrefix: "2001:db8::/64",
+				CurrentPrefix: testPrefixLen64,
 				AddressRanges: []dynamicprefixiov1alpha1.AddressRangeStatus{
-					{Name: "loadbalancers", Start: "2001:db8::f000:0:0:0", End: "2001:db8::ffff:ffff:ffff:ffff", CIDR: "2001:db8::/64"},
+					{
+						Name:  testSubnetLoadBalancers,
+						Start: "2001:db8::f000:0:0:0",
+						End:   "2001:db8::ffff:ffff:ffff:ffff",
+						CIDR:  testPrefixLen64,
+					},
 				},
 				Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
-					{Name: "services", CIDR: "2001:db8::/64"},
+					{Name: testSubnetServices, CIDR: testPrefixLen64},
 				},
 			},
 		}
@@ -69,7 +80,13 @@ func TestDynamicPrefixAffectsDependents(t *testing.T) {
 		{
 			name: "condition only ignored",
 			mutate: func(dp *dynamicprefixiov1alpha1.DynamicPrefix) {
-				dp.Status.Conditions = []metav1.Condition{{Type: dynamicprefixiov1alpha1.ConditionTypePrefixAcquired, Status: metav1.ConditionTrue, Reason: "PrefixAcquired", Message: "ok", LastTransitionTime: metav1.Now()}}
+				dp.Status.Conditions = []metav1.Condition{{
+					Type:               dynamicprefixiov1alpha1.ConditionTypePrefixAcquired,
+					Status:             metav1.ConditionTrue,
+					Reason:             "PrefixAcquired",
+					Message:            "ok",
+					LastTransitionTime: metav1.Now(),
+				}}
 			},
 		},
 		{
@@ -81,7 +98,7 @@ func TestDynamicPrefixAffectsDependents(t *testing.T) {
 		{
 			name: "current prefix change affects dependents",
 			mutate: func(dp *dynamicprefixiov1alpha1.DynamicPrefix) {
-				dp.Status.CurrentPrefix = "2001:db8:1::/64"
+				dp.Status.CurrentPrefix = testPoolPrefix
 			},
 			want: true,
 		},
@@ -95,14 +112,17 @@ func TestDynamicPrefixAffectsDependents(t *testing.T) {
 		{
 			name: "subnet cidr change affects dependents",
 			mutate: func(dp *dynamicprefixiov1alpha1.DynamicPrefix) {
-				dp.Status.Subnets[0].CIDR = "2001:db8:1::/64"
+				dp.Status.Subnets[0].CIDR = testPoolPrefix
 			},
 			want: true,
 		},
 		{
 			name: "history change affects dependents",
 			mutate: func(dp *dynamicprefixiov1alpha1.DynamicPrefix) {
-				dp.Status.History = []dynamicprefixiov1alpha1.PrefixHistoryEntry{{Prefix: "2001:db8:ffff::/64", State: dynamicprefixiov1alpha1.PrefixStateDraining}}
+				dp.Status.History = []dynamicprefixiov1alpha1.PrefixHistoryEntry{{
+					Prefix: "2001:db8:ffff::/64",
+					State:  dynamicprefixiov1alpha1.PrefixStateDraining,
+				}}
 			},
 			want: true,
 		},

@@ -63,7 +63,11 @@ type poolSyncState struct {
 
 // record notes the outcome of one pool's sync and reports the resulting
 // condition for its DynamicPrefix.
-func (s *poolSyncState) record(dpName string, key poolStateKey, syncErr error) (metav1.ConditionStatus, string, string) {
+func (s *poolSyncState) record(
+	dpName string,
+	key poolStateKey,
+	syncErr error,
+) (metav1.ConditionStatus, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -162,7 +166,12 @@ func (s *poolSyncState) condition(dpName string) (metav1.ConditionStatus, string
 // Writes are skipped unless the condition actually changes, because this runs on
 // every pool reconcile: without that check a cluster with many pools would
 // rewrite one shared status object continuously.
-func (r *PoolSyncReconciler) updatePoolsSyncedCondition(ctx context.Context, dpName string, key poolStateKey, syncErr error) {
+func (r *PoolSyncReconciler) updatePoolsSyncedCondition(
+	ctx context.Context,
+	dpName string,
+	key poolStateKey,
+	syncErr error,
+) {
 	status, reason, message := r.poolState.record(dpName, key, syncErr)
 	r.writePoolsSyncedCondition(ctx, dpName, status, reason, message)
 }

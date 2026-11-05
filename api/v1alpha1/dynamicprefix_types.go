@@ -19,6 +19,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // DynamicPrefixSpec defines the desired state of DynamicPrefix
@@ -328,6 +329,7 @@ type DynamicPrefixStatus struct {
 // +kubebuilder:validation:Enum=dhcpv6-pd;router-advertisement;static;unknown
 type PrefixSource string
 
+// PrefixSource values.
 const (
 	PrefixSourceDHCPv6PD            PrefixSource = "dhcpv6-pd"
 	PrefixSourceRouterAdvertisement PrefixSource = "router-advertisement"
@@ -387,6 +389,7 @@ type PrefixHistoryEntry struct {
 // +kubebuilder:validation:Enum=active;draining;expired
 type PrefixState string
 
+// PrefixState values.
 const (
 	PrefixStateActive   PrefixState = "active"
 	PrefixStateDraining PrefixState = "draining"
@@ -451,6 +454,10 @@ type DynamicPrefixList struct {
 	Items           []DynamicPrefix `json:"items"`
 }
 
-func init() {
-	SchemeBuilder.Register(&DynamicPrefix{}, &DynamicPrefixList{})
+// addKnownTypes registers this group-version's types and the shared meta types
+// (ListOptions, DeleteOptions, ...) every group carries.
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(GroupVersion, &DynamicPrefix{}, &DynamicPrefixList{})
+	metav1.AddToGroupVersion(scheme, GroupVersion)
+	return nil
 }

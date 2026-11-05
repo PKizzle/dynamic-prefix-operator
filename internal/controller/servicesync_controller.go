@@ -631,7 +631,11 @@ func otherLBAddressAnnotation(field string) string {
 // Writing the annotation supplies the missing Service event. Fingerprinting the
 // assigned set keeps this to one write per change rather than a hot loop: when
 // nothing has moved the annotation already matches and no update is issued.
-func (r *ServiceSyncReconciler) nudgeL2Announcer(ctx context.Context, svc *corev1.Service, currentIP string) (ctrl.Result, error) {
+func (r *ServiceSyncReconciler) nudgeL2Announcer(
+	ctx context.Context,
+	svc *corev1.Service,
+	currentIP string,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	annotations := svc.GetAnnotations()
@@ -732,7 +736,11 @@ func fingerprintAddresses(ips []string) string {
 // Only recorded entries are touched. Everything else in those annotations was put
 // there by the user and stays exactly as it is, including addresses that merely
 // resemble the operator's.
-func (r *ServiceSyncReconciler) releaseService(ctx context.Context, svc *corev1.Service, reason string) (ctrl.Result, error) {
+func (r *ServiceSyncReconciler) releaseService(
+	ctx context.Context,
+	svc *corev1.Service,
+	reason string,
+) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	annotations := svc.GetAnnotations()
 
@@ -1326,18 +1334,17 @@ func (r *ServiceSyncReconciler) calculateIPOffset(base, target netip.Addr) ([16]
 	targetBytes := target.As16()
 	var offset [16]byte
 
-	borrow := uint16(0)
+	var borrow byte
 	for i := 15; i >= 0; i-- {
-		diff := int16(targetBytes[i]) - int16(baseBytes[i]) - int16(borrow)
-		if diff < 0 {
-			diff += 256
+		t, b := targetBytes[i], baseBytes[i]
+		// Byte arithmetic wraps modulo 256, which is the digit subtraction
+		// needs; the borrow records whether it wrapped.
+		offset[i] = t - b - borrow
+		if t < b || (t == b && borrow == 1) {
 			borrow = 1
 		} else {
 			borrow = 0
 		}
-		// diff has just been normalised into [0, 255] by the borrow above, so
-		// this is the byte it already is.
-		offset[i] = byte(diff) // #nosec G115 -- diff is in [0,255] after the borrow adjustment
 	}
 
 	return offset, borrow == 0
@@ -1379,7 +1386,12 @@ func (r *ServiceSyncReconciler) offsetAddressWithin(base, last netip.Addr, offse
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ServiceSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Service{}, serviceDynamicPrefixIndex, indexServiceByDynamicPrefix); err != nil {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&corev1.Service{},
+		serviceDynamicPrefixIndex,
+		indexServiceByDynamicPrefix,
+	); err != nil {
 		return fmt.Errorf("failed to index Services by DynamicPrefix annotation: %w", err)
 	}
 
@@ -1413,7 +1425,11 @@ func (r *ServiceSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("servicesync").
 		For(&corev1.Service{}, builder.WithPredicates(hasAnnotation)).
-		Watches(&dynamicprefixiov1alpha1.DynamicPrefix{}, handler.EnqueueRequestsFromMapFunc(r.findReferencingServices), builder.WithPredicates(dynamicPrefixDependentChangePredicate())).
+		Watches(
+			&dynamicprefixiov1alpha1.DynamicPrefix{},
+			handler.EnqueueRequestsFromMapFunc(r.findReferencingServices),
+			builder.WithPredicates(dynamicPrefixDependentChangePredicate()),
+		).
 		Complete(r)
 }
 
@@ -1472,7 +1488,8 @@ func (r *ServiceSyncReconciler) findReferencingServices(ctx context.Context, obj
 	}
 
 	if len(requests) > 0 {
-		log.Info("DynamicPrefix changed, enqueuing referencing Services", "dynamicPrefix", dp.Name, "serviceCount", len(requests))
+		log.Info("DynamicPrefix changed, enqueuing referencing Services",
+			"dynamicPrefix", dp.Name, "serviceCount", len(requests))
 	}
 
 	return requests

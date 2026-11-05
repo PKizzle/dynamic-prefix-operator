@@ -35,6 +35,26 @@ const (
 	calicoAPIGroup  = "projectcalico.org"
 )
 
+// fieldSpec is the top-level spec field of the unstructured resources the
+// operator edits.
+const fieldSpec = "spec"
+
+// Kinds of the third-party resources the operator manages.
+const (
+	kindCiliumLoadBalancerIPPool = "CiliumLoadBalancerIPPool"
+	kindCiliumCIDRGroup          = "CiliumCIDRGroup"
+	kindCiliumBGPAdvertisement   = "CiliumBGPAdvertisement"
+	kindMetalLBIPAddressPool     = "IPAddressPool"
+	kindCalicoIPPool             = "IPPool"
+)
+
+// Resource names (plurals) the Cilium kinds are served under.
+const (
+	resourceCiliumLoadBalancerIPPools = "ciliumloadbalancerippools"
+	resourceCiliumCIDRGroups          = "ciliumcidrgroups"
+	resourceCiliumBGPAdvertisements   = "ciliumbgpadvertisements"
+)
+
 // preferredVersions lists API versions in order of preference (most preferred first).
 // Cilium 1.16+ serves v2 as the stable API; v2alpha1 is deprecated but still
 // served for backward compatibility with older clusters.
@@ -80,15 +100,15 @@ func DiscoverCiliumVersions(dc discovery.DiscoveryInterface) (*CiliumVersions, e
 		return gvk, nil
 	}
 
-	lbPool, err := resolve("CiliumLoadBalancerIPPool", "ciliumloadbalancerippools")
+	lbPool, err := resolve(kindCiliumLoadBalancerIPPool, resourceCiliumLoadBalancerIPPools)
 	if err != nil {
 		return nil, err
 	}
-	cidrGroup, err := resolve("CiliumCIDRGroup", "ciliumcidrgroups")
+	cidrGroup, err := resolve(kindCiliumCIDRGroup, resourceCiliumCIDRGroups)
 	if err != nil {
 		return nil, err
 	}
-	bgpAdv, err := resolve("CiliumBGPAdvertisement", "ciliumbgpadvertisements")
+	bgpAdv, err := resolve(kindCiliumBGPAdvertisement, resourceCiliumBGPAdvertisements)
 	if err != nil {
 		return nil, err
 	}
@@ -111,10 +131,30 @@ func DiscoverPoolBackendGVKs(dc discovery.DiscoveryInterface) ([]schema.GroupVer
 		plural            string
 		preferredVersions []string
 	}{
-		{group: ciliumAPIGroup, kind: "CiliumLoadBalancerIPPool", plural: "ciliumloadbalancerippools", preferredVersions: preferredVersions},
-		{group: ciliumAPIGroup, kind: "CiliumCIDRGroup", plural: "ciliumcidrgroups", preferredVersions: preferredVersions},
-		{group: metallbAPIGroup, kind: "IPAddressPool", plural: "ipaddresspools", preferredVersions: preferredMetalLBVersions},
-		{group: calicoAPIGroup, kind: "IPPool", plural: "ippools", preferredVersions: preferredCalicoVersions},
+		{
+			group:             ciliumAPIGroup,
+			kind:              kindCiliumLoadBalancerIPPool,
+			plural:            resourceCiliumLoadBalancerIPPools,
+			preferredVersions: preferredVersions,
+		},
+		{
+			group:             ciliumAPIGroup,
+			kind:              kindCiliumCIDRGroup,
+			plural:            resourceCiliumCIDRGroups,
+			preferredVersions: preferredVersions,
+		},
+		{
+			group:             metallbAPIGroup,
+			kind:              kindMetalLBIPAddressPool,
+			plural:            "ipaddresspools",
+			preferredVersions: preferredMetalLBVersions,
+		},
+		{
+			group:             calicoAPIGroup,
+			kind:              kindCalicoIPPool,
+			plural:            "ippools",
+			preferredVersions: preferredCalicoVersions,
+		},
 	}
 
 	resourceVersionsByGroup := make(map[string]resourceSet)
@@ -220,7 +260,8 @@ func resolveResource(rs resourceSet, group, kind, plural string, preferred []str
 			return schema.GroupVersionKind{Group: group, Version: v, Kind: kind}, nil
 		}
 	}
-	return schema.GroupVersionKind{}, fmt.Errorf("no supported API version found for %s/%s (checked %v)", group, kind, preferred)
+	return schema.GroupVersionKind{}, fmt.Errorf("no supported API version found for %s/%s (checked %v)",
+		group, kind, preferred)
 }
 
 // hasResource checks whether a resource is served under a specific version.

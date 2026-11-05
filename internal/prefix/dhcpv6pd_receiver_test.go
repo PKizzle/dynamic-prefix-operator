@@ -19,6 +19,7 @@ package prefix
 
 import (
 	"context"
+	"encoding/binary"
 	"net"
 	"testing"
 	"time"
@@ -33,9 +34,8 @@ import (
 // prefix (16).
 func iaPrefixBytes(preferred, valid uint32, prefixLength uint8, ip net.IP) []byte {
 	b := make([]byte, 0, 25)
-	be := func(v uint32) { b = append(b, byte(v>>24), byte(v>>16), byte(v>>8), byte(v)) }
-	be(preferred)
-	be(valid)
+	b = binary.BigEndian.AppendUint32(b, preferred)
+	b = binary.BigEndian.AppendUint32(b, valid)
 	b = append(b, prefixLength)
 	return append(b, ip.To16()...)
 }
@@ -90,7 +90,7 @@ func TestProcessIAPDReplyRejectsPrefixesInsteadOfPanicking(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			opt := decodeIAPrefix(t, iaPrefixBytes(1800, 3600, tt.prefixLength, ip))
-			r := NewDHCPv6PDReceiver("eth0", 56)
+			r := NewDHCPv6PDReceiver(testInterface, 56)
 
 			err := r.processIAPDReply(replyWithPrefixes(iaid, opt), iaid, nil)
 
@@ -114,7 +114,7 @@ func TestProcessIAPDReplyAcceptsValidPrefix(t *testing.T) {
 	unusable := decodeIAPrefix(t, iaPrefixBytes(1800, 3600, 0, net.ParseIP("2001:db8:dead::")))
 	usable := decodeIAPrefix(t, iaPrefixBytes(1800, 3600, 56, net.ParseIP("2001:db8:1::")))
 
-	r := NewDHCPv6PDReceiver("eth0", 56)
+	r := NewDHCPv6PDReceiver(testInterface, 56)
 	if err := r.processIAPDReply(replyWithPrefixes(iaid, unusable, usable), iaid, nil); err != nil {
 		t.Fatalf("expected the usable prefix to be accepted, got %v", err)
 	}
@@ -137,7 +137,7 @@ func TestNewDHCPv6PDReceiver(t *testing.T) {
 	}{
 		{
 			name:                  "With explicit prefix length",
-			iface:                 "eth0",
+			iface:                 testInterface,
 			requestedPrefixLength: 48,
 			expectedPrefixLength:  48,
 		},
@@ -179,14 +179,14 @@ func TestNewDHCPv6PDReceiver(t *testing.T) {
 }
 
 func TestDHCPv6PDReceiverSource(t *testing.T) {
-	r := NewDHCPv6PDReceiver("eth0", 56)
+	r := NewDHCPv6PDReceiver(testInterface, 56)
 	if r.Source() != SourceDHCPv6PD {
 		t.Errorf("Source() = %v, want %v", r.Source(), SourceDHCPv6PD)
 	}
 }
 
 func TestDHCPv6PDReceiverInitialState(t *testing.T) {
-	r := NewDHCPv6PDReceiver("eth0", 56)
+	r := NewDHCPv6PDReceiver(testInterface, 56)
 
 	if r.CurrentPrefix() != nil {
 		t.Error("Expected CurrentPrefix() to be nil initially")
@@ -198,7 +198,7 @@ func TestDHCPv6PDReceiverInitialState(t *testing.T) {
 }
 
 func TestDHCPv6PDReceiverEventChannel(t *testing.T) {
-	r := NewDHCPv6PDReceiver("eth0", 56)
+	r := NewDHCPv6PDReceiver(testInterface, 56)
 
 	events := r.Events()
 	if cap(events) != 10 {
@@ -207,7 +207,7 @@ func TestDHCPv6PDReceiverEventChannel(t *testing.T) {
 }
 
 func TestDHCPv6PDReceiverStopWithoutStart(t *testing.T) {
-	r := NewDHCPv6PDReceiver("eth0", 56)
+	r := NewDHCPv6PDReceiver(testInterface, 56)
 
 	// Stop should not panic when called without Start
 	err := r.Stop()
@@ -224,7 +224,7 @@ func TestDHCPv6PDReceiverStopWithoutStart(t *testing.T) {
 // receivers on exactly this path.
 func TestDHCPv6PDReceiverSurvivesStartStopCycles(t *testing.T) {
 	ctx := context.Background()
-	r := NewDHCPv6PDReceiver("eth0", 56)
+	r := NewDHCPv6PDReceiver(testInterface, 56)
 
 	for i := range 3 {
 		if err := r.Start(ctx); err != nil {

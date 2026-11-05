@@ -72,7 +72,11 @@ func (p *sharedRAReceiverPool) subscribe(iface string, policy RAPolicy) Receiver
 	}
 }
 
-func (p *sharedRAReceiverPool) unsubscribe(key string, entry *sharedRAReceiverEntry, sub *sharedRAReceiverSubscription) error {
+func (p *sharedRAReceiverPool) unsubscribe(
+	key string,
+	entry *sharedRAReceiverEntry,
+	sub *sharedRAReceiverSubscription,
+) error {
 	p.mu.Lock()
 	// The entry may already have been replaced in the map: a caller holding a
 	// pointer from an earlier subscribe can re-arm an entry that was stopped

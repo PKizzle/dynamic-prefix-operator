@@ -55,7 +55,7 @@ func TestStatusWritersDoNotDisturbEachOther(t *testing.T) {
 	scheme := newPoolBackendTestScheme(t)
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6", Generation: 3},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName, Generation: 3},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
 				{Name: "lb", Offset: 0, PrefixLength: 64,
@@ -73,7 +73,7 @@ func TestStatusWritersDoNotDisturbEachOther(t *testing.T) {
 	get := func(t *testing.T) *dynamicprefixiov1alpha1.DynamicPrefix {
 		t.Helper()
 		var out dynamicprefixiov1alpha1.DynamicPrefix
-		if err := fakeClient.Get(ctx, types.NamespacedName{Name: "home-ipv6"}, &out); err != nil {
+		if err := fakeClient.Get(ctx, types.NamespacedName{Name: testDynamicPrefixName}, &out); err != nil {
 			t.Fatalf("get: %v", err)
 		}
 		return &out
@@ -84,7 +84,7 @@ func TestStatusWritersDoNotDisturbEachOther(t *testing.T) {
 	current := get(t)
 	current.Status.CurrentPrefix = testStatusPrefix
 	current.Status.PrefixSource = dynamicprefixiov1alpha1.PrefixSourceRouterAdvertisement
-	subnets, err := dpr.calculateSubnets("home-ipv6", mustParsePrefix(t, testStatusPrefix), current.Spec.Subnets)
+	subnets, err := dpr.calculateSubnets(testDynamicPrefixName, mustParsePrefix(t, testStatusPrefix), current.Spec.Subnets)
 	if err != nil {
 		t.Fatalf("calculateSubnets: %v", err)
 	}
@@ -97,8 +97,8 @@ func TestStatusWritersDoNotDisturbEachOther(t *testing.T) {
 
 	// PoolSync reports a failing pool.
 	psr := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
-	psr.updatePoolsSyncedCondition(ctx, "home-ipv6",
-		poolStateKey{backend: "cilium-load-balancer-ip-pool", pool: "/lb-pool"},
+	psr.updatePoolsSyncedCondition(ctx, testDynamicPrefixName,
+		poolStateKey{backend: testBackendCiliumLBIPPool, pool: testLBPoolKey},
 		errors.New("webhook rejected the update"))
 
 	// BGPSync reports its condition.
@@ -137,8 +137,8 @@ func TestStatusWritersDoNotDisturbEachOther(t *testing.T) {
 	// A later write by one manager leaves the others' LastTransitionTime alone.
 	poolCond := meta.FindStatusCondition(final.Status.Conditions, dynamicprefixiov1alpha1.ConditionTypePoolsSynced)
 	prefixCond := meta.FindStatusCondition(final.Status.Conditions, dynamicprefixiov1alpha1.ConditionTypePrefixAcquired)
-	psr.updatePoolsSyncedCondition(ctx, "home-ipv6",
-		poolStateKey{backend: "cilium-load-balancer-ip-pool", pool: "/lb-pool"}, nil)
+	psr.updatePoolsSyncedCondition(ctx, testDynamicPrefixName,
+		poolStateKey{backend: testBackendCiliumLBIPPool, pool: testLBPoolKey}, nil)
 	final = get(t)
 	newPool := meta.FindStatusCondition(final.Status.Conditions, dynamicprefixiov1alpha1.ConditionTypePoolsSynced)
 	if newPool.Status != metav1.ConditionTrue {
@@ -159,7 +159,7 @@ func TestStatusWritersDoNotDisturbEachOther(t *testing.T) {
 // it while building the entries rather than copying it from BGPSync's writes.
 func TestPrefixWriterOwnsAdvertisementNames(t *testing.T) {
 	r := &DynamicPrefixReconciler{}
-	subnets, err := r.calculateSubnets("home-ipv6", mustParsePrefix(t, testStatusPrefix),
+	subnets, err := r.calculateSubnets(testDynamicPrefixName, mustParsePrefix(t, testStatusPrefix),
 		[]dynamicprefixiov1alpha1.SubnetSpec{
 			{Name: "lb", Offset: 0, PrefixLength: 64,
 				BGP: &dynamicprefixiov1alpha1.SubnetBGPSpec{Advertise: true}},

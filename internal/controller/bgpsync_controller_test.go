@@ -44,8 +44,8 @@ var _ = Describe("BGPSync Controller", func() {
 	Context("When reconciling a DynamicPrefix with BGP-enabled subnet", func() {
 		const (
 			dpName     = "test-bgp-dp"
-			subnetName = "loadbalancers"
-			community  = "65001:42"
+			subnetName = testSubnetLoadBalancers
+			community  = testBGPCommunity
 		)
 
 		ctx := context.Background()
@@ -59,7 +59,7 @@ var _ = Describe("BGPSync Controller", func() {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-							Interface: "eth0",
+							Interface: testInterface,
 							Enabled:   ptr.To(true),
 						},
 					},
@@ -80,11 +80,11 @@ var _ = Describe("BGPSync Controller", func() {
 
 			// Update DynamicPrefix status
 			dp.Status = dynamicprefixiov1alpha1.DynamicPrefixStatus{
-				CurrentPrefix: "2001:db8::/48",
+				CurrentPrefix: testPrefixLen48,
 				Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
 					{
 						Name: subnetName,
-						CIDR: "2001:db8::/64",
+						CIDR: testPrefixLen64,
 					},
 				},
 			}
@@ -128,13 +128,13 @@ var _ = Describe("BGPSync Controller", func() {
 			Expect(labels).To(HaveKeyWithValue(LabelSubnetName, subnetName))
 
 			// Check spec
-			advertisements, found, err := unstructured.NestedSlice(adv.Object, "spec", "advertisements")
+			advertisements, found, err := unstructured.NestedSlice(adv.Object, fieldSpec, "advertisements")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(advertisements).To(HaveLen(1))
 
 			advSpec := advertisements[0].(map[string]interface{})
-			Expect(advSpec["advertisementType"]).To(Equal("Service"))
+			Expect(advSpec["advertisementType"]).To(Equal(testAdvertisementTypeService))
 
 			// Check service addresses
 			service, found, err := unstructured.NestedMap(advSpec, "service")
@@ -218,7 +218,7 @@ var _ = Describe("BGPSync Controller", func() {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-							Interface: "eth0",
+							Interface: testInterface,
 							Enabled:   ptr.To(true),
 						},
 					},
@@ -236,11 +236,11 @@ var _ = Describe("BGPSync Controller", func() {
 
 			// Update DynamicPrefix status
 			dp.Status = dynamicprefixiov1alpha1.DynamicPrefixStatus{
-				CurrentPrefix: "2001:db8::/48",
+				CurrentPrefix: testPrefixLen48,
 				Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
 					{
 						Name: subnetName,
-						CIDR: "2001:db8::/64",
+						CIDR: testPrefixLen64,
 					},
 				},
 			}
@@ -299,7 +299,7 @@ var _ = Describe("BGPSync Controller", func() {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 						RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-							Interface: "eth0",
+							Interface: testInterface,
 							Enabled:   ptr.To(true),
 						},
 					},
@@ -318,11 +318,11 @@ var _ = Describe("BGPSync Controller", func() {
 			Expect(k8sClient.Create(ctx, dp)).To(Succeed())
 
 			dp.Status = dynamicprefixiov1alpha1.DynamicPrefixStatus{
-				CurrentPrefix: "2001:db8::/48",
+				CurrentPrefix: testPrefixLen48,
 				Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
 					{
 						Name: subnetName,
-						CIDR: "2001:db8::/64",
+						CIDR: testPrefixLen64,
 					},
 				},
 			}
@@ -403,34 +403,34 @@ func TestBGPSyncReconciler_Reconcile_CreateAdvertisement(t *testing.T) {
 	// Create DynamicPrefix with BGP-enabled subnet
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-dp",
+			Name: testDPName,
 			UID:  "test-uid-123",
 		},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 					Enabled:   ptr.To(true),
 				},
 			},
 			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
 				{
-					Name:         "loadbalancers",
+					Name:         testSubnetLoadBalancers,
 					Offset:       0,
 					PrefixLength: 64,
 					BGP: &dynamicprefixiov1alpha1.SubnetBGPSpec{
 						Advertise: true,
-						Community: "65001:42",
+						Community: testBGPCommunity,
 					},
 				},
 			},
 		},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8::/48",
+			CurrentPrefix: testPrefixLen48,
 			Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
 				{
-					Name: "loadbalancers",
-					CIDR: "2001:db8::/64",
+					Name: testSubnetLoadBalancers,
+					CIDR: testPrefixLen64,
 				},
 			},
 		},
@@ -450,7 +450,7 @@ func TestBGPSyncReconciler_Reconcile_CreateAdvertisement(t *testing.T) {
 
 	// Reconcile
 	_, err := reconciler.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "test-dp"},
+		NamespacedName: types.NamespacedName{Name: testDPName},
 	})
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
@@ -470,15 +470,15 @@ func TestBGPSyncReconciler_Reconcile_CreateAdvertisement(t *testing.T) {
 	if labels[LabelManagedBy] != LabelManagedByValue {
 		t.Errorf("Label %s = %q, want %q", LabelManagedBy, labels[LabelManagedBy], LabelManagedByValue)
 	}
-	if labels[LabelDynamicPrefixName] != "test-dp" {
-		t.Errorf("Label %s = %q, want %q", LabelDynamicPrefixName, labels[LabelDynamicPrefixName], "test-dp")
+	if labels[LabelDynamicPrefixName] != testDPName {
+		t.Errorf("Label %s = %q, want %q", LabelDynamicPrefixName, labels[LabelDynamicPrefixName], testDPName)
 	}
-	if labels[LabelSubnetName] != "loadbalancers" {
-		t.Errorf("Label %s = %q, want %q", LabelSubnetName, labels[LabelSubnetName], "loadbalancers")
+	if labels[LabelSubnetName] != testSubnetLoadBalancers {
+		t.Errorf("Label %s = %q, want %q", LabelSubnetName, labels[LabelSubnetName], testSubnetLoadBalancers)
 	}
 
 	// Check spec
-	advertisements, found, err := unstructured.NestedSlice(adv.Object, "spec", "advertisements")
+	advertisements, found, err := unstructured.NestedSlice(adv.Object, fieldSpec, "advertisements")
 	if err != nil || !found {
 		t.Fatalf("Failed to get spec.advertisements: found=%v, err=%v", found, err)
 	}
@@ -487,7 +487,7 @@ func TestBGPSyncReconciler_Reconcile_CreateAdvertisement(t *testing.T) {
 	}
 
 	advSpec := advertisements[0].(map[string]interface{})
-	if advSpec["advertisementType"] != "Service" {
+	if advSpec["advertisementType"] != testAdvertisementTypeService {
 		t.Errorf("advertisementType = %v, want Service", advSpec["advertisementType"])
 	}
 
@@ -496,7 +496,7 @@ func TestBGPSyncReconciler_Reconcile_CreateAdvertisement(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("Failed to get communities: found=%v, err=%v", found, err)
 	}
-	if len(communities) != 1 || communities[0] != "65001:42" {
+	if len(communities) != 1 || communities[0] != testBGPCommunity {
 		t.Errorf("communities = %v, want [65001:42]", communities)
 	}
 }
@@ -508,13 +508,13 @@ func TestBGPSyncReconciler_Reconcile_UpdateStatus(t *testing.T) {
 	// Create DynamicPrefix with BGP-enabled subnet
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-dp-status",
+			Name: testDPStatus,
 			UID:  "test-uid-456",
 		},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 					Enabled:   ptr.To(true),
 				},
 			},
@@ -530,11 +530,11 @@ func TestBGPSyncReconciler_Reconcile_UpdateStatus(t *testing.T) {
 			},
 		},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8::/48",
+			CurrentPrefix: testPrefixLen48,
 			Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
 				{
 					Name: "lb",
-					CIDR: "2001:db8::/64",
+					CIDR: testPrefixLen64,
 				},
 			},
 		},
@@ -554,7 +554,7 @@ func TestBGPSyncReconciler_Reconcile_UpdateStatus(t *testing.T) {
 
 	// Reconcile
 	_, err := reconciler.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "test-dp-status"},
+		NamespacedName: types.NamespacedName{Name: testDPStatus},
 	})
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
@@ -562,7 +562,7 @@ func TestBGPSyncReconciler_Reconcile_UpdateStatus(t *testing.T) {
 
 	// Fetch updated DynamicPrefix
 	var updatedDP dynamicprefixiov1alpha1.DynamicPrefix
-	err = fakeClient.Get(ctx, types.NamespacedName{Name: "test-dp-status"}, &updatedDP)
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: testDPStatus}, &updatedDP)
 	if err != nil {
 		t.Fatalf("Failed to get updated DynamicPrefix: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestBGPSyncReconciler_Reconcile_UpdateStatus(t *testing.T) {
 	if adv := updatedDP.Status.Subnets[0].BGPAdvertisement; adv != "" {
 		t.Errorf("BGPSync wrote BGPAdvertisement = %q into a list it does not own", adv)
 	}
-	if cidr := updatedDP.Status.Subnets[0].CIDR; cidr != "2001:db8::/64" {
+	if cidr := updatedDP.Status.Subnets[0].CIDR; cidr != testPrefixLen64 {
 		t.Errorf("BGPSync disturbed the subnet entry: CIDR = %q", cidr)
 	}
 
@@ -606,19 +606,19 @@ func TestBGPSyncReconciler_Reconcile_NoBGPSubnets(t *testing.T) {
 	// Create DynamicPrefix without BGP
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-dp-no-bgp",
+			Name: testDPNoBGP,
 			UID:  "test-uid-789",
 		},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 					Enabled:   ptr.To(true),
 				},
 			},
 			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
 				{
-					Name:         "no-bgp",
+					Name:         testSubnetNoBGP,
 					Offset:       0,
 					PrefixLength: 64,
 					// No BGP spec
@@ -626,11 +626,11 @@ func TestBGPSyncReconciler_Reconcile_NoBGPSubnets(t *testing.T) {
 			},
 		},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8::/48",
+			CurrentPrefix: testPrefixLen48,
 			Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
 				{
-					Name: "no-bgp",
-					CIDR: "2001:db8::/64",
+					Name: testSubnetNoBGP,
+					CIDR: testPrefixLen64,
 				},
 			},
 		},
@@ -650,7 +650,7 @@ func TestBGPSyncReconciler_Reconcile_NoBGPSubnets(t *testing.T) {
 
 	// Reconcile
 	_, err := reconciler.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "test-dp-no-bgp"},
+		NamespacedName: types.NamespacedName{Name: testDPNoBGP},
 	})
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
@@ -658,7 +658,7 @@ func TestBGPSyncReconciler_Reconcile_NoBGPSubnets(t *testing.T) {
 
 	// Fetch updated DynamicPrefix
 	var updatedDP dynamicprefixiov1alpha1.DynamicPrefix
-	err = fakeClient.Get(ctx, types.NamespacedName{Name: "test-dp-no-bgp"}, &updatedDP)
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: testDPNoBGP}, &updatedDP)
 	if err != nil {
 		t.Fatalf("Failed to get updated DynamicPrefix: %v", err)
 	}
@@ -689,19 +689,19 @@ func TestBGPSyncReconciler_Reconcile_DeleteOrphaned(t *testing.T) {
 	// Create DynamicPrefix with BGP disabled
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-dp-orphan",
+			Name: testDPOrphan,
 			UID:  "test-uid-orphan",
 		},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 					Enabled:   ptr.To(true),
 				},
 			},
 			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
 				{
-					Name:         "was-bgp",
+					Name:         testSubnetWasBGP,
 					Offset:       0,
 					PrefixLength: 64,
 					BGP: &dynamicprefixiov1alpha1.SubnetBGPSpec{
@@ -711,12 +711,12 @@ func TestBGPSyncReconciler_Reconcile_DeleteOrphaned(t *testing.T) {
 			},
 		},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8::/48",
+			CurrentPrefix: testPrefixLen48,
 			Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
 				{
-					Name:             "was-bgp",
-					CIDR:             "2001:db8::/64",
-					BGPAdvertisement: "dp-test-dp-orphan-was-bgp", // Old advertisement
+					Name:             testSubnetWasBGP,
+					CIDR:             testPrefixLen64,
+					BGPAdvertisement: testOrphanAdvertisement, // Old advertisement
 				},
 			},
 		},
@@ -725,20 +725,20 @@ func TestBGPSyncReconciler_Reconcile_DeleteOrphaned(t *testing.T) {
 	// Create an orphaned advertisement (from when BGP was enabled)
 	orphanedAdv := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "cilium.io/v2",
-			"kind":       "CiliumBGPAdvertisement",
-			"metadata": map[string]interface{}{
-				"name": "dp-test-dp-orphan-was-bgp",
+			keyAPIVersion: testCiliumV2,
+			keyKind:       kindCiliumBGPAdvertisement,
+			keyMetadata: map[string]interface{}{
+				keyName: testOrphanAdvertisement,
 				"labels": map[string]interface{}{
 					LabelManagedBy:         LabelManagedByValue,
-					LabelDynamicPrefixName: "test-dp-orphan",
-					LabelSubnetName:        "was-bgp",
+					LabelDynamicPrefixName: testDPOrphan,
+					LabelSubnetName:        testSubnetWasBGP,
 				},
 			},
-			"spec": map[string]interface{}{
+			fieldSpec: map[string]interface{}{
 				"advertisements": []interface{}{
 					map[string]interface{}{
-						"advertisementType": "Service",
+						"advertisementType": testAdvertisementTypeService,
 					},
 				},
 			},
@@ -759,7 +759,7 @@ func TestBGPSyncReconciler_Reconcile_DeleteOrphaned(t *testing.T) {
 
 	// Reconcile
 	_, err := reconciler.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "test-dp-orphan"},
+		NamespacedName: types.NamespacedName{Name: testDPOrphan},
 	})
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
@@ -768,7 +768,7 @@ func TestBGPSyncReconciler_Reconcile_DeleteOrphaned(t *testing.T) {
 	// Verify orphaned advertisement was deleted
 	adv := &unstructured.Unstructured{}
 	adv.SetGroupVersionKind(DefaultCiliumBGPAdvertisementGVK)
-	err = fakeClient.Get(ctx, types.NamespacedName{Name: "dp-test-dp-orphan-was-bgp"}, adv)
+	err = fakeClient.Get(ctx, types.NamespacedName{Name: testOrphanAdvertisement}, adv)
 	if err == nil {
 		t.Error("Expected orphaned advertisement to be deleted, but it still exists")
 	} else if client.IgnoreNotFound(err) != nil {
@@ -783,19 +783,19 @@ func TestBGPSyncReconciler_Reconcile_WithPoolSelector(t *testing.T) {
 	// Create DynamicPrefix with BGP-enabled subnet
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-dp-selector",
+			Name: testDPSelector,
 			UID:  "test-uid-selector",
 		},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 					Enabled:   ptr.To(true),
 				},
 			},
 			Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
 				{
-					Name:         "with-selector",
+					Name:         testSubnetWithSelector,
 					Offset:       0,
 					PrefixLength: 64,
 					BGP: &dynamicprefixiov1alpha1.SubnetBGPSpec{
@@ -805,11 +805,11 @@ func TestBGPSyncReconciler_Reconcile_WithPoolSelector(t *testing.T) {
 			},
 		},
 		Status: dynamicprefixiov1alpha1.DynamicPrefixStatus{
-			CurrentPrefix: "2001:db8::/48",
+			CurrentPrefix: testPrefixLen48,
 			Subnets: []dynamicprefixiov1alpha1.SubnetStatus{
 				{
-					Name: "with-selector",
-					CIDR: "2001:db8::/64",
+					Name: testSubnetWithSelector,
+					CIDR: testPrefixLen64,
 				},
 			},
 		},
@@ -818,20 +818,20 @@ func TestBGPSyncReconciler_Reconcile_WithPoolSelector(t *testing.T) {
 	// Create a CiliumLoadBalancerIPPool with serviceSelector
 	pool := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "cilium.io/v2",
-			"kind":       "CiliumLoadBalancerIPPool",
-			"metadata": map[string]interface{}{
-				"name": "test-pool",
-				"annotations": map[string]interface{}{
-					AnnotationName:   "test-dp-selector",
-					AnnotationSubnet: "with-selector",
+			keyAPIVersion: testCiliumV2,
+			keyKind:       kindCiliumLoadBalancerIPPool,
+			keyMetadata: map[string]interface{}{
+				keyName: "test-pool",
+				keyAnnotations: map[string]interface{}{
+					AnnotationName:   testDPSelector,
+					AnnotationSubnet: testSubnetWithSelector,
 				},
 			},
-			"spec": map[string]interface{}{
-				"blocks": []interface{}{},
+			fieldSpec: map[string]interface{}{
+				fieldBlocks: []interface{}{},
 				"serviceSelector": map[string]interface{}{
 					"matchLabels": map[string]interface{}{
-						"app": "nginx",
+						testLabelApp: testLabelAppValue,
 					},
 				},
 			},
@@ -852,7 +852,7 @@ func TestBGPSyncReconciler_Reconcile_WithPoolSelector(t *testing.T) {
 
 	// Reconcile
 	_, err := reconciler.Reconcile(ctx, reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "test-dp-selector"},
+		NamespacedName: types.NamespacedName{Name: testDPSelector},
 	})
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
@@ -868,7 +868,7 @@ func TestBGPSyncReconciler_Reconcile_WithPoolSelector(t *testing.T) {
 	}
 
 	// Check spec has selector
-	advertisements, found, err := unstructured.NestedSlice(adv.Object, "spec", "advertisements")
+	advertisements, found, err := unstructured.NestedSlice(adv.Object, fieldSpec, "advertisements")
 	if err != nil || !found {
 		t.Fatalf("Failed to get spec.advertisements: found=%v, err=%v", found, err)
 	}
@@ -885,8 +885,8 @@ func TestBGPSyncReconciler_Reconcile_WithPoolSelector(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("Failed to get matchLabels: found=%v, err=%v", found, err)
 	}
-	if matchLabels["app"] != "nginx" {
-		t.Errorf("matchLabels[app] = %q, want nginx", matchLabels["app"])
+	if matchLabels[testLabelApp] != testLabelAppValue {
+		t.Errorf("matchLabels[app] = %q, want nginx", matchLabels[testLabelApp])
 	}
 }
 
@@ -899,12 +899,12 @@ func TestAdvertisementNameGeneration(t *testing.T) {
 		expected   string
 	}{
 		{
-			dpName:     "home-ipv6",
-			subnetName: "loadbalancers",
+			dpName:     testDynamicPrefixName,
+			subnetName: testSubnetLoadBalancers,
 			expected:   "dp-home-ipv6-loadbalancers",
 		},
 		{
-			dpName:     "test",
+			dpName:     testName,
 			subnetName: "lb",
 			expected:   "dp-test-lb",
 		},
@@ -940,7 +940,7 @@ func TestGetSubnetsWithBGP(t *testing.T) {
 			dp: &dynamicprefixiov1alpha1.DynamicPrefix{
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
-						{Name: "test", PrefixLength: 64},
+						{Name: testName, PrefixLength: 64},
 					},
 				},
 			},
@@ -952,7 +952,7 @@ func TestGetSubnetsWithBGP(t *testing.T) {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
 						{
-							Name:         "test",
+							Name:         testName,
 							PrefixLength: 64,
 							BGP:          &dynamicprefixiov1alpha1.SubnetBGPSpec{Advertise: false},
 						},
@@ -967,7 +967,7 @@ func TestGetSubnetsWithBGP(t *testing.T) {
 				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 					Subnets: []dynamicprefixiov1alpha1.SubnetSpec{
 						{
-							Name:         "test",
+							Name:         testName,
 							PrefixLength: 64,
 							BGP:          &dynamicprefixiov1alpha1.SubnetBGPSpec{Advertise: true},
 						},
@@ -987,7 +987,7 @@ func TestGetSubnetsWithBGP(t *testing.T) {
 							BGP:          &dynamicprefixiov1alpha1.SubnetBGPSpec{Advertise: true},
 						},
 						{
-							Name:         "no-bgp",
+							Name:         testSubnetNoBGP,
 							PrefixLength: 64,
 						},
 						{
@@ -1026,7 +1026,7 @@ func TestBuildAdvertisementSpec(t *testing.T) {
 		{
 			name: "basic subnet without community",
 			subnet: &dynamicprefixiov1alpha1.SubnetSpec{
-				Name:         "test",
+				Name:         testName,
 				PrefixLength: 64,
 				BGP:          &dynamicprefixiov1alpha1.SubnetBGPSpec{Advertise: true},
 			},
@@ -1037,28 +1037,28 @@ func TestBuildAdvertisementSpec(t *testing.T) {
 		{
 			name: "subnet with community",
 			subnet: &dynamicprefixiov1alpha1.SubnetSpec{
-				Name:         "test",
+				Name:         testName,
 				PrefixLength: 64,
 				BGP: &dynamicprefixiov1alpha1.SubnetBGPSpec{
 					Advertise: true,
-					Community: "65001:42",
+					Community: testBGPCommunity,
 				},
 			},
 			poolSelector:      nil,
 			expectCommunity:   true,
-			expectedCommunity: "65001:42",
+			expectedCommunity: testBGPCommunity,
 			expectSelector:    false,
 		},
 		{
 			name: "subnet with pool selector",
 			subnet: &dynamicprefixiov1alpha1.SubnetSpec{
-				Name:         "test",
+				Name:         testName,
 				PrefixLength: 64,
 				BGP:          &dynamicprefixiov1alpha1.SubnetBGPSpec{Advertise: true},
 			},
 			poolSelector: map[string]interface{}{
 				"matchLabels": map[string]interface{}{
-					"app": "nginx",
+					testLabelApp: testLabelAppValue,
 				},
 			},
 			expectCommunity: false,
@@ -1078,7 +1078,7 @@ func TestBuildAdvertisementSpec(t *testing.T) {
 			adv := advertisements[0].(map[string]interface{})
 
 			// Check advertisementType
-			if adv["advertisementType"] != "Service" {
+			if adv["advertisementType"] != testAdvertisementTypeService {
 				t.Errorf("advertisementType = %v, want Service", adv["advertisementType"])
 			}
 
@@ -1116,14 +1116,16 @@ func TestDefaultCiliumBGPAdvertisementGVK(t *testing.T) {
 	const (
 		expectedGroup   = "cilium.io"
 		expectedVersion = "v2"
-		expectedKind    = "CiliumBGPAdvertisement"
+		expectedKind    = kindCiliumBGPAdvertisement
 	)
 
 	if DefaultCiliumBGPAdvertisementGVK.Group != expectedGroup {
-		t.Errorf("DefaultCiliumBGPAdvertisementGVK.Group = %q, want %q", DefaultCiliumBGPAdvertisementGVK.Group, expectedGroup)
+		t.Errorf("DefaultCiliumBGPAdvertisementGVK.Group = %q, want %q",
+			DefaultCiliumBGPAdvertisementGVK.Group, expectedGroup)
 	}
 	if DefaultCiliumBGPAdvertisementGVK.Version != expectedVersion {
-		t.Errorf("DefaultCiliumBGPAdvertisementGVK.Version = %q, want %q", DefaultCiliumBGPAdvertisementGVK.Version, expectedVersion)
+		t.Errorf("DefaultCiliumBGPAdvertisementGVK.Version = %q, want %q",
+			DefaultCiliumBGPAdvertisementGVK.Version, expectedVersion)
 	}
 	if DefaultCiliumBGPAdvertisementGVK.Kind != expectedKind {
 		t.Errorf("DefaultCiliumBGPAdvertisementGVK.Kind = %q, want %q", DefaultCiliumBGPAdvertisementGVK.Kind, expectedKind)
@@ -1149,7 +1151,7 @@ func TestLabelConstants(t *testing.T) {
 		{
 			name:     "LabelDynamicPrefixName",
 			constant: LabelDynamicPrefixName,
-			expected: "dynamic-prefix.io/name",
+			expected: testAnnotationNameKey,
 		},
 		{
 			name:     "LabelSubnetName",

@@ -149,8 +149,8 @@ func TestISPSimulation_SubnetCalculation(t *testing.T) {
 
 	// Customer wants to create multiple /64 subnets from the /48
 	subnetConfigs := []prefix.SubnetConfig{
-		{Name: "services", Offset: 0, PrefixLength: 64},
-		{Name: "pods", Offset: 1, PrefixLength: 64},
+		{Name: testSubnetServices, Offset: 0, PrefixLength: 64},
+		{Name: testSubnetPods, Offset: 1, PrefixLength: 64},
 		{Name: "loadbalancers", Offset: 256, PrefixLength: 64},
 	}
 
@@ -160,9 +160,9 @@ func TestISPSimulation_SubnetCalculation(t *testing.T) {
 	}
 
 	expected := map[string]string{
-		"services":      "2001:db8:cafe::/64",
-		"pods":          "2001:db8:cafe:1::/64",
-		"loadbalancers": "2001:db8:cafe:100::/64",
+		testSubnetServices: "2001:db8:cafe::/64",
+		testSubnetPods:     "2001:db8:cafe:1::/64",
+		"loadbalancers":    "2001:db8:cafe:100::/64",
 	}
 
 	for _, subnet := range subnets {
@@ -185,8 +185,8 @@ func TestISPSimulation_PrefixChangeWithSubnets(t *testing.T) {
 	isp := prefix.NewMockISP(prefix1, time.Hour)
 
 	subnetConfigs := []prefix.SubnetConfig{
-		{Name: "services", Offset: 0, PrefixLength: 64},
-		{Name: "pods", Offset: 1, PrefixLength: 64},
+		{Name: testSubnetServices, Offset: 0, PrefixLength: 64},
+		{Name: testSubnetPods, Offset: 1, PrefixLength: 64},
 	}
 
 	// Calculate subnets with first prefix

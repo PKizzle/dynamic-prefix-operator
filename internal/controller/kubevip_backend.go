@@ -71,11 +71,13 @@ func (b kubevipConfigMapBackend) namespaced() bool { return true }
 func kubevipKeyFor(pool *unstructured.Unstructured) (string, error) {
 	key := strings.TrimSpace(pool.GetAnnotations()[AnnotationKubevipKey])
 	if key == "" {
-		return "", fmt.Errorf("ConfigMap %s/%s is bound to a DynamicPrefix but has no %s annotation naming the pool key to manage (for example %q)",
+		return "", fmt.Errorf("ConfigMap %s/%s is bound to a DynamicPrefix but has no %s annotation "+
+			"naming the pool key to manage (for example %q)",
 			pool.GetNamespace(), pool.GetName(), AnnotationKubevipKey, "cidr-global")
 	}
 	if !kubevipKeyPattern.MatchString(key) {
-		return "", fmt.Errorf("%s=%q is not a kube-vip pool key; expected cidr-global, range-global, or cidr-/range- followed by a namespace",
+		return "", fmt.Errorf("%s=%q is not a kube-vip pool key; "+
+			"expected cidr-global, range-global, or cidr-/range- followed by a namespace",
 			AnnotationKubevipKey, key)
 	}
 	return key, nil
@@ -155,7 +157,13 @@ func splitKubevipEntries(value string) []string {
 	return entries
 }
 
-func (b kubevipConfigMapBackend) update(ctx context.Context, r *PoolSyncReconciler, pool *unstructured.Unstructured, configs []poolConfiguration, managedPrefixes []netip.Prefix) (bool, error) {
+func (b kubevipConfigMapBackend) update(
+	ctx context.Context,
+	r *PoolSyncReconciler,
+	pool *unstructured.Unstructured,
+	configs []poolConfiguration,
+	managedPrefixes []netip.Prefix,
+) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	key, err := kubevipKeyFor(pool)
@@ -245,7 +253,11 @@ func (b kubevipConfigMapBackend) update(ctx context.Context, r *PoolSyncReconcil
 	return true, r.Update(ctx, pool)
 }
 
-func (b kubevipConfigMapBackend) release(_ context.Context, _ *PoolSyncReconciler, pool *unstructured.Unstructured) (bool, error) {
+func (b kubevipConfigMapBackend) release(
+	_ context.Context,
+	_ *PoolSyncReconciler,
+	pool *unstructured.Unstructured,
+) (bool, error) {
 	recordValue, ok := recordFor(pool, AnnotationManagedKubevipEntries)
 	if !ok {
 		return false, nil

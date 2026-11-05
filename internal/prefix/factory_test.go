@@ -37,7 +37,7 @@ func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
 			name: "DHCPv6-PD only",
 			spec: dynamicprefixiov1alpha1.AcquisitionSpec{
 				DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 				},
 			},
 			expectedType:   "*prefix.DHCPv6PDReceiver",
@@ -48,7 +48,7 @@ func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
 			name: "RA only",
 			spec: dynamicprefixiov1alpha1.AcquisitionSpec{
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 					Enabled:   ptr.To(true),
 				},
 			},
@@ -60,10 +60,10 @@ func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
 			name: "Both DHCPv6-PD and RA",
 			spec: dynamicprefixiov1alpha1.AcquisitionSpec{
 				DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 				},
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 					Enabled:   ptr.To(true),
 				},
 			},
@@ -75,10 +75,10 @@ func TestDefaultReceiverFactory_CreateReceiver(t *testing.T) {
 			name: "RA disabled, only DHCPv6-PD",
 			spec: dynamicprefixiov1alpha1.AcquisitionSpec{
 				DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 				},
 				RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-					Interface: "eth0",
+					Interface: testInterface,
 					Enabled:   ptr.To(false),
 				},
 			},
@@ -171,7 +171,7 @@ func TestDefaultReceiverFactory_DHCPv6PDPrefixLength(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			spec := dynamicprefixiov1alpha1.AcquisitionSpec{
 				DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{
-					Interface:             "eth0",
+					Interface:             testInterface,
 					RequestedPrefixLength: tt.prefixLength,
 				},
 			}

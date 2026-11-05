@@ -40,7 +40,9 @@ type countingReceiverFactory struct {
 	specs []dynamicprefixiov1alpha1.AcquisitionSpec
 }
 
-func (f *countingReceiverFactory) CreateReceiver(spec dynamicprefixiov1alpha1.AcquisitionSpec) (prefix.Receiver, error) {
+func (f *countingReceiverFactory) CreateReceiver(
+	spec dynamicprefixiov1alpha1.AcquisitionSpec,
+) (prefix.Receiver, error) {
 	f.specs = append(f.specs, spec)
 	return prefix.NewMockReceiver(prefix.SourceDHCPv6PD), nil
 }
@@ -67,8 +69,8 @@ func TestReceiverRebuiltWhenAcquisitionChanges(t *testing.T) {
 	_ = dynamicprefixiov1alpha1.AddToScheme(scheme)
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
-		Spec:       dynamicprefixiov1alpha1.DynamicPrefixSpec{Acquisition: raAcquisition("eth0")},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
+		Spec:       dynamicprefixiov1alpha1.DynamicPrefixSpec{Acquisition: raAcquisition(testInterface)},
 	}
 
 	factory := &countingReceiverFactory{}
@@ -133,7 +135,7 @@ func TestPrefixFlapDoesNotDuplicateHistory(t *testing.T) {
 	r := &DynamicPrefixReconciler{}
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Transition: &dynamicprefixiov1alpha1.TransitionSpec{MaxPrefixHistory: 2},
 		},
@@ -210,8 +212,8 @@ func TestOffsetBelowRangeStartIsRejected(t *testing.T) {
 // TestLastAddrOfPrefix pins the upper bound used for subnet mode.
 func TestLastAddrOfPrefix(t *testing.T) {
 	for _, tt := range []struct{ prefix, want string }{
-		{"2001:db8:abcd::/64", "2001:db8:abcd:0:ffff:ffff:ffff:ffff"},
-		{"2001:db8:abcd::/48", "2001:db8:abcd:ffff:ffff:ffff:ffff:ffff"},
+		{testPrefixABCDLen64, "2001:db8:abcd:0:ffff:ffff:ffff:ffff"},
+		{testPrefixABCDLen48, "2001:db8:abcd:ffff:ffff:ffff:ffff:ffff"},
 		{"2001:db8:abcd::1/128", "2001:db8:abcd::1"},
 		// IPv4 is answered in its own width rather than through a 4-in-6 form.
 		{"192.168.1.0/24", "192.168.1.255"},
@@ -236,13 +238,13 @@ func TestPrefixEventsWakeTheReconciler(t *testing.T) {
 
 	r := &DynamicPrefixReconciler{prefixEvents: make(chan event.GenericEvent, prefixEventQueueSize)}
 	events := make(chan prefix.Event, 4)
-	go r.forwardPrefixEvents(ctx, "home-ipv6", events)
+	go r.forwardPrefixEvents(ctx, testDynamicPrefixName, events)
 
 	waitForWake := func(t *testing.T, what string) {
 		t.Helper()
 		select {
 		case got := <-r.prefixEvents:
-			if got.Object.GetName() != "home-ipv6" {
+			if got.Object.GetName() != testDynamicPrefixName {
 				t.Errorf("%s woke the reconciler for %q, want home-ipv6", what, got.Object.GetName())
 			}
 		case <-time.After(2 * time.Second):
@@ -289,7 +291,7 @@ func TestPrefixEventForwarderStopsWithItsReceiver(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		r.forwardPrefixEvents(ctx, "home-ipv6", events)
+		r.forwardPrefixEvents(ctx, testDynamicPrefixName, events)
 		close(done)
 	}()
 
@@ -312,8 +314,8 @@ func TestReceiverWithoutRecordedSpecIsAdopted(t *testing.T) {
 	_ = dynamicprefixiov1alpha1.AddToScheme(scheme)
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
-		Spec:       dynamicprefixiov1alpha1.DynamicPrefixSpec{Acquisition: raAcquisition("eth0")},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
+		Spec:       dynamicprefixiov1alpha1.DynamicPrefixSpec{Acquisition: raAcquisition(testInterface)},
 	}
 
 	factory := &countingReceiverFactory{}
@@ -323,9 +325,11 @@ func TestReceiverWithoutRecordedSpecIsAdopted(t *testing.T) {
 		Client:          fake.NewClientBuilder().WithScheme(scheme).WithObjects(dp).Build(),
 		Scheme:          scheme,
 		ReceiverFactory: factory,
-		receivers:       map[string]prefix.Receiver{"home-ipv6": prefix.NewMockReceiver(prefix.SourceRouterAdvertisement)},
+		receivers: map[string]prefix.Receiver{
+			testDynamicPrefixName: prefix.NewMockReceiver(prefix.SourceRouterAdvertisement),
+		},
 	}
-	injected := r.receivers["home-ipv6"]
+	injected := r.receivers[testDynamicPrefixName]
 
 	adopted, err := r.getOrCreateReceiver(ctx, dp)
 	if err != nil {

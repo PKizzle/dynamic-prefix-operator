@@ -46,7 +46,7 @@ var _ = Describe("DynamicPrefix status writers", func() {
 			Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 				Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
 					RouterAdvertisement: &dynamicprefixiov1alpha1.RouterAdvertisementSpec{
-						Interface: "eth0",
+						Interface: testInterface,
 					},
 				},
 			},
@@ -79,7 +79,7 @@ var _ = Describe("DynamicPrefix status writers", func() {
 		// PoolSync and BGPSync report their conditions.
 		psr := &PoolSyncReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		psr.updatePoolsSyncedCondition(ctx, dpName,
-			poolStateKey{backend: "cilium-load-balancer-ip-pool", pool: "/lb-pool"},
+			poolStateKey{backend: testBackendCiliumLBIPPool, pool: testLBPoolKey},
 			errors.New("webhook rejected the update"))
 		bgp := &BGPSyncReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		after := get()

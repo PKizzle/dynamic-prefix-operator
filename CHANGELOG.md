@@ -4,6 +4,19 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## v0.0.21 - 2026-11-05
+
+Dependency update for standard-library and gRPC advisories.
+
+### Fixed
+
+- Built with Go 1.27.3, which fixes CVE-2026-111943 in `crypto/x509` and the
+  2026-10-08 standard-library advisories.
+- Updated gRPC to v1.83.2 (CVE-2026-84445) and `golang.org/x/net` to v0.62.0.
+
+No chart changes: templates, CRDs and values defaults are unchanged from
+`v0.0.20`.
+
 ## v0.0.20 - 2026-09-21
 
 Dependency update for a denial-of-service issue in the gRPC stack.

@@ -43,8 +43,8 @@ func TestIsGlobalUnicast(t *testing.T) {
 		expected bool
 	}{
 		{
-			name:     "GUA 2001:db8::1",
-			addr:     "2001:db8::1",
+			name:     testCaseGUA,
+			addr:     testAddr,
 			expected: true,
 		},
 		{
@@ -63,8 +63,8 @@ func TestIsGlobalUnicast(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "ULA fd00::1",
-			addr:     "fd00::1",
+			name:     testCaseULA,
+			addr:     testULAAddr,
 			expected: false,
 		},
 		{
@@ -73,13 +73,13 @@ func TestIsGlobalUnicast(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "Link-local fe80::1",
-			addr:     "fe80::1",
+			name:     testCaseLinkLocal,
+			addr:     testRouterLinkLocal,
 			expected: false,
 		},
 		{
 			name:     "Loopback ::1",
-			addr:     "::1",
+			addr:     testSuffixOne,
 			expected: false,
 		},
 		{
@@ -112,8 +112,8 @@ func TestIsULA(t *testing.T) {
 		expected bool
 	}{
 		{
-			name:     "ULA fd00::1",
-			addr:     "fd00::1",
+			name:     testCaseULA,
+			addr:     testULAAddr,
 			expected: true,
 		},
 		{
@@ -127,13 +127,13 @@ func TestIsULA(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "GUA 2001:db8::1",
-			addr:     "2001:db8::1",
+			name:     testCaseGUA,
+			addr:     testAddr,
 			expected: false,
 		},
 		{
-			name:     "Link-local fe80::1",
-			addr:     "fe80::1",
+			name:     testCaseLinkLocal,
+			addr:     testRouterLinkLocal,
 			expected: false,
 		},
 		{
@@ -166,8 +166,8 @@ func TestIsLinkLocal(t *testing.T) {
 		expected bool
 	}{
 		{
-			name:     "Link-local fe80::1",
-			addr:     "fe80::1",
+			name:     testCaseLinkLocal,
+			addr:     testRouterLinkLocal,
 			expected: true,
 		},
 		{
@@ -176,13 +176,13 @@ func TestIsLinkLocal(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "GUA 2001:db8::1",
-			addr:     "2001:db8::1",
+			name:     testCaseGUA,
+			addr:     testAddr,
 			expected: false,
 		},
 		{
-			name:     "ULA fd00::1",
-			addr:     "fd00::1",
+			name:     testCaseULA,
+			addr:     testULAAddr,
 			expected: false,
 		},
 		{
@@ -209,8 +209,8 @@ func TestIsLinkLocal(t *testing.T) {
 // from any source, forwarded or not.
 func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 	const (
-		linkLocal = "fe80::1"
-		global    = "2001:db8::1"
+		linkLocal = testRouterLinkLocal
+		global    = testAddr
 	)
 
 	tests := []struct {
@@ -238,7 +238,7 @@ func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 		},
 		{
 			name:           "a unique-local source is rejected too",
-			from:           "fd00::1",
+			from:           testULAAddr,
 			cm:             &ipv6.ControlMessage{HopLimit: 255},
 			verifyHopLimit: true,
 			wantRejected:   true,
@@ -283,7 +283,7 @@ func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 			// RFC 4861 checks alone cannot tell a router from anything else
 			// that decides to advertise. Naming the routers is what does.
 			name:           "an untrusted link-local source is rejected when routers are named",
-			policy:         RAPolicy{TrustedRouters: []netip.Addr{netip.MustParseAddr("fe80::1")}},
+			policy:         RAPolicy{TrustedRouters: []netip.Addr{netip.MustParseAddr(testRouterLinkLocal)}},
 			from:           "fe80::dead",
 			cm:             &ipv6.ControlMessage{HopLimit: 255},
 			verifyHopLimit: true,
@@ -292,7 +292,7 @@ func TestRAReceiver_rejectRouterAdvertisement(t *testing.T) {
 		},
 		{
 			name:           "a trusted router is still accepted",
-			policy:         RAPolicy{TrustedRouters: []netip.Addr{netip.MustParseAddr("fe80::1")}},
+			policy:         RAPolicy{TrustedRouters: []netip.Addr{netip.MustParseAddr(testRouterLinkLocal)}},
 			from:           linkLocal,
 			cm:             &ipv6.ControlMessage{HopLimit: 255},
 			verifyHopLimit: true,
@@ -339,7 +339,7 @@ func TestRAReceiver_StartDegradesWithoutHopLimitReporting(t *testing.T) {
 	conn := &fakeNDPConn{controlMessageErr: errors.New("not supported")}
 	r := NewRAReceiver(interfaces[0].Name)
 	r.listen = func(*net.Interface, ndp.Addr) (ndpConn, netip.Addr, error) {
-		return conn, netip.MustParseAddr("fe80::1"), nil
+		return conn, netip.MustParseAddr(testRouterLinkLocal), nil
 	}
 
 	if err := r.Start(context.Background()); err != nil {
@@ -350,20 +350,21 @@ func TestRAReceiver_StartDegradesWithoutHopLimitReporting(t *testing.T) {
 	if r.verifyHopLimit {
 		t.Error("expected hop-limit verification to be disabled after the socket refused it")
 	}
-	if reason, detail := r.rejectRouterAdvertisement(netip.MustParseAddr("fe80::1"), nil, r.verifyHopLimit); reason != "" {
+	from := netip.MustParseAddr(testRouterLinkLocal)
+	if reason, detail := r.rejectRouterAdvertisement(from, nil, r.verifyHopLimit); reason != "" {
 		t.Errorf("expected a link-local advertisement to be accepted without hop-limit reporting, got %q: %s", reason, detail)
 	}
 }
 
 func TestRAReceiverSource(t *testing.T) {
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 	if r.Source() != SourceRouterAdvertisement {
 		t.Errorf("Source() = %v, want %v", r.Source(), SourceRouterAdvertisement)
 	}
 }
 
 func TestRAReceiverInitialState(t *testing.T) {
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 
 	if r.CurrentPrefix() != nil {
 		t.Error("Expected CurrentPrefix() to be nil initially")
@@ -376,7 +377,7 @@ func TestRAReceiverInitialState(t *testing.T) {
 }
 
 func TestRAReceiverEventChannel(t *testing.T) {
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 
 	// Verify the event channel is buffered
 	events := r.Events()
@@ -386,7 +387,7 @@ func TestRAReceiverEventChannel(t *testing.T) {
 }
 
 func TestRAReceiver_sendRouterSolicitation(t *testing.T) {
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 	conn := &fakeNDPConn{}
 	r.conn = conn
 
@@ -429,7 +430,7 @@ func TestRAReceiver_sendRouterSolicitation(t *testing.T) {
 }
 
 func TestRAReceiver_sendRouterSolicitationWithoutHardwareAddress(t *testing.T) {
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 	conn := &fakeNDPConn{}
 	r.conn = conn
 
@@ -450,7 +451,7 @@ func TestRAReceiver_sendRouterSolicitationWithoutHardwareAddress(t *testing.T) {
 }
 
 func TestRAReceiver_sendInitialRouterSolicitationsStopsAfterPrefix(t *testing.T) {
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r.ctx = ctx
@@ -462,7 +463,7 @@ func TestRAReceiver_sendInitialRouterSolicitationsStopsAfterPrefix(t *testing.T)
 	conn.afterWrite = func() {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		r.currentPrefix = &Prefix{Network: netip.MustParsePrefix("2001:db8::/48")}
+		r.currentPrefix = &Prefix{Network: netip.MustParsePrefix(testPrefixLen48)}
 	}
 	r.conn = conn
 
@@ -474,7 +475,7 @@ func TestRAReceiver_sendInitialRouterSolicitationsStopsAfterPrefix(t *testing.T)
 }
 
 func TestRAReceiver_sendInitialRouterSolicitationsUsesMaxAttempts(t *testing.T) {
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r.ctx = ctx
@@ -493,7 +494,7 @@ func TestRAReceiver_sendInitialRouterSolicitationsUsesMaxAttempts(t *testing.T) 
 
 func TestRAReceiver_handleRouterAdvertisementLogsAcquisitionAtInfo(t *testing.T) {
 	buf := captureStructuredLogs(t)
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 
 	r.handleRouterAdvertisement(testRouterAdvertisement())
 
@@ -534,9 +535,9 @@ func TestLogInfoAtVerbositySuppressesVerboseLogsAtDefault(t *testing.T) {
 
 func TestRAReceiver_handleRouterAdvertisementLogsRenewalsVerbosely(t *testing.T) {
 	buf := captureStructuredLogs(t)
-	r := NewRAReceiver("eth0")
+	r := NewRAReceiver(testInterface)
 	r.currentPrefix = &Prefix{
-		Network:           netip.MustParsePrefix("2001:db8::/64"),
+		Network:           netip.MustParsePrefix(testPrefixLen64),
 		ValidLifetime:     2 * time.Hour,
 		PreferredLifetime: 30 * time.Minute,
 		Source:            SourceRouterAdvertisement,

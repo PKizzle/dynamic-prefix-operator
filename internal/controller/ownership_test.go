@@ -65,7 +65,10 @@ func rotatePrefix(dp *dynamicprefixiov1alpha1.DynamicPrefix, gen, maxHistory int
 	}
 }
 
-func newOwnershipTestFixture(t *testing.T, maxHistory int) (*ServiceSyncReconciler, *dynamicprefixiov1alpha1.DynamicPrefix, types.NamespacedName) {
+func newOwnershipTestFixture(
+	t *testing.T,
+	maxHistory int,
+) (*ServiceSyncReconciler, *dynamicprefixiov1alpha1.DynamicPrefix, types.NamespacedName) {
 	t.Helper()
 
 	scheme := runtime.NewScheme()
@@ -73,7 +76,7 @@ func newOwnershipTestFixture(t *testing.T, maxHistory int) (*ServiceSyncReconcil
 	_ = dynamicprefixiov1alpha1.AddToScheme(scheme)
 
 	dp := &dynamicprefixiov1alpha1.DynamicPrefix{
-		ObjectMeta: metav1.ObjectMeta{Name: "home-ipv6"},
+		ObjectMeta: metav1.ObjectMeta{Name: testDynamicPrefixName},
 		Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
 			Transition: &dynamicprefixiov1alpha1.TransitionSpec{
 				Mode:             dynamicprefixiov1alpha1.TransitionModeHA,
@@ -86,9 +89,9 @@ func newOwnershipTestFixture(t *testing.T, maxHistory int) (*ServiceSyncReconcil
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "haproxy-external",
-			Namespace: "network",
+			Namespace: testNamespaceNetwork,
 			Annotations: map[string]string{
-				AnnotationName:      "home-ipv6",
+				AnnotationName:      testDynamicPrefixName,
 				AnnotationSuffix:    testSuffix,
 				AnnotationCiliumIPs: testStaticIPv4 + "," + testStaticULA,
 			},
@@ -105,7 +108,7 @@ func newOwnershipTestFixture(t *testing.T, maxHistory int) (*ServiceSyncReconcil
 
 	return &ServiceSyncReconciler{Client: fakeClient, Scheme: scheme},
 		dp,
-		types.NamespacedName{Name: "haproxy-external", Namespace: "network"}
+		types.NamespacedName{Name: "haproxy-external", Namespace: testNamespaceNetwork}
 }
 
 // reconcileRotations drives `rotations` prefix changes through the reconciler and
@@ -264,7 +267,9 @@ func TestReconcileIsIdempotentWithoutRotation(t *testing.T) {
 		t.Fatalf("get after second: %v", err)
 	}
 
-	for _, key := range []string{AnnotationCiliumIPs, AnnotationManagedIPs, AnnotationExternalDNSTarget, AnnotationManagedTargets} {
+	for _, key := range []string{
+		AnnotationCiliumIPs, AnnotationManagedIPs, AnnotationExternalDNSTarget, AnnotationManagedTargets,
+	} {
 		if first.Annotations[key] != second.Annotations[key] {
 			t.Errorf("annotation %q churned on a no-op reconcile:\n  first:  %q\n  second: %q",
 				key, first.Annotations[key], second.Annotations[key])
@@ -320,10 +325,10 @@ func TestExternalDNSTargetSurvivesOperatorDowntime(t *testing.T) {
 func newCiliumPool(name string, blocks []interface{}) *unstructured.Unstructured {
 	pool := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultCiliumLBIPPoolGVK),
-			"kind":       DefaultCiliumLBIPPoolGVK.Kind,
-			"metadata":   map[string]interface{}{"name": name},
-			"spec":       map[string]interface{}{"blocks": blocks},
+			keyAPIVersion: APIVersion(DefaultCiliumLBIPPoolGVK),
+			keyKind:       DefaultCiliumLBIPPoolGVK.Kind,
+			keyMetadata:   map[string]interface{}{keyName: name},
+			fieldSpec:     map[string]interface{}{fieldBlocks: blocks},
 		},
 	}
 	pool.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
@@ -342,10 +347,10 @@ func TestPoolBlocksStayBoundedAcrossRotations(t *testing.T) {
 			// A static ULA block the user owns; it shares the reserved host
 			// suffix with the operator's own ranges.
 			staticBlock := map[string]interface{}{
-				"start": "fd00:db8:abcd::ffff:0:1",
-				"stop":  "fd00:db8:abcd::ffff:0:ffff",
+				fieldStart: "fd00:db8:abcd::ffff:0:1",
+				fieldStop:  "fd00:db8:abcd::ffff:0:ffff",
 			}
-			pool := newCiliumPool("default-ipv6", []interface{}{staticBlock})
+			pool := newCiliumPool(testPoolDefaultIPv6, []interface{}{staticBlock})
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(pool).Build()
 			reconciler := &PoolSyncReconciler{Client: fakeClient, Scheme: scheme}
@@ -355,7 +360,7 @@ func TestPoolBlocksStayBoundedAcrossRotations(t *testing.T) {
 			for gen := 0; gen < rotations; gen++ {
 				fetched := &unstructured.Unstructured{}
 				fetched.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
-				if err := fakeClient.Get(ctx, types.NamespacedName{Name: "default-ipv6"}, fetched); err != nil {
+				if err := fakeClient.Get(ctx, types.NamespacedName{Name: testPoolDefaultIPv6}, fetched); err != nil {
 					t.Fatalf("gen %d: get: %v", gen, err)
 				}
 
@@ -367,10 +372,10 @@ func TestPoolBlocksStayBoundedAcrossRotations(t *testing.T) {
 
 			fetched := &unstructured.Unstructured{}
 			fetched.SetGroupVersionKind(DefaultCiliumLBIPPoolGVK)
-			if err := fakeClient.Get(ctx, types.NamespacedName{Name: "default-ipv6"}, fetched); err != nil {
+			if err := fakeClient.Get(ctx, types.NamespacedName{Name: testPoolDefaultIPv6}, fetched); err != nil {
 				t.Fatalf("final get: %v", err)
 			}
-			blocks, _, err := unstructured.NestedSlice(fetched.Object, "spec", "blocks")
+			blocks, _, err := unstructured.NestedSlice(fetched.Object, fieldSpec, fieldBlocks)
 			if err != nil {
 				t.Fatalf("read blocks: %v", err)
 			}
@@ -408,10 +413,10 @@ func TestCIDRGroupStaysBoundedAcrossRotations(t *testing.T) {
 	const staticCIDR = "fd00:db8:abcd::/48"
 	group := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": APIVersion(DefaultCiliumCIDRGroupGVK),
-			"kind":       DefaultCiliumCIDRGroupGVK.Kind,
-			"metadata":   map[string]interface{}{"name": "home"},
-			"spec":       map[string]interface{}{"externalCIDRs": []interface{}{staticCIDR}},
+			keyAPIVersion: APIVersion(DefaultCiliumCIDRGroupGVK),
+			keyKind:       DefaultCiliumCIDRGroupGVK.Kind,
+			keyMetadata:   map[string]interface{}{keyName: testPoolHome},
+			fieldSpec:     map[string]interface{}{fieldExternalCIDRs: []interface{}{staticCIDR}},
 		},
 	}
 	group.SetGroupVersionKind(DefaultCiliumCIDRGroupGVK)
@@ -424,7 +429,7 @@ func TestCIDRGroupStaysBoundedAcrossRotations(t *testing.T) {
 	for gen := 0; gen < rotations; gen++ {
 		fetched := &unstructured.Unstructured{}
 		fetched.SetGroupVersionKind(DefaultCiliumCIDRGroupGVK)
-		if err := fakeClient.Get(ctx, types.NamespacedName{Name: "home"}, fetched); err != nil {
+		if err := fakeClient.Get(ctx, types.NamespacedName{Name: testPoolHome}, fetched); err != nil {
 			t.Fatalf("gen %d: get: %v", gen, err)
 		}
 		configs, managed := poolStateForGeneration(gen, maxHistory)
@@ -435,10 +440,10 @@ func TestCIDRGroupStaysBoundedAcrossRotations(t *testing.T) {
 
 	fetched := &unstructured.Unstructured{}
 	fetched.SetGroupVersionKind(DefaultCiliumCIDRGroupGVK)
-	if err := fakeClient.Get(ctx, types.NamespacedName{Name: "home"}, fetched); err != nil {
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: testPoolHome}, fetched); err != nil {
 		t.Fatalf("final get: %v", err)
 	}
-	cidrs, _, err := unstructured.NestedSlice(fetched.Object, "spec", "externalCIDRs")
+	cidrs, _, err := unstructured.NestedSlice(fetched.Object, fieldSpec, fieldExternalCIDRs)
 	if err != nil {
 		t.Fatalf("read externalCIDRs: %v", err)
 	}
@@ -489,22 +494,22 @@ func TestParseOwnershipRecord(t *testing.T) {
 			name:    "absent annotation is not present",
 			exists:  false,
 			present: false,
-			notOwns: []string{"2001:db8::1"},
+			notOwns: []string{testAddr},
 		},
 		{
 			name:    "empty but existing annotation is authoritative and owns nothing",
 			value:   "",
 			exists:  true,
 			present: true,
-			notOwns: []string{"2001:db8::1"},
+			notOwns: []string{testAddr},
 		},
 		{
 			name:    "entries are parsed and whitespace trimmed",
 			value:   "2001:db8::1, 2001:db8::2 ,",
 			exists:  true,
 			present: true,
-			owns:    []string{"2001:db8::1", "2001:db8::2"},
-			notOwns: []string{"2001:db8::3", ""},
+			owns:    []string{testAddr, testAddr2},
+			notOwns: []string{testAddr3, ""},
 		},
 	}
 
@@ -529,14 +534,14 @@ func TestParseOwnershipRecord(t *testing.T) {
 }
 
 func TestPreserveUnownedIPs(t *testing.T) {
-	managed := []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/64")}
+	managed := []netip.Prefix{netip.MustParsePrefix(testPoolPrefix)}
 
 	t.Run("record is authoritative and ignores prefix geometry", func(t *testing.T) {
 		// The recorded address is outside every managed prefix — exactly the
 		// post-eviction case. It must still be recognised as ours and dropped.
 		rec := parseOwnershipRecord("2001:db8:99::10", true)
 		got := preserveUnownedIPs("10.0.0.1,2001:db8:99::10,fdb3::ffff:0:2", rec, managed)
-		want := []string{"10.0.0.1", "fdb3::ffff:0:2"}
+		want := []string{testIPv4Addr, "fdb3::ffff:0:2"}
 		if strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Errorf("got %v, want %v", got, want)
 		}
@@ -548,7 +553,7 @@ func TestPreserveUnownedIPs(t *testing.T) {
 		// 2001:db8:99::10 is outside the managed prefix, so the legacy test
 		// preserves it — this over-preservation is the leak, kept deliberately
 		// as the safe first-pass behaviour.
-		want := []string{"10.0.0.1", "2001:db8:99::10"}
+		want := []string{testIPv4Addr, "2001:db8:99::10"}
 		if strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Errorf("got %v, want %v", got, want)
 		}
@@ -561,11 +566,15 @@ func TestBlockKey(t *testing.T) {
 		block map[string]interface{}
 		want  string
 	}{
-		{"cidr block", map[string]interface{}{"cidr": "2001:db8::/64"}, "cidr=2001:db8::/64"},
-		{"range block", map[string]interface{}{"start": "2001:db8::1", "stop": "2001:db8::ff"}, "range=2001:db8::1-2001:db8::ff"},
-		{"start only", map[string]interface{}{"start": "2001:db8::1"}, "range=2001:db8::1"},
+		{"cidr block", map[string]interface{}{fieldCIDR: testPrefixLen64}, "cidr=2001:db8::/64"},
+		{
+			"range block",
+			map[string]interface{}{fieldStart: testAddr, fieldStop: testAddrFF},
+			"range=2001:db8::1-2001:db8::ff",
+		},
+		{"start only", map[string]interface{}{fieldStart: testAddr}, "range=2001:db8::1"},
 		{"unrecognised shape yields no key", map[string]interface{}{"foo": "bar"}, ""},
-		{"empty cidr yields no key", map[string]interface{}{"cidr": ""}, ""},
+		{"empty cidr yields no key", map[string]interface{}{fieldCIDR: ""}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -577,8 +586,8 @@ func TestBlockKey(t *testing.T) {
 }
 
 func TestIsOwnedBlock(t *testing.T) {
-	managed := []netip.Prefix{netip.MustParsePrefix("2001:db8:1::/64")}
-	evicted := map[string]interface{}{"start": "2001:db8:99::1", "stop": "2001:db8:99::ff"}
+	managed := []netip.Prefix{netip.MustParsePrefix(testPoolPrefix)}
+	evicted := map[string]interface{}{fieldStart: "2001:db8:99::1", fieldStop: "2001:db8:99::ff"}
 
 	t.Run("recorded block from an evicted prefix is still ours", func(t *testing.T) {
 		rec := parseOwnershipRecord(blockKey(evicted), true)
@@ -589,7 +598,7 @@ func TestIsOwnedBlock(t *testing.T) {
 
 	t.Run("unrecorded block is preserved even if geometry would claim it", func(t *testing.T) {
 		rec := parseOwnershipRecord("", true)
-		inRange := map[string]interface{}{"start": "2001:db8:1::1", "stop": "2001:db8:1::ff"}
+		inRange := map[string]interface{}{fieldStart: testPrefix1Addr, fieldStop: "2001:db8:1::ff"}
 		if isOwnedBlock(inRange, rec, managed) {
 			t.Error("isOwnedBlock() = true, want false when a record exists but omits the block")
 		}
@@ -597,7 +606,7 @@ func TestIsOwnedBlock(t *testing.T) {
 
 	t.Run("no record falls back to geometry", func(t *testing.T) {
 		rec := parseOwnershipRecord("", false)
-		inRange := map[string]interface{}{"start": "2001:db8:1::1", "stop": "2001:db8:1::ff"}
+		inRange := map[string]interface{}{fieldStart: testPrefix1Addr, fieldStop: "2001:db8:1::ff"}
 		if !isOwnedBlock(inRange, rec, managed) {
 			t.Error("isOwnedBlock() = false, want true via the legacy prefix test")
 		}
