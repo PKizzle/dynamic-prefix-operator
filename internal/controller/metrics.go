@@ -94,6 +94,20 @@ var (
 		},
 		[]string{"backend", "dynamic_prefix", "pool"},
 	)
+	crowdsecMarkers = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "dynamic_prefix_crowdsec_markers",
+			Help: "CrowdSec LAPI allow markers kept for the DynamicPrefix after its last successful sync.",
+		},
+		[]string{metricLabelDynamicPrefix},
+	)
+	crowdsecSyncTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dynamic_prefix_crowdsec_sync_total",
+			Help: "CrowdSec marker syncs by result: success, failed (retried with backoff) or refused (validation).",
+		},
+		[]string{metricLabelDynamicPrefix, "result"},
+	)
 )
 
 func init() {
@@ -105,7 +119,18 @@ func init() {
 		raRejectedTotal,
 		raHopLimitCheckEnabled,
 		poolsSynced,
+		crowdsecMarkers,
+		crowdsecSyncTotal,
 	)
+}
+
+func recordCrowdSecSyncMetric(name, result string) {
+	crowdsecSyncTotal.WithLabelValues(name, result).Inc()
+}
+
+// forgetCrowdSecMetrics drops the marker gauge of a deleted DynamicPrefix.
+func forgetCrowdSecMetrics(name string) {
+	crowdsecMarkers.DeleteLabelValues(name)
 }
 
 func recordPrefixReceivedMetric(name, source string) {

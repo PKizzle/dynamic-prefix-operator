@@ -162,7 +162,20 @@ helm-template: ## Render Helm chart templates for validation
 	helm template test charts/dynamic-prefix-operator \
 		--set config.serviceSync.cacheLabelSelector=dynamic-prefix.io/name \
 		--set 'config.serviceSync.externalDNSTargetAnnotationKeys={external-dns.kubernetes.io/target}' \
-		--set kubevip.enabled=true
+		--set kubevip.enabled=true \
+		--set networkPolicy.enabled=true \
+		--set crowdsec.enabled=true \
+		--set crowdsec.lapiURL=https://crowdsec-service.crowdsec:8080 \
+		--set 'crowdsec.dynamicPrefixes={home-ipv6}' \
+		--set crowdsec.tls.secretName=crowdsec-client-tls \
+		--set crowdsec.lapiService.namespace=crowdsec \
+		--set crowdsec.lapiService.name=crowdsec-service
+	helm template test charts/dynamic-prefix-operator \
+		--set crowdsec.enabled=true \
+		--set crowdsec.lapiURL=https://crowdsec-service.crowdsec:8080 \
+		--set 'crowdsec.dynamicPrefixes={home-ipv6}' \
+		--set crowdsec.passwordSecret.name=crowdsec-machine \
+		--set crowdsec.passwordSecret.machineID=dynamic-prefix-operator
 
 ##@ Build
 

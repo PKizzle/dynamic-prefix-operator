@@ -409,6 +409,11 @@ const (
 
 	// ConditionTypeBGPAdvertisementReady indicates whether BGP advertisements are configured
 	ConditionTypeBGPAdvertisementReady = "BGPAdvertisementReady"
+
+	// ConditionTypeCrowdSecMarkersSynced indicates whether the CrowdSec LAPI
+	// allow markers match the trusted prefixes. Set only for the
+	// DynamicPrefixes the CrowdSec integration is configured for.
+	ConditionTypeCrowdSecMarkersSynced = "CrowdSecMarkersSynced"
 )
 
 // +kubebuilder:object:root=true

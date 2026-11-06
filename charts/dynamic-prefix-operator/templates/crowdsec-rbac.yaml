@@ -1,0 +1,37 @@
+{{- if and .Values.rbac.create .Values.crowdsec.enabled .Values.crowdsec.lapiService.name -}}
+# Read access to the CrowdSec LAPI Service's EndpointSlices, which tell the
+# operator when LAPI becomes ready. Namespaced, and the operator's cache only
+# watches that one Service's slices.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "dynamic-prefix-operator.fullname" . }}-crowdsec
+  namespace: {{ required "crowdsec.lapiService.namespace is required" .Values.crowdsec.lapiService.namespace }}
+  labels:
+    {{- include "dynamic-prefix-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - discovery.k8s.io
+    resources:
+      - endpointslices
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "dynamic-prefix-operator.fullname" . }}-crowdsec
+  namespace: {{ .Values.crowdsec.lapiService.namespace }}
+  labels:
+    {{- include "dynamic-prefix-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "dynamic-prefix-operator.fullname" . }}-crowdsec
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "dynamic-prefix-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

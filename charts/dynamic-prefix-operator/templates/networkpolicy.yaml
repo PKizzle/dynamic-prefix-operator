@@ -54,6 +54,14 @@ spec:
     - ports:
         - port: 547
           protocol: UDP
+    {{- if .Values.crowdsec.enabled }}
+    # CrowdSec LAPI, on the port of crowdsec.lapiURL.
+    {{- $u := urlParse .Values.crowdsec.lapiURL }}
+    {{- $port := regexFind "[0-9]+$" (regexFind ":[0-9]+$" $u.host) }}
+    - ports:
+        - port: {{ $port | default (ternary 443 80 (eq $u.scheme "https")) | int }}
+          protocol: TCP
+    {{- end }}
     {{- with .Values.networkPolicy.additionalEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

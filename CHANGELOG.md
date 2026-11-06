@@ -4,6 +4,25 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## Unreleased
+
+### Added
+
+- CrowdSec LAN allow markers: with `crowdsec.enabled` (flags
+  `--crowdsec-lapi-url` and `--crowdsec-dynamic-prefixes`), the operator keeps
+  one CrowdSec LAPI `allow` decision per current or draining prefix of the
+  named DynamicPrefixes, so a LAPI profile can skip bans for the LAN while the
+  WAF keeps inspecting it. Logs in with a TLS client certificate or a machine
+  password read from mounted files; renewed certificates are used without a
+  restart. Syncs on prefix changes, leadership, LAPI endpoint changes
+  (`crowdsec.lapiService`) and retries, with no periodic resync. Prefixes are
+  validated (global unicast IPv6, /48 to /64, canonical, at most
+  `crowdsec.maxMarkers`) before anything is written. See "CrowdSec LAN allow
+  markers" in the README for the required LAPI profile. Off by default.
+- `CrowdSecMarkersSynced` condition, `CrowdSecMarker*` events, and the
+  `dynamic_prefix_crowdsec_markers` and
+  `dynamic_prefix_crowdsec_sync_total{name,result}` metrics.
+
 ## v0.0.21 - 2026-11-05
 
 Dependency update for standard-library and gRPC advisories.

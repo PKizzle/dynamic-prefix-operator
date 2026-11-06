@@ -72,6 +72,45 @@ spec:
             {{- if .Values.kubevip.enabled }}
             - --kubevip-configmap={{ .Values.kubevip.configMap.namespace }}/{{ .Values.kubevip.configMap.name }}
             {{- end }}
+            {{- with .Values.crowdsec }}
+            {{- if .enabled }}
+            {{- $password := .passwordSecret.name }}
+            {{- $clientCert := and .tls.secretName .tls.clientCertificate (not $password) }}
+            {{- if not (or $clientCert $password) }}
+            {{- fail "crowdsec.enabled needs crowdsec.tls.secretName (client certificate) or crowdsec.passwordSecret.name" }}
+            {{- end }}
+            - {{ printf "--crowdsec-lapi-url=%s" (required "crowdsec.lapiURL is required" .lapiURL) | quote }}
+            - {{ printf "--crowdsec-dynamic-prefixes=%s" (join "," (required "crowdsec.dynamicPrefixes is required" .dynamicPrefixes)) | quote }}
+            - --crowdsec-max-markers={{ .maxMarkers }}
+            {{- if .tls.secretName }}
+            - --crowdsec-ca-file=/etc/dynamic-prefix-operator/crowdsec/tls/ca.crt
+            {{- end }}
+            {{- if $clientCert }}
+            - --crowdsec-cert-file=/etc/dynamic-prefix-operator/crowdsec/tls/tls.crt
+            - --crowdsec-key-file=/etc/dynamic-prefix-operator/crowdsec/tls/tls.key
+            {{- end }}
+            {{- if $password }}
+            - {{ printf "--crowdsec-machine-id=%s" (required "crowdsec.passwordSecret.machineID is required" .passwordSecret.machineID) | quote }}
+            - --crowdsec-password-file=/etc/dynamic-prefix-operator/crowdsec/password/{{ .passwordSecret.key }}
+            {{- end }}
+            {{- if .lapiService.name }}
+            - --crowdsec-lapi-service={{ .lapiService.namespace }}/{{ .lapiService.name }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          {{- if .Values.crowdsec.enabled }}
+          volumeMounts:
+            {{- if .Values.crowdsec.tls.secretName }}
+            - name: crowdsec-tls
+              mountPath: /etc/dynamic-prefix-operator/crowdsec/tls
+              readOnly: true
+            {{- end }}
+            {{- if .Values.crowdsec.passwordSecret.name }}
+            - name: crowdsec-password
+              mountPath: /etc/dynamic-prefix-operator/crowdsec/password
+              readOnly: true
+            {{- end }}
+          {{- end }}
           {{- with .Values.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -112,5 +151,22 @@ spec:
       {{- with .Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.crowdsec.enabled }}
+      # Mounted as directories, not subPath files, so a renewed Secret reaches
+      # the running pod and the next LAPI connection presents it.
+      volumes:
+        {{- if .Values.crowdsec.tls.secretName }}
+        - name: crowdsec-tls
+          secret:
+            secretName: {{ .Values.crowdsec.tls.secretName }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.crowdsec.passwordSecret.name }}
+        - name: crowdsec-password
+          secret:
+            secretName: {{ .Values.crowdsec.passwordSecret.name }}
+            defaultMode: 0400
+        {{- end }}
       {{- end }}
       terminationGracePeriodSeconds: 10
