@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -43,6 +44,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -89,6 +91,9 @@ func main() {
 	var serviceCacheLabelSelector string
 	var externalDNSTargetAnnotationKeys string
 	var kubevipConfigMap string
+	var crowdsecLAPI controller.CrowdSecLAPIConfig
+	var crowdsecDynamicPrefixes, crowdsecLAPIService string
+	var crowdsecMaxMarkers int
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -119,6 +124,23 @@ func main() {
 	flag.StringVar(&kubevipConfigMap, "kubevip-configmap", "",
 		"Manage the kube-vip cloud provider's pool ConfigMap, given as namespace/name, for example kube-system/kubevip. "+
 			"Empty disables the kube-vip backend, and the operator then needs no access to ConfigMaps at all.")
+	flag.StringVar(&crowdsecLAPI.URL, "crowdsec-lapi-url", "",
+		"CrowdSec Local API base URL. Setting it enables the CrowdSec allow markers for --crowdsec-dynamic-prefixes.")
+	flag.StringVar(&crowdsecDynamicPrefixes, "crowdsec-dynamic-prefixes", "",
+		"Comma-separated DynamicPrefix names whose current and draining prefixes get a CrowdSec allow marker.")
+	flag.StringVar(&crowdsecLAPI.CertFile, "crowdsec-cert-file", "",
+		"TLS client certificate to log in to LAPI with. Re-read on every new connection.")
+	flag.StringVar(&crowdsecLAPI.KeyFile, "crowdsec-key-file", "", "Private key of --crowdsec-cert-file.")
+	flag.StringVar(&crowdsecLAPI.CAFile, "crowdsec-ca-file", "",
+		"CA bundle that verifies LAPI's server certificate. Empty uses the system roots.")
+	flag.StringVar(&crowdsecLAPI.MachineID, "crowdsec-machine-id", "",
+		"Machine ID for password login, the alternative to a client certificate.")
+	flag.StringVar(&crowdsecLAPI.PasswordFile, "crowdsec-password-file", "",
+		"File holding the password of --crowdsec-machine-id.")
+	flag.StringVar(&crowdsecLAPIService, "crowdsec-lapi-service", "",
+		"LAPI Service as namespace/name. Optional: syncs wait for a ready endpoint and re-run when its endpoints change.")
+	flag.IntVar(&crowdsecMaxMarkers, "crowdsec-max-markers", controller.DefaultCrowdSecMaxMarkers,
+		"CrowdSec markers kept per DynamicPrefix; beyond it the oldest draining prefixes lose theirs.")
 	opts := defaultZapOptions()
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -198,7 +220,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	cacheOptions, err := newCacheOptions(serviceCacheLabelSelector, kubevipRef)
+	crowdsecServiceRef, err := parseKubevipConfigMapRef(crowdsecLAPIService)
+	if err != nil {
+		setupLog.Error(err, "invalid CrowdSec LAPI Service reference", "value", crowdsecLAPIService)
+		os.Exit(1)
+	}
+
+	cacheOptions, err := newCacheOptions(serviceCacheLabelSelector, kubevipRef, crowdsecServiceRef)
 	if err != nil {
 		setupLog.Error(err, "invalid service cache label selector", "selector", serviceCacheLabelSelector)
 		os.Exit(1)
@@ -363,6 +391,11 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	if err := setupCrowdSecMarkers(mgr, eventRecorder, crowdsecLAPI, crowdsecDynamicPrefixes,
+		crowdsecServiceRef, crowdsecMaxMarkers); err != nil {
+		setupLog.Error(err, "unable to set up CrowdSec markers")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -427,10 +460,54 @@ func parseKubevipConfigMapRef(raw string) (*types.NamespacedName, error) {
 	return &types.NamespacedName{Namespace: namespace, Name: name}, nil
 }
 
+// setupCrowdSecMarkers registers the CrowdSec marker controller when a LAPI
+// URL is configured.
+func setupCrowdSecMarkers(
+	mgr ctrl.Manager, recorder events.EventRecorder, cfg controller.CrowdSecLAPIConfig,
+	dynamicPrefixes string, lapiService *types.NamespacedName, maxMarkers int,
+) error {
+	if cfg.URL == "" {
+		return nil
+	}
+	var names []string
+	for _, n := range strings.Split(dynamicPrefixes, ",") {
+		if n = strings.TrimSpace(n); n != "" && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return fmt.Errorf("--crowdsec-dynamic-prefixes names no DynamicPrefix")
+	}
+	if maxMarkers < 1 {
+		return fmt.Errorf("--crowdsec-max-markers must be at least 1")
+	}
+	lapi, err := controller.NewCrowdSecLAPI(cfg)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(cfg.URL, "http://") {
+		setupLog.Info("WARNING: the CrowdSec LAPI URL is plain http; the machine password and token " +
+			"cross the network unencrypted. Use https with a client certificate.")
+	}
+	setupLog.Info("keeping CrowdSec allow markers", "dynamicPrefixes", names, "maxMarkers", maxMarkers,
+		"clientCertificate", cfg.CertFile != "")
+	return (&controller.CrowdSecMarkerReconciler{
+		Client:          mgr.GetClient(),
+		Recorder:        recorder,
+		LAPI:            lapi,
+		DynamicPrefixes: names,
+		MaxMarkers:      maxMarkers,
+		LAPIService:     lapiService,
+	}).SetupWithManager(mgr)
+}
+
 // newCacheOptions scopes the Service informer to the label selector, when one
-// is given, and the ConfigMap informer to the kube-vip pool ConfigMap, when the
-// kube-vip backend is enabled.
-func newCacheOptions(serviceSelector string, kubevipRef *types.NamespacedName) (cache.Options, error) {
+// is given, the ConfigMap informer to the kube-vip pool ConfigMap, when the
+// kube-vip backend is enabled, and the EndpointSlice informer to the CrowdSec
+// LAPI Service, when one is named.
+func newCacheOptions(
+	serviceSelector string, kubevipRef, crowdsecServiceRef *types.NamespacedName,
+) (cache.Options, error) {
 	cacheOptions := cache.Options{}
 	if serviceSelector != "" {
 		selector, err := labels.Parse(serviceSelector)
@@ -460,6 +537,22 @@ func newCacheOptions(serviceSelector string, kubevipRef *types.NamespacedName) (
 		}
 		setupLog.Info("managing the kube-vip pool ConfigMap",
 			"namespace", kubevipRef.Namespace, "name", kubevipRef.Name)
+	}
+
+	if crowdsecServiceRef != nil {
+		// Only the LAPI Service's slices: that is all a namespaced Role grants.
+		if cacheOptions.ByObject == nil {
+			cacheOptions.ByObject = map[client.Object]cache.ByObject{}
+		}
+		cacheOptions.ByObject[&discoveryv1.EndpointSlice{}] = cache.ByObject{
+			Namespaces: map[string]cache.Config{
+				crowdsecServiceRef.Namespace: {
+					LabelSelector: labels.SelectorFromSet(labels.Set{
+						discoveryv1.LabelServiceName: crowdsecServiceRef.Name,
+					}),
+				},
+			},
+		}
 	}
 	return cacheOptions, nil
 }

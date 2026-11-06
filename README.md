@@ -592,6 +592,120 @@ current address and the historical ones; check that your kube-vip version
 announces all of them before relying on the drain window, or use simple mode,
 which is unaffected.
 
+## CrowdSec LAN allow markers
+
+CrowdSec bans by source address, and on a network with a delegated IPv6 prefix
+the LAN's own addresses change with every rotation, so a static whitelist
+cannot name them. With the CrowdSec integration enabled, the operator keeps one
+CrowdSec LAPI decision of type `allow` (a "marker") per trusted prefix of each
+configured DynamicPrefix: the current prefix and every history entry that is
+still draining. A LAPI profile placed first then skips the ban for any alert
+whose source is inside a marker. The alert is still recorded, and the AppSec
+WAF still evaluates LAN requests and can block them in-band, because an `allow`
+decision does not stop a bouncer from forwarding the request to AppSec.
+
+### How it works
+
+- Each marker is an alert posted to `POST /v1/alerts` with scenario
+  `dynamic-prefix/lan-allow`, source scope `Range`, and one decision: type
+  `allow`, scope `Range`, value the prefix, origin `cscli`, duration `87600h`.
+  Origin `cscli` makes it a manual decision, which LAPI does not share with
+  CrowdSec's central API unless `share_manual_decisions` is on, so the LAN
+  prefix is never published as a community signal. The alert's meta carries
+  the DynamicPrefix name, so one DynamicPrefix never expires another's markers.
+- On each sync the operator lists the active markers
+  (`GET /v1/alerts?scenario=dynamic-prefix/lan-allow&origin=cscli&decision_type=allow&scope=Range&has_active_decision=true`),
+  creates the missing ones, and only then expires the obsolete ones with
+  `DELETE /v1/decisions?type=allow&scopes=Range&value=<prefix>&origin=cscli&scenario=dynamic-prefix/lan-allow`.
+  A failed create stops the sync before anything is expired.
+- Syncs are event-driven, with no periodic resync: a change of the
+  DynamicPrefix's current or draining prefixes, the operator gaining
+  leadership, the LAPI Service's EndpointSlices changing (when
+  `crowdsec.lapiService` is set: a LAPI restart re-creates markers a fresh
+  database lost), and retries with exponential backoff after a failure. Only
+  the leader writes.
+- Before any write, every prefix must be IPv6, inside `2000::/3`, between /48
+  and /64, and in canonical masked form. Otherwise nothing is written and a
+  `CrowdSecMarkerRefused` warning event is recorded on the DynamicPrefix.
+- At most `crowdsec.maxMarkers` (default 3) markers are kept per
+  DynamicPrefix. Beyond that the current prefix and the newest draining ones
+  keep theirs, the oldest draining prefixes lose theirs, and a
+  `CrowdSecMarkerDropped` warning event names them.
+- While a DynamicPrefix has no prefix, its markers are left in place. When it
+  is deleted, its markers are expired.
+
+Progress is reported on the DynamicPrefix as events (`CrowdSecMarkerCreated`,
+`CrowdSecMarkerRemoved`, `CrowdSecMarkerFailed`, `CrowdSecMarkerRefused`,
+`CrowdSecMarkerDropped`) and
+as the `CrowdSecMarkersSynced` condition, and in the
+`dynamic_prefix_crowdsec_markers` and `dynamic_prefix_crowdsec_sync_total`
+metrics.
+
+### The LAPI profile
+
+Prepend this profile to LAPI's `profiles.yaml`, before every profile that
+creates a decision:
+
+```yaml
+name: dynamic_prefix_lan_allow
+filters:
+  - Alert.GetScope() == "Ip" && IsIPV6(Alert.GetValue()) && IpInRange(Alert.GetValue(), "2000::/3") && GetActiveDecisionsTimeLeft(Alert.GetValue()) > duration("8000h") && GetDecisionsSinceCount(Alert.GetValue(), "3650d", "dynamic-prefix/lan-allow") > 0
+on_success: break
+on_error: continue
+```
+
+`GetActiveDecisionsTimeLeft` returns the remaining lifetime of the longest
+active decision covering the address, of any type. The `8000h` threshold is
+what tells a marker apart from a ban, so **it must be longer than every ban
+duration you configure**, including escalating long bans. `on_error: continue`
+falls through to the ban profiles if the database query fails, so an error
+bans rather than losing the alert.
+
+### Configuration
+
+```yaml
+# values.yaml
+crowdsec:
+  enabled: true
+  lapiURL: https://crowdsec-service.crowdsec:8080
+  dynamicPrefixes: [home-ipv6]
+  tls:
+    # tls.crt, tls.key and ca.crt, for example a cert-manager Certificate.
+    secretName: dynamic-prefix-operator-crowdsec-tls
+  lapiService:
+    namespace: crowdsec
+    name: crowdsec-service
+```
+
+With a client certificate, LAPI registers the machine as `<CN>@<client IP>` on
+first login and accepts it only if the certificate's OU is listed in
+`api.server.tls.agents_allowed_ou`. The certificate files are read on every new
+connection, so a renewal is picked up without a restart. For password login
+instead, create a machine (`cscli machines add <id> --password ...`) and set
+`crowdsec.passwordSecret.name` and `crowdsec.passwordSecret.machineID`; keep
+`crowdsec.tls.secretName` with `crowdsec.tls.clientCertificate: false` to
+verify LAPI's server certificate. The matching flags are `--crowdsec-lapi-url`,
+`--crowdsec-dynamic-prefixes`, `--crowdsec-cert-file`, `--crowdsec-key-file`,
+`--crowdsec-ca-file`, `--crowdsec-machine-id`, `--crowdsec-password-file`,
+`--crowdsec-lapi-service` and `--crowdsec-max-markers`.
+
+### Security notes
+
+- A LAPI machine credential is full write access to LAPI decisions: whoever
+  holds it can unban anything or allow any range. Prefer a client certificate
+  over a password, use TLS (the operator warns at startup on a plain `http`
+  URL), and keep the Secret readable by the operator only.
+- The profile bounds what a marker can do: only IPv6 sources inside
+  `2000::/3`, only decisions longer than the threshold, and only addresses
+  covered by a `dynamic-prefix/lan-allow` decision.
+- An existing exact-IP ban still wins at the bouncer, but a /64 marker shadows
+  a broader range ban (a /48, say) for that /64 in bouncers that pick the
+  longest prefix.
+- `cscli decisions delete -i <address inside a marker>` also expires the
+  marker covering that address. The operator restores it on its next trigger
+  (a prefix change, a leadership change, or the LAPI Service's endpoints
+  changing), not immediately.
+
 ## Configuration Reference
 
 ### DynamicPrefix Spec
@@ -712,6 +826,8 @@ The operator exports controller-runtime metrics plus dynamic-prefix specific Pro
 | `dynamic_prefix_pools_synced` | Successful pool sync state labeled by backend, DynamicPrefix, and pool |
 | `dynamic_prefix_receiver_healthy` | 1 while the receiver's last acquisition attempt succeeded, 0 while acquisition or renewal is failing |
 | `dynamic_prefix_rejected_router_advertisements_total` | Advertisements dropped by validation, labeled by interface and reason |
+| `dynamic_prefix_crowdsec_markers` | CrowdSec allow markers kept for a DynamicPrefix after its last successful sync |
+| `dynamic_prefix_crowdsec_sync_total` | CrowdSec marker syncs by DynamicPrefix and result (`success`, `failed`, `refused`) |
 
 It also emits Kubernetes events for prefix acquisition, prefix changes, transition history pruning, receiver failures, and pool updates.
 

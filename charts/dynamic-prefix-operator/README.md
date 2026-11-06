@@ -129,6 +129,14 @@ ServiceAccount must hold it, or scrapes are denied with 403. Set
 | `kubevip.enabled` | Manage the kube-vip cloud provider's pool ConfigMap. Grants a namespaced Role over ConfigMaps in `kubevip.configMap.namespace` | `false` |
 | `kubevip.configMap.namespace` | Namespace holding the kube-vip pool ConfigMap | `kube-system` |
 | `kubevip.configMap.name` | Name of the kube-vip pool ConfigMap | `kubevip` |
+| `crowdsec.enabled` | Keep CrowdSec LAPI allow markers for the trusted prefixes. The credential is full LAPI decision write access | `false` |
+| `crowdsec.lapiURL` | LAPI base URL | `""` |
+| `crowdsec.dynamicPrefixes` | DynamicPrefix names whose current and draining prefixes get a marker | `[]` |
+| `crowdsec.maxMarkers` | Markers kept per DynamicPrefix; beyond it the oldest draining prefixes lose theirs | `3` |
+| `crowdsec.tls.secretName` | Secret with `tls.crt`, `tls.key`, `ca.crt`; renewals are picked up without a restart | `""` |
+| `crowdsec.tls.clientCertificate` | Log in with `tls.crt`/`tls.key`; false uses the Secret for `ca.crt` only | `true` |
+| `crowdsec.passwordSecret.name` / `.key` / `.machineID` | Password login instead of a client certificate | `""` / `password` / `""` |
+| `crowdsec.lapiService.namespace` / `.name` | LAPI Service; syncs wait for a ready endpoint and re-run when it changes. Grants a namespaced EndpointSlice read Role | `""` |
 
 ## Usage
 

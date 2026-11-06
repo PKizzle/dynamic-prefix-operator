@@ -159,6 +159,46 @@ kubevip:
     name: kubevip
 
 # ==============================================================================
+# CrowdSec LAPI allow markers
+# ==============================================================================
+crowdsec:
+  # -- Keep one CrowdSec LAPI allow decision per trusted prefix (current and
+  # draining) of the DynamicPrefixes below, for a LAPI profile that skips bans
+  # for the LAN. The credential this needs is full write access to LAPI
+  # decisions: prefer a client certificate over TLS. See "CrowdSec" in the README.
+  enabled: false
+  # -- LAPI base URL, for example https://crowdsec-service.crowdsec:8080.
+  lapiURL: ""
+  # -- Names of the DynamicPrefixes whose prefixes get a marker.
+  dynamicPrefixes: []
+  # -- Markers kept per DynamicPrefix. Beyond it the oldest draining prefixes
+  # lose theirs; the current prefix always keeps its marker.
+  maxMarkers: 3
+  tls:
+    # -- Secret with tls.crt, tls.key and ca.crt (the cert-manager layout).
+    # ca.crt verifies LAPI's server certificate; tls.crt/tls.key log in as a
+    # machine whose OU LAPI must allow (agents_allowed_ou). Renewals are
+    # picked up without a restart.
+    secretName: ""
+    # -- Log in with tls.crt/tls.key. Set false to use the Secret only for
+    # ca.crt, together with passwordSecret.
+    clientCertificate: true
+  # -- Password login instead of a client certificate.
+  passwordSecret:
+    # -- Secret holding the machine password.
+    name: ""
+    # -- Key of the password in that Secret.
+    key: password
+    # -- Machine ID the password belongs to (cscli machines add <id>).
+    machineID: ""
+  # -- LAPI Service. Optional: when set, syncs wait for a ready endpoint and
+  # re-run when its endpoints change, which re-creates markers after a LAPI
+  # restart. Grants a namespaced Role to read EndpointSlices there.
+  lapiService:
+    namespace: ""
+    name: ""
+
+# ==============================================================================
 # Network Configuration
 # ==============================================================================
 network:
