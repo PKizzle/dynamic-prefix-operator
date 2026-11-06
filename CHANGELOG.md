@@ -16,8 +16,9 @@ This changelog follows the fork's published GitHub releases and does not align w
   password read from mounted files; renewed certificates are used without a
   restart. Syncs on prefix changes, leadership, LAPI endpoint changes
   (`crowdsec.lapiService`) and retries, with no periodic resync. Prefixes are
-  validated (global unicast IPv6, /48 to /64, canonical, at most
-  `crowdsec.maxMarkers`) before anything is written. See "CrowdSec LAN allow
+  validated (global unicast IPv6, /48 to /64, canonical) before anything is
+  written; beyond `crowdsec.maxMarkers` the oldest draining prefixes lose
+  their markers, never the current one. See "CrowdSec LAN allow
   markers" in the README for the required LAPI profile. Off by default.
 - `CrowdSecMarkersSynced` condition, `CrowdSecMarker*` events, and the
   `dynamic_prefix_crowdsec_markers` and

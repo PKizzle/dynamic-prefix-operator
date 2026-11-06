@@ -625,14 +625,18 @@ decision does not stop a bouncer from forwarding the request to AppSec.
   database lost), and retries with exponential backoff after a failure. Only
   the leader writes.
 - Before any write, every prefix must be IPv6, inside `2000::/3`, between /48
-  and /64, and in canonical masked form, and there must be at most
-  `crowdsec.maxMarkers` (default 3) of them. Otherwise nothing is written and a
+  and /64, and in canonical masked form. Otherwise nothing is written and a
   `CrowdSecMarkerRefused` warning event is recorded on the DynamicPrefix.
+- At most `crowdsec.maxMarkers` (default 3) markers are kept per
+  DynamicPrefix. Beyond that the current prefix and the newest draining ones
+  keep theirs, the oldest draining prefixes lose theirs, and a
+  `CrowdSecMarkerDropped` warning event names them.
 - While a DynamicPrefix has no prefix, its markers are left in place. When it
   is deleted, its markers are expired.
 
 Progress is reported on the DynamicPrefix as events (`CrowdSecMarkerCreated`,
-`CrowdSecMarkerRemoved`, `CrowdSecMarkerFailed`, `CrowdSecMarkerRefused`) and
+`CrowdSecMarkerRemoved`, `CrowdSecMarkerFailed`, `CrowdSecMarkerRefused`,
+`CrowdSecMarkerDropped`) and
 as the `CrowdSecMarkersSynced` condition, and in the
 `dynamic_prefix_crowdsec_markers` and `dynamic_prefix_crowdsec_sync_total`
 metrics.

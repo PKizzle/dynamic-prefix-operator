@@ -45,6 +45,7 @@ const (
 	eventReasonCrowdSecMarkerRemoved = "CrowdSecMarkerRemoved"
 	eventReasonCrowdSecMarkerFailed  = "CrowdSecMarkerFailed"
 	eventReasonCrowdSecMarkerRefused = "CrowdSecMarkerRefused"
+	eventReasonCrowdSecMarkerDropped = "CrowdSecMarkerDropped"
 
 	fieldOwnerCrowdSec = "dynamic-prefix-operator/crowdsec"
 
@@ -82,8 +83,8 @@ type CrowdSecMarkerReconciler struct {
 	LAPI     crowdsecMarkerAPI
 	// DynamicPrefixes names the DynamicPrefixes whose prefixes are trusted.
 	DynamicPrefixes []string
-	// MaxMarkers refuses a sync that would keep more markers than this for
-	// one DynamicPrefix.
+	// MaxMarkers caps the markers kept for one DynamicPrefix. The current
+	// prefix always keeps its marker; the oldest draining prefixes are dropped.
 	MaxMarkers int
 	// LAPIService, when set, gates syncs on the Service having a ready
 	// endpoint and re-triggers them when its EndpointSlices change.
@@ -109,10 +110,7 @@ func crowdsecTrustedPrefixes(dp *dynamicprefixiov1alpha1.DynamicPrefix) []string
 
 // validateMarkerPrefixes is the last check before anything is written to LAPI,
 // where a wrong range would stop CrowdSec banning whatever it covers.
-func validateMarkerPrefixes(prefixes []string, maxMarkers int) error {
-	if len(prefixes) > maxMarkers {
-		return fmt.Errorf("%d trusted prefixes exceed the maximum of %d markers", len(prefixes), maxMarkers)
-	}
+func validateMarkerPrefixes(prefixes []string) error {
 	for _, p := range prefixes {
 		pfx, err := netip.ParsePrefix(p)
 		switch {
@@ -159,7 +157,17 @@ func (r *CrowdSecMarkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			// until a new prefix arrives, which is a watched status change.
 			return ctrl.Result{}, nil
 		}
-		if err := validateMarkerPrefixes(desired, r.MaxMarkers); err != nil {
+		// Newest first, so the cut keeps the current prefix and drops the
+		// oldest draining ones: refusing the whole sync would leave the
+		// current prefix without a marker, which is the ban this exists to stop.
+		if len(desired) > r.MaxMarkers {
+			dropped := desired[r.MaxMarkers:]
+			desired = desired[:r.MaxMarkers]
+			emitWarningEvent(r.Recorder, &dp, eventReasonCrowdSecMarkerDropped, fmt.Sprintf(
+				"%d trusted prefixes exceed crowdsec max markers %d; not keeping markers for the oldest: %s",
+				len(desired)+len(dropped), r.MaxMarkers, strings.Join(dropped, ", ")))
+		}
+		if err := validateMarkerPrefixes(desired); err != nil {
 			msg := "Refusing to write CrowdSec markers: " + err.Error()
 			r.report(ctx, &dp, "refused", eventReasonCrowdSecMarkerRefused, msg)
 			// Only a change to the DynamicPrefix can fix this, and that is watched.

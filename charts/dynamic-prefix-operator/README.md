@@ -132,7 +132,7 @@ ServiceAccount must hold it, or scrapes are denied with 403. Set
 | `crowdsec.enabled` | Keep CrowdSec LAPI allow markers for the trusted prefixes. The credential is full LAPI decision write access | `false` |
 | `crowdsec.lapiURL` | LAPI base URL | `""` |
 | `crowdsec.dynamicPrefixes` | DynamicPrefix names whose current and draining prefixes get a marker | `[]` |
-| `crowdsec.maxMarkers` | Refuse to keep more markers than this per DynamicPrefix | `3` |
+| `crowdsec.maxMarkers` | Markers kept per DynamicPrefix; beyond it the oldest draining prefixes lose theirs | `3` |
 | `crowdsec.tls.secretName` | Secret with `tls.crt`, `tls.key`, `ca.crt`; renewals are picked up without a restart | `""` |
 | `crowdsec.tls.clientCertificate` | Log in with `tls.crt`/`tls.key`; false uses the Secret for `ca.crt` only | `true` |
 | `crowdsec.passwordSecret.name` / `.key` / `.machineID` | Password login instead of a client certificate | `""` / `password` / `""` |

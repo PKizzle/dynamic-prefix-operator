@@ -405,11 +405,7 @@ func TestCrowdSecRefusesInvalidPrefixes(t *testing.T) {
 		"ipv4":          crowdsecDP("192.0.2.0/24"),
 		"uppercase":     crowdsecDP("2001:DB8:1:2::/64"),
 		"garbage":       crowdsecDP("not-a-prefix"),
-		"too many": crowdsecDP(csCurrent,
-			historyEntry("2001:db8:1:3::/64", dynamicprefixiov1alpha1.PrefixStateDraining),
-			historyEntry("2001:db8:1:4::/64", dynamicprefixiov1alpha1.PrefixStateDraining),
-			historyEntry("2001:db8:1:5::/64", dynamicprefixiov1alpha1.PrefixStateDraining)),
-		"bad draining": crowdsecDP(csCurrent, historyEntry("::/0", dynamicprefixiov1alpha1.PrefixStateDraining)),
+		"bad draining":  crowdsecDP(csCurrent, historyEntry("::/0", dynamicprefixiov1alpha1.PrefixStateDraining)),
 	}
 	for name, dp := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -424,6 +420,33 @@ func TestCrowdSecRefusesInvalidPrefixes(t *testing.T) {
 				t.Error("no refusal warning event")
 			}
 		})
+	}
+}
+
+// More trusted prefixes than MaxMarkers keeps the current one and the newest
+// draining ones; the oldest lose their markers.
+func TestCrowdSecTruncatesToMaxMarkers(t *testing.T) {
+	const oldest, older, newer = "2001:db8:1:3::/64", "2001:db8:1:4::/64", "2001:db8:1:5::/64"
+	f := newCrowdSecFixture(t, crowdsecDP(csCurrent,
+		historyEntry(oldest, dynamicprefixiov1alpha1.PrefixStateDraining),
+		historyEntry(older, dynamicprefixiov1alpha1.PrefixStateDraining),
+		historyEntry(newer, dynamicprefixiov1alpha1.PrefixStateDraining)))
+	f.lapi.markers = []fakeMarker{
+		{value: oldest, owner: testDynamicPrefixName, active: true},
+		{value: older, owner: testDynamicPrefixName, active: true},
+	}
+	if err := f.reconcile(t); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	want := []string{csCurrent + "@" + testDynamicPrefixName, older + "@" + testDynamicPrefixName,
+		newer + "@" + testDynamicPrefixName}
+	slices.Sort(want)
+	if got := f.lapi.active(); !slices.Equal(got, want) {
+		t.Fatalf("active = %q, want %q", got, want)
+	}
+	evs := strings.Join(f.events(), "\n")
+	if !strings.Contains(evs, "Warning "+eventReasonCrowdSecMarkerDropped) || !strings.Contains(evs, oldest) {
+		t.Errorf("no warning naming the dropped prefix: %s", evs)
 	}
 }
 

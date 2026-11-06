@@ -171,7 +171,8 @@ crowdsec:
   lapiURL: ""
   # -- Names of the DynamicPrefixes whose prefixes get a marker.
   dynamicPrefixes: []
-  # -- Refuse to keep more markers than this for one DynamicPrefix.
+  # -- Markers kept per DynamicPrefix. Beyond it the oldest draining prefixes
+  # lose theirs; the current prefix always keeps its marker.
   maxMarkers: 3
   tls:
     # -- Secret with tls.crt, tls.key and ca.crt (the cert-manager layout).

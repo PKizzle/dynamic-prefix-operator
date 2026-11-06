@@ -140,7 +140,7 @@ func main() {
 	flag.StringVar(&crowdsecLAPIService, "crowdsec-lapi-service", "",
 		"LAPI Service as namespace/name. Optional: syncs wait for a ready endpoint and re-run when its endpoints change.")
 	flag.IntVar(&crowdsecMaxMarkers, "crowdsec-max-markers", controller.DefaultCrowdSecMaxMarkers,
-		"Refuse to keep more CrowdSec markers than this for one DynamicPrefix.")
+		"CrowdSec markers kept per DynamicPrefix; beyond it the oldest draining prefixes lose theirs.")
 	opts := defaultZapOptions()
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
