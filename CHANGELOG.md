@@ -4,7 +4,9 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
-## Unreleased
+## v0.0.22 - 2026-11-06
+
+CrowdSec LAN allow markers for the trusted prefixes.
 
 ### Added
 
