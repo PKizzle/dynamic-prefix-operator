@@ -250,7 +250,16 @@ spec:
 2. Pool now has blocks for both prefix A and B
 3. Existing services keep their prefix-A IPs
 4. New services get prefix-B IPs
-5. After another prefix change (B → C), oldest block (A) is dropped
+5. Block A is dropped once prefix A's valid lifetime ends, or after another prefix change (B → C) pushes it past `maxPrefixHistory`, whichever comes first
+
+**When history ends:** a historical prefix stays only as long as a host can still hold an
+address in it. The operator records the replaced prefix's last advertised valid lifetime
+(from the Router Advertisement or the DHCPv6 lease) as `status.history[].expiresAt` and drops
+the prefix when it passes. Past that point its addresses reach nothing, and resolvers that
+publish every LoadBalancer address (k8s-gateway, CoreDNS `k8s_external`) would otherwise keep
+answering with them; a client whose own address still lies in the old prefix prefers that answer
+(RFC 6724 longest-match) and times out. A prefix with no lifetime, such as a static one, leaves
+only through `maxPrefixHistory`.
 
 ### HA Mode (High Availability)
 
@@ -278,6 +287,7 @@ spec:
 > below show one key for brevity.
 4. Old connections continue working (both IPs active on Service)
 5. New clients connect to new IP via DNS
+6. The old IP is removed when prefix A's valid lifetime ends (see "When history ends" above)
 
 **Static suffix annotation (recommended for dual-stack):**
 

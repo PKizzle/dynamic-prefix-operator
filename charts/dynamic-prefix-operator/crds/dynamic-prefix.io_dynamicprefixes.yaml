@@ -281,6 +281,8 @@ spec:
                     description: |-
                       MaxPrefixHistory is the maximum number of previous prefixes to retain in pool blocks.
                       When a new prefix is received, historical prefixes beyond this limit are dropped.
+                      A historical prefix is also dropped once its valid lifetime ends (see
+                      PrefixHistoryEntry.ExpiresAt), whichever comes first.
                     maximum: 10
                     minimum: 1
                     type: integer
@@ -406,6 +408,14 @@ spec:
                         a new one
                       format: date-time
                       type: string
+                    expiresAt:
+                      description: |-
+                        ExpiresAt is when the prefix's last advertised valid lifetime ends. No
+                        host can still hold an address in the prefix after it, so the entry is
+                        dropped then, ahead of MaxPrefixHistory. Unset when the source gave no
+                        lifetime; such an entry leaves only through MaxPrefixHistory.
+                      format: date-time
+                      type: string
                     prefix:
                       description: Prefix is the historical prefix in CIDR notation
                       type: string
@@ -423,7 +433,9 @@ spec:
                   type: object
                 type: array
               leaseExpiresAt:
-                description: LeaseExpiresAt indicates when the DHCPv6 lease expires
+                description: |-
+                  LeaseExpiresAt is when the current prefix's valid lifetime ends, from the
+                  DHCPv6 lease or the last Router Advertisement
                 format: date-time
                 type: string
               prefixSource:

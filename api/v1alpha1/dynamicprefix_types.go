@@ -285,6 +285,8 @@ type TransitionSpec struct {
 
 	// MaxPrefixHistory is the maximum number of previous prefixes to retain in pool blocks.
 	// When a new prefix is received, historical prefixes beyond this limit are dropped.
+	// A historical prefix is also dropped once its valid lifetime ends (see
+	// PrefixHistoryEntry.ExpiresAt), whichever comes first.
 	// +optional
 	// +kubebuilder:default=2
 	// +kubebuilder:validation:Minimum=1
@@ -302,7 +304,8 @@ type DynamicPrefixStatus struct {
 	// +optional
 	PrefixSource PrefixSource `json:"prefixSource,omitempty"`
 
-	// LeaseExpiresAt indicates when the DHCPv6 lease expires
+	// LeaseExpiresAt is when the current prefix's valid lifetime ends, from the
+	// DHCPv6 lease or the last Router Advertisement
 	// +optional
 	LeaseExpiresAt *metav1.Time `json:"leaseExpiresAt,omitempty"`
 
@@ -379,6 +382,13 @@ type PrefixHistoryEntry struct {
 	// DeprecatedAt is when this prefix was replaced by a new one
 	// +optional
 	DeprecatedAt *metav1.Time `json:"deprecatedAt,omitempty"`
+
+	// ExpiresAt is when the prefix's last advertised valid lifetime ends. No
+	// host can still hold an address in the prefix after it, so the entry is
+	// dropped then, ahead of MaxPrefixHistory. Unset when the source gave no
+	// lifetime; such an entry leaves only through MaxPrefixHistory.
+	// +optional
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
 	// State indicates the current state of this historical prefix
 	// +optional
