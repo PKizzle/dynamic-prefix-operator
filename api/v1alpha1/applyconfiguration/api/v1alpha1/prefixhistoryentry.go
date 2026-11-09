@@ -18,6 +18,11 @@ type PrefixHistoryEntryApplyConfiguration struct {
 	AcquiredAt *v1.Time `json:"acquiredAt,omitempty"`
 	// DeprecatedAt is when this prefix was replaced by a new one
 	DeprecatedAt *v1.Time `json:"deprecatedAt,omitempty"`
+	// ExpiresAt is when the prefix's last advertised valid lifetime ends. No
+	// host can still hold an address in the prefix after it, so the entry is
+	// dropped then, ahead of MaxPrefixHistory. Unset when the source gave no
+	// lifetime; such an entry leaves only through MaxPrefixHistory.
+	ExpiresAt *v1.Time `json:"expiresAt,omitempty"`
 	// State indicates the current state of this historical prefix
 	State *apiv1alpha1.PrefixState `json:"state,omitempty"`
 }
@@ -49,6 +54,14 @@ func (b *PrefixHistoryEntryApplyConfiguration) WithAcquiredAt(value v1.Time) *Pr
 // If called multiple times, the DeprecatedAt field is set to the value of the last call.
 func (b *PrefixHistoryEntryApplyConfiguration) WithDeprecatedAt(value v1.Time) *PrefixHistoryEntryApplyConfiguration {
 	b.DeprecatedAt = &value
+	return b
+}
+
+// WithExpiresAt sets the ExpiresAt field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ExpiresAt field is set to the value of the last call.
+func (b *PrefixHistoryEntryApplyConfiguration) WithExpiresAt(value v1.Time) *PrefixHistoryEntryApplyConfiguration {
+	b.ExpiresAt = &value
 	return b
 }
 

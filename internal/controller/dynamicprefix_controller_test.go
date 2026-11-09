@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -347,5 +348,108 @@ var _ = Describe("DynamicPrefix Controller", func() {
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, dp)).Should(Succeed())
 		})
+	})
+
+	Context("When a historical prefix's valid lifetime ends", func() {
+		It("Should drop it from history ahead of maxPrefixHistory", func() {
+			ctx := context.Background()
+
+			dpName := "test-dp-history-expiry"
+			dp := &dynamicprefixiov1alpha1.DynamicPrefix{
+				ObjectMeta: metav1.ObjectMeta{Name: dpName},
+				Spec: dynamicprefixiov1alpha1.DynamicPrefixSpec{
+					Acquisition: dynamicprefixiov1alpha1.AcquisitionSpec{
+						DHCPv6PD: &dynamicprefixiov1alpha1.DHCPv6PDSpec{Interface: testInterface},
+					},
+					Transition: &dynamicprefixiov1alpha1.TransitionSpec{MaxPrefixHistory: 3},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dp)).Should(Succeed())
+
+			recorder := events.NewFakeRecorder(16)
+			reconciler := &DynamicPrefixReconciler{
+				Client:    k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  recorder,
+				receivers: make(map[string]prefix.Receiver),
+			}
+			mockReceiver := prefix.NewMockReceiver(prefix.SourceDHCPv6PD)
+			reconciler.receivers[dpName] = mockReceiver
+			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: dpName}}
+			key := types.NamespacedName{Name: dpName}
+
+			// Short enough to wait out, long enough to outlast the steps
+			// before the rotation under -race.
+			const lifetime = 6 * time.Second
+			mockReceiver.SimulatePrefix(netip.MustParsePrefix(testPrefix1Len48), lifetime)
+			<-mockReceiver.Events()
+
+			var updatedDP dynamicprefixiov1alpha1.DynamicPrefix
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, req)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(k8sClient.Get(ctx, key, &updatedDP)).Should(Succeed())
+				g.Expect(updatedDP.Status.LeaseExpiresAt).NotTo(BeNil())
+			}, timeout, interval).Should(Succeed())
+			leaseEnd := updatedDP.Status.LeaseExpiresAt
+
+			mockReceiver.SimulatePrefix(netip.MustParsePrefix(testPrefix2Len48), time.Hour)
+			<-mockReceiver.Events()
+			result, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// The replaced prefix carries its own lease end, and the reconciler
+			// comes back for it instead of waiting out the current lease.
+			Expect(k8sClient.Get(ctx, key, &updatedDP)).Should(Succeed())
+			Expect(updatedDP.Status.History).To(HaveLen(1))
+			Expect(updatedDP.Status.History[0].Prefix).To(Equal(testPrefix1Len48))
+			Expect(updatedDP.Status.History[0].ExpiresAt).NotTo(BeNil())
+			Expect(updatedDP.Status.History[0].ExpiresAt.Time).To(BeTemporally("==", leaseEnd.Time))
+			Expect(result.RequeueAfter).To(BeNumerically("<=", lifetime))
+
+			Eventually(func(g Gomega) {
+				_, err := reconciler.Reconcile(ctx, req)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(k8sClient.Get(ctx, key, &updatedDP)).Should(Succeed())
+				g.Expect(updatedDP.Status.History).To(BeEmpty())
+			}, lifetime+timeout, interval).Should(Succeed())
+			Expect(updatedDP.Status.CurrentPrefix).To(Equal(testPrefix2Len48))
+
+			var sawExpiry bool
+			for len(recorder.Events) > 0 {
+				e := <-recorder.Events
+				sawExpiry = sawExpiry || (strings.Contains(e, eventReasonTransitionCompleted) &&
+					strings.Contains(e, testPrefix1Len48))
+			}
+			Expect(sawExpiry).To(BeTrue())
+
+			Expect(k8sClient.Delete(ctx, dp)).Should(Succeed())
+		})
+	})
+})
+
+var _ = Describe("pruneExpiredHistory", func() {
+	It("Should keep entries without an expiry or with one still ahead", func() {
+		now := time.Now()
+		past := metav1.NewTime(now.Add(-time.Minute))
+		future := metav1.NewTime(now.Add(time.Minute))
+		dp := &dynamicprefixiov1alpha1.DynamicPrefix{}
+		dp.Status.History = []dynamicprefixiov1alpha1.PrefixHistoryEntry{
+			{Prefix: testPrefix1Len48},
+			{Prefix: testPrefix2Len48, ExpiresAt: &past},
+			{Prefix: testPrefix3Len48, ExpiresAt: &future},
+		}
+		r := &DynamicPrefixReconciler{Recorder: events.NewFakeRecorder(4)}
+
+		r.pruneExpiredHistory(context.Background(), dp, now)
+
+		Expect(dp.Status.History).To(HaveLen(2))
+		Expect(dp.Status.History[0].Prefix).To(Equal(testPrefix1Len48))
+		Expect(dp.Status.History[1].Prefix).To(Equal(testPrefix3Len48))
+		next, ok := nextHistoryExpiry(dp.Status.History)
+		Expect(ok).To(BeTrue())
+		Expect(next).To(BeTemporally("==", future.Time))
+		_, ok = nextHistoryExpiry(dp.Status.History[:1])
+		Expect(ok).To(BeFalse())
 	})
 })

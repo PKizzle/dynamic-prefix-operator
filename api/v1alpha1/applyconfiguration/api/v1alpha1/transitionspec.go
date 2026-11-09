@@ -17,6 +17,8 @@ type TransitionSpecApplyConfiguration struct {
 	Mode *apiv1alpha1.TransitionMode `json:"mode,omitempty"`
 	// MaxPrefixHistory is the maximum number of previous prefixes to retain in pool blocks.
 	// When a new prefix is received, historical prefixes beyond this limit are dropped.
+	// A historical prefix is also dropped once its valid lifetime ends (see
+	// PrefixHistoryEntry.ExpiresAt), whichever comes first.
 	MaxPrefixHistory *int `json:"maxPrefixHistory,omitempty"`
 }
 

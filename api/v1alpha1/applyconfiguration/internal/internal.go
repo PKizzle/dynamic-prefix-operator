@@ -174,6 +174,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: deprecatedAt
       type:
         namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: expiresAt
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
     - name: prefix
       type:
         scalar: string

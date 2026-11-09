@@ -261,6 +261,7 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	dp.Status.CurrentPrefix = currentPrefix.Network.String()
 	dp.Status.PrefixSource = sourceToPrefixSource(receiver.Source())
+	r.pruneExpiredHistory(ctx, &dp, time.Now())
 
 	// Calculate lease expiration
 	if currentPrefix.ValidLifetime > 0 {
@@ -315,9 +316,47 @@ func (r *DynamicPrefixReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	// Requeue to handle lease renewal
+	// Requeue to handle lease renewal, or sooner when a historical prefix expires first.
 	requeueAfter := r.calculateRequeueTime(currentPrefix)
+	if next, ok := nextHistoryExpiry(dp.Status.History); ok {
+		requeueAfter = min(requeueAfter, max(time.Until(next), time.Second))
+	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// pruneExpiredHistory drops historical prefixes whose valid lifetime has ended.
+// Past that point no host can still hold an address in the prefix, so the
+// addresses kept for draining reach nothing; publishing them only sends clients
+// to a dead address, and one whose own address still matches the old prefix
+// prefers it (RFC 6724 longest-match).
+func (r *DynamicPrefixReconciler) pruneExpiredHistory(
+	ctx context.Context,
+	dp *dynamicprefixiov1alpha1.DynamicPrefix,
+	now time.Time,
+) {
+	dp.Status.History = slices.DeleteFunc(dp.Status.History,
+		func(entry dynamicprefixiov1alpha1.PrefixHistoryEntry) bool {
+			if entry.ExpiresAt == nil || now.Before(entry.ExpiresAt.Time) {
+				return false
+			}
+			logf.FromContext(ctx).Info("Historical prefix expired",
+				"prefix", entry.Prefix, "expiresAt", entry.ExpiresAt.Time)
+			emitNormalEvent(r.Recorder, dp, eventReasonTransitionCompleted,
+				fmt.Sprintf("Completed transition for historical prefix %s after its valid lifetime ended at %s",
+					entry.Prefix, entry.ExpiresAt.UTC().Format(time.RFC3339)))
+			return true
+		})
+}
+
+// nextHistoryExpiry returns the earliest expiry among the historical prefixes.
+func nextHistoryExpiry(history []dynamicprefixiov1alpha1.PrefixHistoryEntry) (time.Time, bool) {
+	var next time.Time
+	for _, entry := range history {
+		if entry.ExpiresAt != nil && (next.IsZero() || entry.ExpiresAt.Time.Before(next)) {
+			next = entry.ExpiresAt.Time
+		}
+	}
+	return next, !next.IsZero()
 }
 
 // updateStatusIfChanged writes the DynamicPrefix status only when a semantic change occurred.
@@ -377,6 +416,9 @@ func ownedDynamicPrefixStatus(
 			WithPrefix(h.Prefix).WithAcquiredAt(h.AcquiredAt)
 		if h.DeprecatedAt != nil {
 			entry.WithDeprecatedAt(*h.DeprecatedAt)
+		}
+		if h.ExpiresAt != nil {
+			entry.WithExpiresAt(*h.ExpiresAt)
 		}
 		if h.State != "" {
 			entry.WithState(h.State)
@@ -682,7 +724,10 @@ func (r *DynamicPrefixReconciler) handlePrefixChange(
 			Prefix:       dp.Status.CurrentPrefix,
 			AcquiredAt:   acquiredAt,
 			DeprecatedAt: &now,
-			State:        dynamicprefixiov1alpha1.PrefixStateDraining,
+			// Status still holds the replaced prefix's lease here: the caller
+			// overwrites it only after this returns.
+			ExpiresAt: dp.Status.LeaseExpiresAt.DeepCopy(),
+			State:     dynamicprefixiov1alpha1.PrefixStateDraining,
 		}
 
 		// Drop any earlier entry for this same prefix first. A prefix that flaps

@@ -17,7 +17,8 @@ type DynamicPrefixStatusApplyConfiguration struct {
 	CurrentPrefix *string `json:"currentPrefix,omitempty"`
 	// PrefixSource indicates how the prefix was obtained
 	PrefixSource *apiv1alpha1.PrefixSource `json:"prefixSource,omitempty"`
-	// LeaseExpiresAt indicates when the DHCPv6 lease expires
+	// LeaseExpiresAt is when the current prefix's valid lifetime ends, from the
+	// DHCPv6 lease or the last Router Advertisement
 	LeaseExpiresAt *v1.Time `json:"leaseExpiresAt,omitempty"`
 	// AddressRanges contains the calculated address ranges
 	AddressRanges []AddressRangeStatusApplyConfiguration `json:"addressRanges,omitempty"`

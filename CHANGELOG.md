@@ -4,6 +4,28 @@ All notable changes to the `PKizzle/dynamic-prefix-operator` fork are documented
 
 This changelog follows the fork's published GitHub releases and does not align with upstream's releases.
 
+## Unreleased
+
+### Fixed
+
+- A historical prefix now leaves `status.history` when its valid lifetime ends,
+  not only when `maxPrefixHistory` pushes it out. Its addresses stayed on
+  Services and in pools for as long as the prefix stayed in history, so
+  resolvers that publish every LoadBalancer address kept handing out addresses
+  that reach nothing; a client still holding an address in the old prefix
+  prefers that answer and times out. The lifetime comes from the last Router
+  Advertisement or DHCPv6 lease before the rotation and is recorded as the new
+  `status.history[].expiresAt` field. Prefixes without a lifetime (static
+  sources) and entries recorded by earlier versions leave through
+  `maxPrefixHistory` as before.
+
+### Upgrade notes
+
+- The CRD gains `status.history[].expiresAt`. Helm does not upgrade files in
+  `crds/`, so apply `charts/dynamic-prefix-operator/crds/` before or with the
+  new image; without it the API server prunes the field and history ages out
+  by count only.
+
 ## v0.0.22 - 2026-11-06
 
 CrowdSec LAN allow markers for the trusted prefixes.

@@ -178,7 +178,7 @@ sibling IPPools that the operator creates and deletes wholesale.
 
 **Multi-Block Support:**
 
-When a prefix changes, pools retain blocks for both the current and historical prefixes (up to `maxPrefixHistory`). This ensures existing Services keep their IPs while new Services get IPs from the current prefix.
+When a prefix changes, pools retain blocks for both the current and historical prefixes (up to `maxPrefixHistory`, and only until each historical prefix's recorded valid lifetime, `status.history[].expiresAt`, ends). This ensures existing Services keep their IPs while new Services get IPs from the current prefix.
 
 **Annotation-Based Binding:**
 
@@ -328,7 +328,7 @@ The operator rotates only the managed IPv6 addresses. IPv4 addresses and static 
 - `subnets`: Subdivide a larger prefix into smaller subnets (advanced; usually paired with BGP)
 - `transition`: Graceful transition settings
   - `mode`: `simple` (default) or `ha` (high availability with multi-IP Services)
-  - `maxPrefixHistory`: Number of historical prefixes to retain in pool blocks (default: 2)
+  - `maxPrefixHistory`: Number of historical prefixes to retain in pool blocks (default: 2); a historical prefix also leaves when its valid lifetime ends
 
 **Status:**
 - `currentPrefix`: Currently active prefix
@@ -431,7 +431,7 @@ Minimal permissions:
 | `PrefixChanged` | Prefix changed |
 | `PoolUpdated` | Pool spec updated |
 | `TransitionStarted` | A replaced prefix is added to history for draining |
-| `TransitionCompleted` | A historical prefix is pruned after `maxPrefixHistory` |
+| `TransitionCompleted` | A historical prefix is pruned after `maxPrefixHistory` or when its valid lifetime ends |
 | `ReceiverCreationFailed` | A prefix receiver cannot be created or started |
 | `AcquisitionFailed` | The receiver has tried to acquire a prefix and failed, as opposed to still waiting for a first advertisement |
 | `RouterAdvertisementsRejected` | Advertisements were dropped by validation; reported at most once every five minutes |
